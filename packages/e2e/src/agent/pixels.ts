@@ -9,8 +9,9 @@
  * masked: a box filter over black stays black.
  */
 
-import { PNG } from 'pngjs';
 import type { ObservationPixels } from '../engine/surface.ts';
+import { InfrastructureError } from '../internal/errors.ts';
+import { decodePng, encodePng, resampleImage, type RgbaImage } from '../internal/image.ts';
 
 /**
  * Longest side a model-bound screenshot keeps, in image pixels. Measured on
@@ -32,7 +33,8 @@ export function sizeForModel<P extends ObservationPixels>(pixels: P): P {
  * Resamples the image so its longer side is at most `maxLongSide`, with a
  * box filter over the source pixels each target pixel covers. Returns the
  * input untouched when it already fits or cannot be decoded; whatever else
- * the caller's pixels carry (a masked-region count) rides along unchanged.
+ * the caller's pixels carry (a masked-region count) rides along unchanged. A
+ * codec that cannot load throws: that is the install's fault, not the image's.
  */
 export function downscalePixels<P extends ObservationPixels>(pixels: P, maxLongSide: number): P {
   const longSide = Math.max(pixels.width, pixels.height);
@@ -40,56 +42,13 @@ export function downscalePixels<P extends ObservationPixels>(pixels: P, maxLongS
   const factor = maxLongSide / longSide;
   const width = Math.max(1, Math.round(pixels.width * factor));
   const height = Math.max(1, Math.round(pixels.height * factor));
-  let source: PNG;
+  let source: RgbaImage;
   try {
-    source = PNG.sync.read(Buffer.from(pixels.data));
-  } catch {
+    source = decodePng(pixels.data);
+  } catch (cause) {
+    if (cause instanceof InfrastructureError) throw cause;
     return pixels;
   }
-  const target = new PNG({ width, height });
-  boxResample(source.data, source.width, source.height, target.data, width, height);
-  const data = new Uint8Array(PNG.sync.write(target));
+  const data = encodePng(resampleImage(source, width, height));
   return { ...pixels, data, width, height, scale: pixels.scale * (width / pixels.width) };
-}
-
-/** Averages, per channel, every source pixel a target pixel covers. RGBA, 8 bits per channel. */
-function boxResample(
-  source: Uint8Array,
-  sourceWidth: number,
-  sourceHeight: number,
-  target: Uint8Array,
-  targetWidth: number,
-  targetHeight: number,
-): void {
-  const xRatio = sourceWidth / targetWidth;
-  const yRatio = sourceHeight / targetHeight;
-  for (let ty = 0; ty < targetHeight; ty += 1) {
-    const y0 = Math.floor(ty * yRatio);
-    const y1 = Math.min(sourceHeight, Math.max(y0 + 1, Math.floor((ty + 1) * yRatio)));
-    for (let tx = 0; tx < targetWidth; tx += 1) {
-      const x0 = Math.floor(tx * xRatio);
-      const x1 = Math.min(sourceWidth, Math.max(x0 + 1, Math.floor((tx + 1) * xRatio)));
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let a = 0;
-      let count = 0;
-      for (let y = y0; y < y1; y += 1) {
-        let offset = (y * sourceWidth + x0) * 4;
-        for (let x = x0; x < x1; x += 1) {
-          r += source[offset]!;
-          g += source[offset + 1]!;
-          b += source[offset + 2]!;
-          a += source[offset + 3]!;
-          offset += 4;
-          count += 1;
-        }
-      }
-      const at = (ty * targetWidth + tx) * 4;
-      target[at] = Math.round(r / count);
-      target[at + 1] = Math.round(g / count);
-      target[at + 2] = Math.round(b / count);
-      target[at + 3] = Math.round(a / count);
-    }
-  }
 }

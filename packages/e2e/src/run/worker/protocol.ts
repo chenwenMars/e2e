@@ -13,8 +13,8 @@ import type { CliOverrides, PortAssignments, ResolvedTarget } from '../../config
 import type { AiTraceSnapshot } from '../../internal/ai-trace.ts';
 import type { DebugSnapshot } from '../../internal/debug.ts';
 import type { SerializedError } from '../../internal/errors.ts';
-import type { AttemptRecord, ResultRecord, RunError, SerialGroupRecord, SerialMemberRecord, WireResultRecord } from '../records.ts';
-import type { SerialAttemptRun, SerialAttemptStart } from '../serial.ts';
+import type { AttemptRecord, ResultRecord, RunError, SerialAttemptRecord, SerialGroupRecord, SerialMemberRecord, WireResultRecord } from '../records.ts';
+import type { SerialAttemptStart } from '../serial.ts';
 import type { StepProgress } from '../steps.ts';
 
 /** One runnable pair on the wire; the worker resolves the test function. */
@@ -108,6 +108,8 @@ export interface InterruptMessage {
 
 export interface ShutdownMessage {
   readonly type: 'shutdown';
+  /** Permission to retain run-owned resources for a replacement. Missing means final cleanup. */
+  readonly preserveResources?: true;
 }
 
 /**
@@ -275,7 +277,7 @@ export interface SerialAttemptMessage {
   readonly type: 'serial-attempt';
   /** The group's report id (`SerialGroupRecord.id`). */
   readonly groupId: string;
-  readonly run: SerialAttemptRun;
+  readonly attempt: SerialAttemptRecord;
 }
 
 export interface UnitDoneMessage {

@@ -5,6 +5,11 @@
  * entry here.
  */
 
+import { isLoopbackHost } from '../../internal/urls.ts';
+
+/** The local server an OpenAI-compatible gateway points at unless an endpoint is given. */
+export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434/v1';
+
 export type GatewayId = 'vercel' | 'openrouter' | 'openai-compatible' | 'chatgpt' | 'copilot' | 'opencode-console' | 'grok';
 
 export interface GatewayPreset {
@@ -18,6 +23,8 @@ export interface GatewayPreset {
   readonly comment: string;
   /** For a subscription: the `e2e login` provider that signs in, which init names as the next step. */
   readonly login?: string;
+  /** The environment variables the provider authenticates with, any one of them enough; the first is the one to set. */
+  readonly keys?: readonly string[];
   /** The model expression, with the endpoint the user typed for an OpenAI-compatible one. */
   model(endpoint: string | undefined): string;
 }
@@ -30,6 +37,7 @@ export const GATEWAYS: readonly GatewayPreset[] = [
     dependencies: {},
     import: "import { gateway } from 'ai';",
     comment: 'The Vercel AI Gateway serves the model id and reads AI_GATEWAY_API_KEY, or the OIDC token of a linked Vercel project.',
+    keys: ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN'],
     model: () => "gateway('openai/gpt-6-luna-fast')",
   },
   {
@@ -39,6 +47,7 @@ export const GATEWAYS: readonly GatewayPreset[] = [
     dependencies: { '@openrouter/ai-sdk-provider': '^3.0.0' },
     import: "import { openrouter } from '@openrouter/ai-sdk-provider';",
     comment: 'OpenRouter serves the model id and reads OPENROUTER_API_KEY.',
+    keys: ['OPENROUTER_API_KEY'],
     model: () => "openrouter('openai/gpt-6-luna-fast')",
   },
   {
@@ -51,7 +60,7 @@ export const GATEWAYS: readonly GatewayPreset[] = [
     model: (endpoint) =>
       `createOpenAICompatible({
         name: 'openai-compatible',
-        baseURL: ${quote(endpoint ?? 'http://127.0.0.1:11434/v1')},
+        baseURL: ${quote(endpoint ?? DEFAULT_ENDPOINT)},
         // apiKey: process.env.LLM_API_KEY,
       }).chatModel('gpt-6-luna')`,
   },
@@ -101,6 +110,23 @@ export function getGatewayPreset(id: GatewayId): GatewayPreset {
   const preset = GATEWAYS.find((gateway) => gateway.id === id);
   if (preset === undefined) throw new Error(`unknown gateway: ${id}`);
   return preset;
+}
+
+/**
+ * Why an OpenAI-compatible base URL is refused, by the rule config resolution
+ * applies: HTTPS, or HTTP on a loopback host. Undefined when it is accepted.
+ */
+export function validateEndpoint(value: string | undefined): string | undefined {
+  const trimmed = value?.trim() ?? '';
+  if (trimmed === '') return `Enter the base URL, e.g. ${DEFAULT_ENDPOINT}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return `Not a URL: ${trimmed}`;
+  }
+  if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname))) return undefined;
+  return 'Must use HTTPS unless the host is loopback';
 }
 
 /** A single-quoted TypeScript string literal. */

@@ -4,12 +4,13 @@
  * radio's value apart from its checked state.
  */
 
-import { chromium, type Browser, type ElementHandle, type Page } from 'playwright-core';
+import { chromium, type Browser, type Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SemanticNode } from 'e2e/engine';
 import { captureDocument } from '../../src/observation.ts';
 import { readSemanticsFunction } from '../../src/in-page/read-semantics.ts';
 import { SECURE_FIELD_SELECTOR } from '../../src/read-node.ts';
+import { Published } from '../helpers/published.ts';
 
 let browser: Browser;
 let page: Page;
@@ -26,18 +27,18 @@ afterAll(async () => {
 /** One observation of the page through the same capture the engine uses, keyed by test id. */
 async function captureByTestId(): Promise<Map<string | undefined, SemanticNode>> {
   let nextId = 1;
-  const published = new Map<string, ElementHandle<Element>>();
+  const published = new Published();
   const { tree } = await captureDocument(
     {
       testIdAttribute: 'data-testid',
       site: undefined,
       reserveIds: (count) => { const first = nextId; nextId += count; return first; },
-      commit: (id, element) => { published.set(id, element); },
+      commit: published.commit,
     },
     page,
     { framePath: [], budget: 100, deadline: Date.now() + 10_000, signal: new AbortController().signal },
   );
-  await Promise.all([...published.values()].map((element) => element.dispose()));
+  published.dispose();
   const nodes: SemanticNode[] = [];
   const walk = (node: SemanticNode) => { nodes.push(node); for (const child of node.children ?? []) walk(child); };
   walk(tree);
@@ -45,6 +46,82 @@ async function captureByTestId(): Promise<Map<string | undefined, SemanticNode>>
 }
 
 describe('checked and selected', () => {
+  it('lists closed-select choices but excludes explicitly hidden options and optgroups', async () => {
+    await page.setContent(`
+      <select aria-label="Plan">
+        <option data-testid="visible" selected value="internal-token">Visible</option>
+        <option data-testid="disabled" disabled>Disabled</option>
+        <option data-testid="hidden" hidden>Hidden</option>
+        <option data-testid="display" style="display:none">No display</option>
+        <option data-testid="visibility" style="visibility:hidden">No visibility</option>
+        <option data-testid="aria" aria-hidden="true">No aria</option>
+        <optgroup hidden label="Hidden group"><option data-testid="group">Hidden group choice</option></optgroup>
+        <optgroup style="visibility:hidden" label="Restored group"><option data-testid="restored" style="visibility:visible">Restored</option></optgroup>
+      </select>
+    `);
+    const nodes = await captureByTestId();
+    expect(nodes.get('visible')).toMatchObject({ name: 'Visible', states: { selected: true } });
+    expect(nodes.get('visible')?.value).toBeUndefined();
+    expect(nodes.get('visible')?.states?.hidden).toBeUndefined();
+    expect(nodes.get('disabled')).toMatchObject({ name: 'Disabled', states: { disabled: true } });
+    expect(nodes.has('restored')).toBe(true);
+    expect(nodes.has('visibility')).toBe(true);
+    for (const id of ['hidden', 'display', 'aria', 'group']) expect(nodes.has(id)).toBe(false);
+    expect(await page.getByRole('option').allTextContents()).toEqual(['Visible', 'Disabled', 'No visibility', 'Restored']);
+  });
+
+  it('applies the option limit to offered choices after hidden options are excluded', async () => {
+    await page.setContent(`<select aria-label="Many choices">${'<option hidden>Excluded</option>'.repeat(60)}${Array.from({ length: 61 }, (_, index) => `<option data-testid="choice-${index}">Choice ${index}</option>`).join('')}</select>`);
+    const nodes = await captureByTestId();
+    expect(nodes.get('choice-0')?.name).toBe('Choice 0');
+    expect(nodes.get('choice-59')?.name).toBe('Choice 59');
+    expect(nodes.has('choice-60')).toBe(false);
+    expect([...nodes.values()].filter((node) => node.role === 'option')).toHaveLength(60);
+    expect(await page.getByRole('option').count()).toBe(61);
+  });
+
+  it('reads selected boolean values without case sensitivity while native option state wins', async () => {
+    await page.setContent(`
+      <div role="tablist">
+        <button role="tab" aria-selected="TRUE" data-testid="upper">All</button>
+        <button role="tab" aria-selected="TrUe" data-testid="mixed">Recent</button>
+        <button role="tab" aria-selected="FALSE" data-testid="off">Archived</button>
+      </div>
+      <select aria-label="Plan" size="3">
+        <option data-testid="native-on" selected aria-selected="FALSE">Team</option>
+        <option data-testid="native-off" aria-selected="TRUE">Solo</option>
+      </select>
+      <div role="button" data-testid="embedded">Pick <div role="listbox"><div role="option" aria-selected="true">Chosen</div><div role="option" aria-selected="false">Other</div></div></div>
+    `);
+    const nodes = await captureByTestId();
+    expect(nodes.get('upper')?.states?.selected).toBe(true);
+    expect(nodes.get('mixed')?.states?.selected).toBe(true);
+    expect(nodes.get('off')?.states?.selected).toBe(false);
+    expect(nodes.get('native-on')?.states?.selected).toBe(true);
+    expect(nodes.get('native-off')?.states?.selected).toBe(false);
+    expect(nodes.get('embedded')?.name).toBe('Pick Chosen');
+    expect(await page.getByRole('tab', { selected: true }).allTextContents()).toEqual(['All', 'Recent']);
+    expect(await page.getByRole('button', { name: 'Pick Chosen', exact: true }).count()).toBe(1);
+  });
+
+  it('excludes uppercase hidden subtrees from observations and names but reads hidden references whole', async () => {
+    await page.setContent(`
+      <div aria-hidden="TRUE"><button data-testid="hidden" aria-hidden="false">Hidden action</button></div>
+      <button data-testid="save">Save<span aria-hidden="TrUe"> decoration</span></button>
+      <button data-testid="shown" aria-hidden="FALSE">Shown</button>
+      <button data-testid="referenced" aria-labelledby="reference">Fallback</button>
+      <div aria-hidden="TRUE"><span id="reference">Label <i style="display:none">whole</i></span></div>
+    `);
+    const nodes = await captureByTestId();
+    expect(nodes.has('hidden')).toBe(false);
+    expect(nodes.get('save')?.name).toBe('Save');
+    expect(nodes.get('shown')?.name).toBe('Shown');
+    expect(nodes.get('referenced')?.name).toBe('Label whole');
+    expect(await page.getByRole('button', { name: 'Save', exact: true }).count()).toBe(1);
+    expect(await page.getByRole('button', { name: 'Hidden action', exact: true }).count()).toBe(0);
+    expect(await page.getByRole('button', { name: 'Label whole', exact: true }).count()).toBe(1);
+  });
+
   it('reads a native checkbox, radio, and option from the control even when a stale aria attribute disagrees, as Playwright does', async () => {
     await page.setContent(`
       <input type="checkbox" data-testid="stale-off" aria-checked="false" checked aria-label="Stale off">

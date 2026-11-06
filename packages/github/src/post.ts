@@ -1,8 +1,8 @@
 /**
  * One comment per pull request, kept current: the reporter looks for the
- * comment whose first line is its marker and edits it, and creates one only
- * when none exists. The REST calls are the three GitHub documents them as: list the
- * issue's comments, update a comment, create a comment.
+ * comment the token's own account wrote whose first line is its marker and
+ * edits it, and creates one only when none exists. The REST calls are the ones GitHub documents: read the token's
+ * account, list the issue's comments, update a comment, create a comment.
  *
  * Every request carries the reporter's abort signal. Anything GitHub answers
  * outside the protocol is an error naming itself; the runner prints one line.
@@ -32,12 +32,14 @@ const PER_PAGE = 100;
  */
 const MAX_PAGES = 100;
 const USER_AGENT = '@e2e-dev/github';
+/** What GitHub answers `GET /user` with for an installation token: `GITHUB_TOKEN` or a GitHub App's. */
+const INTEGRATION_REFUSAL = 'Resource not accessible by integration';
 
 type Method = 'GET' | 'POST' | 'PATCH';
 
-/** One GitHub REST call; anything but success is an error the runner can print. */
-async function request(params: PostParams, method: Method, route: string, body?: unknown): Promise<unknown> {
-  const response = await params.fetch(`${params.apiUrl}${route}`, {
+/** Sends one GitHub REST call and hands back the response as it came. */
+function send(params: PostParams, method: Method, route: string, body?: unknown): Promise<Response> {
+  return params.fetch(`${params.apiUrl}${route}`, {
     method,
     headers: {
       authorization: `Bearer ${params.token}`,
@@ -49,15 +51,76 @@ async function request(params: PostParams, method: Method, route: string, body?:
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: params.signal,
   });
-  if (response.ok) return response.json().catch(() => undefined);
-  const detail = (await response.text().catch(() => '')).slice(0, 200);
-  if (response.status === 401) throw new Error('GitHub rejected the token (GITHUB_TOKEN or GH_TOKEN)');
+}
+
+/** The start of a response's body, for error messages. */
+async function bodyStart(response: Response): Promise<string> {
+  return (await response.text().catch(() => '')).slice(0, 200);
+}
+
+/** The error for a response the protocol has no meaning for, with the start of its body. */
+function unexpected(response: Response, method: Method, route: string, detail: string): Error {
+  return new Error(`GitHub responded ${response.status} to ${method} ${route}${detail === '' ? '' : `: ${detail}`}`);
+}
+
+/**
+ * Whether GitHub throttled the request rather than refused it: a 429, or a
+ * 403 for a spent primary limit, a `Retry-After`, or a secondary limit.
+ */
+function isRateLimited(response: Response, detail: string): boolean {
+  if (response.status === 429) return true;
+  return (
+    response.status === 403 &&
+    (response.headers.get('x-ratelimit-remaining') === '0' ||
+      response.headers.has('retry-after') ||
+      /secondary rate limit/i.test(detail))
+  );
+}
+
+/** The error the runner prints for a response that is not a success. */
+async function failure(params: PostParams, response: Response, method: Method, route: string): Promise<Error> {
+  if (response.status === 401) return new Error('GitHub rejected the token (GITHUB_TOKEN or GH_TOKEN)');
+  const detail = await bodyStart(response);
+  if (isRateLimited(response, detail)) {
+    return new Error(`GitHub rate limited ${method} ${route}; wait for the rate-limit reset or Retry-After before rerunning the job`);
+  }
   if (response.status === 403 || response.status === 404) {
-    throw new Error(
+    return new Error(
       `the token cannot comment on ${params.repository}#${params.pullRequest}: a pull request from a fork runs with a read-only token, and the job needs \`permissions: pull-requests: write\``,
     );
   }
-  throw new Error(`GitHub responded ${response.status} to ${method} ${route}${detail === '' ? '' : `: ${detail}`}`);
+  return unexpected(response, method, route, detail);
+}
+
+/** One GitHub REST call; anything but success is an error the runner can print. */
+async function request(params: PostParams, method: Method, route: string, body?: unknown): Promise<unknown> {
+  const response = await send(params, method, route, body);
+  if (response.ok) return response.json().catch(() => undefined);
+  throw await failure(params, response, method, route);
+}
+
+/** Whether a comment's author is the account the token posts as. */
+type Author = (user: Record<string, unknown>) => boolean;
+
+/**
+ * The account the token posts as. A personal token names its user at
+ * `GET /user`. An installation token cannot read it, and posts as its app's
+ * bot, `github-actions[bot]` or `<app>[bot]`, so any bot author matches.
+ */
+async function tokenAuthor(params: PostParams): Promise<Author> {
+  const response = await send(params, 'GET', '/user');
+  if (response.ok) {
+    const user: unknown = await response.json().catch(() => undefined);
+    if (!isRecord(user) || typeof user['login'] !== 'string') throw new Error('GitHub answered GET /user without a login');
+    const login = user['login'].toLowerCase();
+    return (author) => typeof author['login'] === 'string' && author['login'].toLowerCase() === login;
+  }
+  if (response.status === 403) {
+    const refusal: unknown = await response.clone().json().catch(() => undefined);
+    if (isRecord(refusal) && refusal['message'] === INTEGRATION_REFUSAL) return (author) => author['type'] === 'Bot';
+  }
+  if (response.status === 401) throw await failure(params, response, 'GET', '/user');
+  throw unexpected(response, 'GET', '/user', await bodyStart(response));
 }
 
 /**
@@ -72,13 +135,18 @@ function carriesMarker(body: string, marker: string): boolean {
   return firstLine.replace(/\r$/, '') === marker;
 }
 
-/** The id of the comment carrying the marker, or undefined when no page has one. */
-async function findComment(params: PostParams, issue: string): Promise<number | undefined> {
+/** The id of the comment the author wrote carrying the marker, or undefined when no page has one. */
+async function findComment(params: PostParams, issue: string, author: Author): Promise<number | undefined> {
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const comments = await request(params, 'GET', `${issue}/comments?per_page=${PER_PAGE}&page=${page}`);
     if (!Array.isArray(comments)) throw new Error('GitHub answered the comment list with a body that is not a list');
     const found = comments.find(
-      (comment: unknown) => isRecord(comment) && typeof comment['body'] === 'string' && carriesMarker(comment['body'], params.marker),
+      (comment: unknown) =>
+        isRecord(comment) &&
+        isRecord(comment['user']) &&
+        author(comment['user']) &&
+        typeof comment['body'] === 'string' &&
+        carriesMarker(comment['body'], params.marker),
     );
     if (isRecord(found) && typeof found['id'] === 'number') return found['id'];
     if (comments.length < PER_PAGE) return undefined;
@@ -89,7 +157,7 @@ async function findComment(params: PostParams, issue: string): Promise<number | 
 /** Creates or updates the reporter's comment and resolves with its URL. */
 export async function upsertComment(params: PostParams): Promise<string> {
   const issue = `/repos/${params.repository}/issues/${params.pullRequest}`;
-  const existing = await findComment(params, issue);
+  const existing = await findComment(params, issue, await tokenAuthor(params));
   const created =
     existing === undefined
       ? await request(params, 'POST', `${issue}/comments`, { body: params.body })

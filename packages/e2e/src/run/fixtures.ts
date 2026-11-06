@@ -1,7 +1,9 @@
 /** Attempt-scoped fixture graph. */
 
+import path from 'node:path';
 import { BUILT_IN_AGENT } from '../agent/agent-brand.ts';
 import { createAgentFixture } from '../agent/index.ts';
+import { prepareObservation, type NodeRedaction } from '../agent/observation.ts';
 import type { AgentContext, AgentSelection } from '../agent/invocation.ts';
 import type { ExecutorAttempt, StepExecutor } from '../agent/executor.ts';
 import type { AgentCacheContext } from '../cache/context.ts';
@@ -13,8 +15,10 @@ import type { DebugTrace } from '../internal/debug.ts';
 import { ConfigurationError, errorMessage, InfrastructureError, TestError } from '../internal/errors.ts';
 import { Deadline } from '../internal/time.ts';
 import { didYouMean } from '../internal/suggest.ts';
-import { resolveSecretValue, sessionSecrecy, type SecretExposure } from './secrecy.ts';
-import { resolveNavigationUrl } from '../internal/urls.ts';
+import { createScreenshotContext, type ScreenshotContext, type WrittenScreenshots } from './screenshots.ts';
+import { sessionRecordings } from './recordings.ts';
+import { resolveSecretValue, sessionLedger } from './secrecy.ts';
+import { baseUrlOf, resolveNavigationUrl } from '../internal/urls.ts';
 import { FixtureRecorder } from './fixture-recording.ts';
 import type { AttemptBudget } from './budget.ts';
 import { LocatorEngine } from '../locator/engine.ts';
@@ -27,8 +31,7 @@ import {
 } from '../locator/screen.ts';
 import { engineAppInfo } from '../config/app.ts';
 import type { ResolvedAgentConfig, ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
-import type { Agent, App, Expectable, SetupSession, TestFixtures } from '../types.ts';
-import type { ArtifactRecord } from './records.ts';
+import type { Agent, App, Expectable, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
 import type { StepRecord, StepRecorder } from './steps.ts';
 
 export interface ArtifactSink {
@@ -36,7 +39,7 @@ export interface ArtifactSink {
   readonly dir: string;
   /** Registers a produced artifact and returns its report artifact ID. */
   register(
-    kind: 'screenshot' | 'trace' | 'video' | 'download' | 'log',
+    kind: 'screenshot' | 'video' | 'download' | 'log',
     relativePath: string,
     options?: ArtifactRegistration,
   ): string;
@@ -48,12 +51,6 @@ export interface ArtifactSink {
 export interface ArtifactRegistration {
   /** When a time-based artifact (a video segment) began recording. */
   readonly startedAt?: string;
-  /**
-   * How much of the file the runner masked, when that was decided per
-   * artifact (a trace, rewritten or found to need no rewriting) rather than
-   * per kind.
-   */
-  readonly redaction?: ArtifactRecord['redaction'];
 }
 
 export interface AttemptEnvironment {
@@ -82,6 +79,12 @@ export interface AttemptEnvironment {
   readonly debug?: DebugTrace;
   /** The worker's model adapters, checked once on the first `agent` acquisition. */
   readonly models: WorkerModels;
+  /**
+   * The test the attempt runs, which `toHaveScreenshot` keeps its screenshots
+   * beside, and the screenshots the run wrote; absent for a session with no
+   * test (`e2e mcp`).
+   */
+  readonly test?: { readonly file: string; readonly titlePath: readonly string[]; readonly writtenScreenshots: WrittenScreenshots };
 }
 
 /** Builds the lazy fixture graph for one attempt. */
@@ -91,35 +94,92 @@ export interface AttemptFixtures {
   readonly agentRuntime: AgentContext;
 }
 
-export function createFixtures(environment: AttemptEnvironment): AttemptFixtures {
+/** What a screen over one engine session is wired to. */
+interface ScreenWiring {
+  /** The engine session the screen drives. */
+  readonly session: TargetSession;
+  readonly budget: AttemptBudget;
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly config: ResolvedConfig;
+  readonly steps: StepRecorder;
+  readonly secrets: SecretResolver;
+  /** The session's secret ledger, which `screen.tree()` passes its text through. */
+  readonly redaction: NodeRedaction;
+  /** The app URL's origin, so the tree shows a link on it by its path. */
+  readonly appOrigin: string | undefined;
+  /** Where `toHaveScreenshot` keeps screenshots; only a test has them. */
+  readonly screenshots?: ScreenshotContext | undefined;
+}
+
+/**
+ * The locator engine and screen context over one engine session, wired to the
+ * attempt's budget, step recorder, timeouts, and secret resolver. The test
+ * fixtures use it, and so does `e2e mcp`'s `run_code` with a session whose
+ * reads pass the secret ledger.
+ */
+export function createScreenContext(wiring: ScreenWiring): ScreenContext {
+  const { config, steps } = wiring;
   const engine = new LocatorEngine({
+    session: wiring.session,
+    budget: wiring.budget,
+    runId: wiring.runId,
+    attemptId: wiring.attemptId,
+    actionTimeout: config.actionTimeout,
+    assertionTimeout: config.assertionTimeout,
+    recordEvent: (event) => steps.recordEvent(event),
+    redact: (text) => steps.redactText(text),
+  });
+  return {
+    engine,
+    steps,
+    secrets: wiring.secrets,
+    projectRoot: config.projectRoot,
+    renderTree: (observation) =>
+      prepareObservation(observation, {
+        redact: wiring.redaction.redact,
+        redactCut: wiring.redaction.redactCut,
+        maxBytes: config.limits.maxObservationBytes,
+        appOrigin: wiring.appOrigin,
+      }).text,
+    ...(wiring.screenshots === undefined ? {} : { screenshots: wiring.screenshots }),
+  };
+}
+
+export function createFixtures(environment: AttemptEnvironment): AttemptFixtures {
+  const ledger = sessionLedger(environment.session, environment.config.allSecrets);
+  const secrets: SecretResolver = {
+    resolve: (secret) => resolveSecretValue(secret, environment.config.allSecrets, ledger),
+  };
+
+  const screenContext = createScreenContext({
     session: environment.session,
     budget: environment.budget,
     runId: environment.runId,
     attemptId: environment.attemptId,
-    actionTimeout: environment.config.actionTimeout,
-    assertionTimeout: environment.config.assertionTimeout,
-  });
-
-  const { ledger, exposure } = sessionSecrecy(environment.session, environment.config.allSecrets);
-  const secrets: SecretResolver = {
-    async resolve(secret) {
-      const plaintext = await resolveSecretValue(secret, environment.config.allSecrets, ledger);
-      // Only a value that exists can reach the screen: a failed provider
-      // leaves nothing to taint the viewport with.
-      exposure.raise('filled');
-      return plaintext;
-    },
-  };
-
-  const screenContext: ScreenContext = {
-    engine,
+    config: environment.config,
     steps: environment.steps,
     secrets,
-    projectRoot: environment.config.projectRoot,
-  };
+    redaction: ledger,
+    appOrigin: environment.target.app.base?.origin,
+    ...(environment.test === undefined
+      ? {}
+      : {
+          screenshots: createScreenshotContext({
+            projectRoot: environment.config.projectRoot,
+            ci: environment.config.ci,
+            update: environment.config.updateSnapshots,
+            targetName: environment.target.name,
+            file: environment.test.file,
+            titlePath: environment.test.titlePath,
+            written: environment.test.writtenScreenshots,
+            artifacts: environment.artifacts,
+          }),
+        }),
+  });
+  const { engine } = screenContext;
   const screen = createScreen(screenContext);
-  const app = createApp(environment, engine, exposure);
+  const app = createApp(environment, engine);
 
   let agent: Agent | undefined;
 
@@ -171,11 +231,13 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     engineCapabilities: environment.target.engine?.capabilities ?? new Set<EngineCapability>(),
     steps: environment.steps,
     select,
+    reportUnservedModel: environment.models.unservedModel,
     config: environment.config,
     target: {
       name: environment.target.name,
       platform: environment.target.platform,
       verbs: environment.session.verbs,
+      tapModifiers: environment.session.tapModifiers,
     },
     app: environment.target.app,
     attempt: environment.attempt,
@@ -183,7 +245,6 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     secrets,
     redact: ledger.redact,
     redactCut: ledger.redactCut,
-    exposure,
     artifacts: environment.artifacts,
     ...(environment.cache !== undefined ? { cache: environment.cache } : {}),
     ...(environment.debug !== undefined ? { debug: environment.debug } : {}),
@@ -263,7 +324,7 @@ function gateUnknownFixtures<T extends object>(fixtures: T, environment: Attempt
  * Engine-contributed fixtures: factories declare operation metadata
  * through context.fixture and must return the surface they declared. Factories
  * stay lazy and each instance belongs to one test's fixture graph; the
- * session's secrecy state outlives that graph.
+ * session's ledger outlives that graph.
  */
 function contributedFixtures(
   environment: AttemptEnvironment,
@@ -405,8 +466,9 @@ function unreachableApp(cause: unknown, url: string): InfrastructureError | unde
 }
 
 /** Builds the portable app fixture with the session's shared screenshot policy. */
-function createApp(environment: AttemptEnvironment, engine: LocatorEngine, exposure: SecretExposure): App {
+function createApp(environment: AttemptEnvironment, engine: LocatorEngine): App {
   const { config, steps, target } = environment;
+  const recordings = sessionRecordings(environment.session, target.name);
 
   /** Opens one resolved URL; a refused connection is reported as the app being down. */
   const openAt = async (resolved: string, timeoutMs: number): Promise<void> => {
@@ -467,7 +529,7 @@ function createApp(environment: AttemptEnvironment, engine: LocatorEngine, expos
     });
 
   return {
-    baseUrl: target.app.base?.href,
+    baseUrl: target.app.base === undefined ? undefined : baseUrlOf(target.app.base),
     open: (openPath?: string) =>
       target.app.base === undefined && !engine.session.verbs.has('navigate')
         ? launchPinnedApp(openPath)
@@ -481,17 +543,23 @@ function createApp(environment: AttemptEnvironment, engine: LocatorEngine, expos
     },
     async screenshot(label?: string): Promise<string> {
       return steps.run('app', 'app.screenshot', label ?? '', async () => {
-        if (exposure.withholdsPixels) {
-          throw new ConfigurationError(
-            'POLICY_DENIED',
-            'app.screenshot() is denied after a secret fill because the app may display the secret outside a secure field',
-          );
-        }
         const relative = await engine.session.artifacts.screenshot(label, engine.operation());
         environment.steps.attachArtifact(environment.artifacts.register('screenshot', relative));
-        return relative;
+        return path.join(environment.artifacts.dir, relative);
       });
     },
+    async startRecording(options?: RecordingOptions): Promise<void> {
+      const name = options?.name;
+      await steps.run('app', 'app.startRecording', typeof name === 'string' ? name : '', async () => {
+        await recordings.startSpan(name, engine.operation());
+      });
+    },
+    stopRecording: () =>
+      steps.run('app', 'app.stopRecording', '', async () => {
+        const { ids, videos } = await recordings.stopSpan(engine.operation(), environment.artifacts);
+        for (const id of ids) environment.steps.attachArtifact(id);
+        return videos;
+      }),
   };
 }
 

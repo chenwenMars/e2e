@@ -44,6 +44,9 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     'frameset',
     'object',
     'embed',
+    // Next.js App Router's route announcer echoes the title on a hydration
+    // schedule of its own, which an observation must not read as an alert.
+    'next-route-announcer',
   ];
   const OPAQUE_TAGS = ['svg', 'math', 'canvas', 'video', 'audio'];
   /**
@@ -61,18 +64,18 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
 
   /**
    * How the active mode projects one node, expressed as data so `describe`
-   * stays branch-free. Tree mode is the model-bound projection: bounded text,
-   * a bounded attribute projection, hrefs reduced to origin+path, the root
-   * document named by its title, and no value on a checkbox or radio, whose
-   * value attribute is an app token its checked state already says more
-   * than. Node mode is the full locator-read surface.
+   * stays branch-free. Tree mode is the model-bound projection: bounded line
+   * text (`lineTextOf`), a bounded attribute projection, hrefs reduced to
+   * origin+path, the root document named by its title, and no value on a
+   * checkbox or radio, whose value attribute is an app token its checked
+   * state already says more than. Node mode is the full locator-read surface.
    */
   const projection: {
     attributes: readonly string[] | null;
     textLimit: number | null;
     nameLimit: number | null;
     redactHref: boolean;
-    directTextOnly: boolean;
+    lineText: boolean;
     documentRoot: boolean;
     checkableValue: boolean;
   } =
@@ -82,7 +85,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
           textLimit: options.mode.textLimit,
           nameLimit: options.mode.nameLimit,
           redactHref: true,
-          directTextOnly: true,
+          lineText: true,
           documentRoot: true,
           checkableValue: false,
         }
@@ -91,7 +94,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
           textLimit: null,
           nameLimit: null,
           redactHref: false,
-          directTextOnly: false,
+          lineText: false,
           documentRoot: false,
           checkableValue: true,
         };
@@ -112,6 +115,24 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     };
   };
 
+  /** Concrete WAI-ARIA roles, excluding abstract roles that cannot label an element. */
+  const ARIA_ROLES = [
+    'alert', 'alertdialog', 'application', 'article', 'banner', 'blockquote', 'button', 'caption',
+    'cell', 'checkbox', 'code', 'columnheader', 'combobox', 'complementary', 'contentinfo', 'definition',
+    'deletion', 'dialog', 'directory', 'document', 'emphasis', 'feed', 'figure', 'form',
+    'generic', 'grid', 'gridcell', 'group', 'heading', 'img', 'insertion', 'link',
+    'list', 'listbox', 'listitem', 'log', 'main', 'mark', 'marquee', 'math',
+    'meter', 'menu', 'menubar', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'navigation', 'none',
+    'note', 'option', 'paragraph', 'presentation', 'progressbar', 'radio', 'radiogroup', 'region',
+    'row', 'rowgroup', 'rowheader', 'scrollbar', 'search', 'searchbox', 'separator', 'slider',
+    'spinbutton', 'status', 'strong', 'subscript', 'superscript', 'switch', 'tab', 'table',
+    'tablist', 'tabpanel', 'term', 'textbox', 'time', 'timer', 'toolbar', 'tooltip',
+    'tree', 'treegrid', 'treeitem',
+  ];
+  /** ARIA uses the first recognized token, then native semantics if none is recognized. */
+  const explicitRole = memoized((el: Element): string | null =>
+    (el.getAttribute('role') ?? '').split(/[ \t\n\f\r]+/).find((role) => ARIA_ROLES.indexOf(role) !== -1) ?? null);
+
   /**
    * True when an element carries a name of its own (HTML-AAM: `aria-label`,
    * `aria-labelledby`, or `title`). A `<form>` or `<section>` is a landmark
@@ -131,7 +152,14 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * HTML-AAM scopes it to sectioning content and to the ARIA roles that stand
    * for it, so a `<div role="article">` scopes it like an `<article>`.
    */
-  const isPageLevel = (el: Element): boolean => el.closest(SECTIONING_SCOPE) === null;
+  const isPageLevel = (el: Element): boolean => {
+    for (let candidate: Element | null = el; candidate !== null;) {
+      if (candidate.closest(SECTIONING_SCOPE) !== null) return false;
+      const root = candidate.getRootNode();
+      candidate = root instanceof ShadowRoot ? root.host : null;
+    }
+    return true;
+  };
 
   /**
    * The root of a contenteditable region: editable itself, under a parent that
@@ -148,12 +176,69 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     NON_HOST_TAGS.indexOf(el.tagName.toLowerCase()) === -1 &&
     !(el.parentElement instanceof HTMLElement && el.parentElement.isContentEditable);
 
+  const NAME_PROHIBITED_ROLES = [
+    'caption', 'code', 'deletion', 'emphasis', 'generic', 'insertion', 'paragraph', 'presentation', 'strong',
+    'subscript', 'superscript',
+  ];
+  /** Global ARIA attributes, each with the roles it does not count on, as Playwright lists them. */
+  const GLOBAL_ARIA_ATTRIBUTES: ReadonlyArray<readonly [string, readonly string[]]> = [
+    ['aria-atomic', []],
+    ['aria-busy', []],
+    ['aria-controls', []],
+    ['aria-current', []],
+    ['aria-describedby', []],
+    ['aria-details', []],
+    ['aria-dropeffect', []],
+    ['aria-flowto', []],
+    ['aria-grabbed', []],
+    ['aria-hidden', []],
+    ['aria-keyshortcuts', []],
+    ['aria-label', NAME_PROHIBITED_ROLES],
+    ['aria-labelledby', NAME_PROHIBITED_ROLES],
+    ['aria-live', []],
+    ['aria-owns', []],
+    ['aria-relevant', []],
+    ['aria-roledescription', ['generic']],
+  ];
+
+  /** Playwright's implicit role for the tags whose role some global ARIA attributes do not count on. */
+  const NAME_PROHIBITED_TAG_ROLES: Readonly<Record<string, string>> = {
+    caption: 'caption', code: 'code', del: 'deletion', em: 'emphasis', ins: 'insertion', p: 'paragraph',
+    strong: 'strong', sub: 'subscript', sup: 'superscript',
+  };
+
+  /** True when the element carries a global ARIA attribute that counts on `role`. */
+  const hasGlobalAriaAttribute = (el: Element, role: string | null): boolean =>
+    GLOBAL_ARIA_ATTRIBUTES.some(([name, prohibited]) =>
+      (role === null || prohibited.indexOf(role) === -1) && el.hasAttribute(name));
+
+  /** True when `tabindex` parses as a number, as Playwright reads it. */
+  const hasTabIndex = (el: Element): boolean => !Number.isNaN(Number(String(el.getAttribute('tabindex'))));
+
+  /** Whether a person can focus the element, as Playwright decides presentational-role conflicts. */
+  const isFocusable = (el: Element): boolean => {
+    const tag = el.tagName.toLowerCase();
+    if (['button', 'input', 'select', 'textarea', 'option', 'optgroup'].indexOf(tag) !== -1 && el.matches(':disabled')) {
+      return false;
+    }
+    if (hasTabIndex(el) || ['button', 'details', 'select', 'textarea'].indexOf(tag) !== -1) return true;
+    if (tag === 'a' || tag === 'area') return el.hasAttribute('href');
+    return tag === 'input' && !(el as HTMLInputElement).hidden;
+  };
+
+  /**
+   * WAI-ARIA presentational-role conflict resolution: `presentation` or
+   * `none` is ignored on a focusable element or one with a global ARIA
+   * attribute, and the tag's role stands.
+   */
+  const hasPresentationConflict = (el: Element): boolean =>
+    isFocusable(el) || hasGlobalAriaAttribute(el, NAME_PROHIBITED_TAG_ROLES[el.tagName.toLowerCase()] ?? null);
+
   const implicitRole = memoized((el: Element): string | null => {
-    const explicit = el.getAttribute('role');
-    if (explicit !== null && explicit.trim() !== '') {
-      const first = explicit.trim().split(/\s+/)[0] ?? null;
+    const explicit = explicitRole(el);
+    if (explicit !== null && !((explicit === 'presentation' || explicit === 'none') && hasPresentationConflict(el))) {
       // The vocabulary spells ARIA's `img` as `image`.
-      return first === 'img' ? 'image' : first;
+      return explicit === 'img' ? 'image' : explicit;
     }
     // Ahead of the tag: an editor's host is the control, whatever landmark or
     // structure its tag would otherwise be.
@@ -172,7 +257,9 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       case 'textarea':
         return 'textbox';
       case 'img':
-        return el.getAttribute('alt') === '' ? 'presentation' : 'image';
+        return el.getAttribute('alt') === '' && !el.getAttribute('title') && !hasGlobalAriaAttribute(el, null) && !hasTabIndex(el)
+          ? 'presentation'
+          : 'image';
       // An inline icon is a picture whether or not anything names it, as
       // Playwright reads it; Chrome ignores an unnamed one.
       case 'svg':
@@ -236,7 +323,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       // A grid's cells are the interactive kind, as Playwright reads them.
       case 'td': {
         const table = el.closest('table');
-        const tableRole = table?.getAttribute('role')?.trim().split(/\s+/)[0];
+        const tableRole = table === null ? null : explicitRole(table);
         return tableRole === 'grid' || tableRole === 'treegrid' ? 'gridcell' : 'cell';
       }
       case 'th': {
@@ -408,7 +495,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
 
   /** True for a subtree the name computation drops: aria-hidden, or hidden by style as innerText leaves it out. */
   const isNameHidden = (el: Element, style: CSSStyleDeclaration | undefined): boolean =>
-    el.getAttribute('aria-hidden') === 'true' ||
+    (el.getAttribute('aria-hidden') ?? '').toLowerCase() === 'true' ||
     (style !== undefined && (style.display === 'none' || style.visibility === 'hidden'));
 
   /** `alt` of an element HTML-AAM names by it: an `<img>` or an `<input type="image">`. */
@@ -442,7 +529,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * under an `aria-hidden` ancestor, which excludes it from the tree as
    * surely as its own attribute would.
    */
-  const isReferenceHidden = (el: Element): boolean => isHidden(el) || el.closest('[aria-hidden="true"]') !== null;
+  const isReferenceHidden = (el: Element): boolean => isHidden(el) || el.closest('[aria-hidden="true" i]') !== null;
 
   /**
    * The element an id names for `el`, looked up in `el`'s own tree: an IDREF
@@ -710,6 +797,119 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     return out.replace(/\s+/g, ' ').trim();
   });
 
+  /**
+   * Elements whose content is not text in a line: a form control's options
+   * or value, a picture, a frame, a drawn surface. Like a line break, each
+   * separates the words around it.
+   */
+  const LINE_BREAKING_TAGS = [...SKIP_TAGS, ...OPAQUE_TAGS, 'iframe', 'img', 'input', 'select', 'textarea', 'br'];
+
+  /**
+   * True when an element's text flows in its parent's line: a visible
+   * inline-level box (`inline`, `inline-block`, `ruby`), or `display:
+   * contents`, whose children lay out as the parent's own. Visible as the
+   * walk reads it (`isHidden`): a box with no size shows no words. A slot
+   * has no box and shows the nodes assigned to it, so only its visibility
+   * counts: a hidden one hides the text they inherit it with, and a child
+   * that shows itself again is listed on its own.
+   */
+  const flowsInLine = memoized((el: Element): boolean => {
+    if (LINE_BREAKING_TAGS.indexOf(el.tagName.toLowerCase()) !== -1 || isEditingHost(el)) return false;
+    const style = styleOf(el);
+    if (style === undefined || hidesSubtree(el, style)) return false;
+    if (el instanceof HTMLSlotElement ? style.visibility !== 'visible' : isHidden(el, style)) return false;
+    return isInlineLevel(style);
+  });
+
+  /** True for a box laid out in its parent's line, or for `display: contents`, which lays out none of its own. */
+  const isInlineLevel = (style: CSSStyleDeclaration): boolean =>
+    style.display.startsWith('inline') || style.display.startsWith('ruby') || style.display === 'contents';
+
+  /**
+   * The nodes an element renders in its place, as the walk reaches them: a
+   * shadow host's shadow tree (a closed one through the record), a slot's
+   * assigned nodes or else its fallback content, any other element's children.
+   */
+  const renderedChildrenOf = (el: Element): Node[] => {
+    const shadow = shadowRootOf(el);
+    if (shadow !== null) return Array.from(shadow.childNodes);
+    if (el instanceof HTMLSlotElement) {
+      const assigned = el.assignedNodes();
+      if (assigned.length > 0) return assigned;
+    }
+    return Array.from(el.childNodes);
+  };
+
+  /**
+   * An element's rendered text with each inline descendant's text in place.
+   * Anything else in the line reads as a space, except a hidden inline
+   * element (a `<wbr>`, a zero-size span), which shows nothing.
+   */
+  const lineRunOf = (el: Element): string => {
+    let out = '';
+    for (const child of renderedChildrenOf(el)) {
+      if (child.nodeType === 3) out += child.nodeValue ?? '';
+      if (child.nodeType !== 1) continue;
+      const inner = child as Element;
+      if (flowsInLine(inner)) {
+        out += lineRunOf(inner);
+        continue;
+      }
+      const style = styleOf(inner);
+      if (style === undefined || hidesSubtree(inner, style)) continue;
+      const breaking = LINE_BREAKING_TAGS.indexOf(inner.tagName.toLowerCase()) !== -1;
+      if (breaking || !isInlineLevel(style) || !isHidden(inner, style)) out += ' ';
+    }
+    return out;
+  };
+
+  /**
+   * The text an element owns, read as a person reads its line: its own text
+   * with every inline descendant's text in place, so `<p>Read our <a>privacy
+   * policy</a> for details.</p>` reads as the whole sentence while the link
+   * stays a node of its own. Block-level descendants are nodes of their own
+   * and only separate words. An element with no text of its own owns none: a
+   * wrapper of elements leaves them to say what they say (`ownsLine`).
+   */
+  const lineTextOf = memoized((el: Element): string =>
+    ownsLine(el) ? lineRunOf(el).replace(/\s+/g, ' ').trim() : '');
+
+  /**
+   * True when an element reads its own line: it has text of its own, or it
+   * offers an action inside an ancestor's line, where its words are what a
+   * person aims at.
+   */
+  const ownsLine = (el: Element): boolean => directTextOf(el) !== '' || (offersAction(el) && isReadInLine(el));
+
+  /**
+   * True when an element with no role still says it can be acted on: it is
+   * focusable through `tabindex`, it has a click handler set as an attribute
+   * or a property (`onclick`), or it is an `<a>` with no `href`, which an app
+   * wires up by script. Such an element stays listed inside a line, so it
+   * keeps an id to act on. A handler added with `addEventListener` leaves
+   * nothing the page can read.
+   */
+  const offersAction = memoized((el: Element): boolean => {
+    const tabindex = el.getAttribute('tabindex');
+    if (tabindex !== null && /^\s*[-+]?\d/.test(tabindex)) return true;
+    if (el.tagName.toLowerCase() === 'a' || el.hasAttribute('onclick')) return true;
+    return el instanceof HTMLElement && el.onclick !== null;
+  });
+
+  /**
+   * True when an element's text is already read in an ancestor's line
+   * (`lineTextOf`), so the element has nothing to add on text alone. A line
+   * longer than the projection's text bound is cut, so its inline
+   * descendants stay listed and nothing past the cut is lost.
+   */
+  const isReadInLine = memoized((el: Element): boolean => {
+    const parent = el.assignedSlot ?? parentOrHostOf(el);
+    if (parent === null || !flowsInLine(el)) return false;
+    if (!ownsLine(parent)) return isReadInLine(parent);
+    const fits = projection.textLimit === null || lineTextOf(parent).length <= projection.textLimit;
+    return fits && !isHidden(parent);
+  });
+
   const accessibleName = memoized((el: Element): string | null => {
     // accname reads a labelledby reference (2B) before the element's own aria-label (2C).
     const referenced = referencedNamesOf(el, nameWalk([], true));
@@ -790,7 +990,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * Closed shadow roots the context's init script recorded, when it ran in this
    * document. Same literal as `CLOSED_SHADOW_ROOTS_KEY`; the reader cannot import it.
    */
-  const closedShadowRoots = (globalThis as unknown as Record<symbol, WeakMap<Element, ShadowRoot> | undefined>)[
+  const closedShadowRoots = (globalThis as Record<symbol, WeakMap<Element, ShadowRoot> | undefined>)[
     Symbol.for('e2e.closedShadowRoots')
   ];
   const shadowRootOf = (el: Element): ShadowRoot | null =>
@@ -916,7 +1116,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * unlisted.
    */
   const hidesSubtree = (el: Element, style: CSSStyleDeclaration | undefined): boolean =>
-    el.getAttribute('aria-hidden') === 'true' ||
+    (el.getAttribute('aria-hidden') ?? '').toLowerCase() === 'true' ||
     isInert(el, style) ||
     style === undefined ||
     style.display === 'none' ||
@@ -933,6 +1133,15 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    */
   const isInert = (el: Element, style: CSSStyleDeclaration | undefined): boolean =>
     el.hasAttribute('inert') || style?.getPropertyValue('interactivity') === 'inert';
+
+  /** A closed select has no option boxes; explicit exclusions still remove choices it does not offer. */
+  const isOfferedOption = (option: HTMLOptionElement): boolean => {
+    if (isSkippedContent(option)) return false;
+    for (let current: Element | null = option; current !== null && current.tagName.toLowerCase() !== 'select'; current = parentOrHostOf(current)) {
+      if (hidesSubtree(current, styleOf(current))) return false;
+    }
+    return true;
+  };
 
   /** Smallest side, in CSS pixels, an empty box must have to be worth reporting. */
   const MIN_BOX_SIDE = 12;
@@ -1189,7 +1398,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     }
     if (selectedState === null) {
       const ariaSelected = el.getAttribute('aria-selected');
-      if (ariaSelected !== null) selectedState = ariaSelected === 'true';
+      if (ariaSelected !== null) selectedState = ariaSelected.toLowerCase() === 'true';
     }
 
     const disabled = isDisabled(el);
@@ -1233,7 +1442,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
 
     let text: string;
     if (secure) text = '';
-    else if (projection.directTextOnly) text = directTextOf(el);
+    else if (projection.lineText) text = lineTextOf(el);
     else text = textOf(el);
     if (projection.textLimit !== null) text = text.slice(0, projection.textLimit);
 
@@ -1248,6 +1457,8 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     // no rect, as Playwright's `boundingBox()` answers null; a box with no
     // size, or one `visibility: hidden` keeps, is still a rect.
     const rect = el.getClientRects().length === 0 ? null : el.getBoundingClientRect();
+    const borderLeft = Number.parseFloat(style?.borderLeftWidth ?? '') || 0;
+    const borderTop = Number.parseFloat(style?.borderTopWidth ?? '') || 0;
     const role = isDocumentRoot ? 'document' : roleOf(el, tag);
     let level: number | null = null;
     if (role === 'heading') {
@@ -1280,6 +1491,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       attributes,
       testId: el.getAttribute(options.testIdAttribute),
       rect: rect === null ? null : { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      origin: rect === null || (borderLeft === 0 && borderTop === 0) ? null : { x: rect.x + borderLeft, y: rect.y + borderTop },
     };
   };
 
@@ -1325,7 +1537,8 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     if (el.hasAttribute(options.testIdAttribute)) return true;
     if (implicitRole(el) !== null && !isPresentational(el)) return true;
     if (accessibleName(el) !== null) return true;
-    return directTextOf(el) !== '';
+    if (offersAction(el) && isReadInLine(el)) return lineTextOf(el) !== '';
+    return directTextOf(el) !== '' && !isReadInLine(el);
   };
 
   const walk = (el: Element, parent: number): void => {
@@ -1375,8 +1588,11 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     // has to guess the labels it may pick. The options are what the control
     // offers, so they are listed under it, bounded like any long list.
     if (tag === 'select') {
-      const choices = Array.from((el as HTMLSelectElement).options).slice(0, MAX_SELECT_OPTIONS);
-      for (const option of choices) {
+      let offered = 0;
+      for (const option of Array.from((el as HTMLSelectElement).options)) {
+        if (offered >= MAX_SELECT_OPTIONS) break;
+        if (!isOfferedOption(option)) continue;
+        offered += 1;
         if (nodes.length >= maxNodes) {
           truncated = true;
           return;

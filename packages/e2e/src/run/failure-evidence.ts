@@ -16,11 +16,11 @@ import { formatNode, prepareObservation, type AgentObservation, type RedactedNod
 import type { ResolvedConfig } from '../config/resolve.ts';
 import type { OperationContext, TargetSession } from '../engine/surface.ts';
 import { truncateUtf8, type E2EError } from '../internal/errors.ts';
+import type { SecretLedger } from '../internal/redact.ts';
 import { isTypoOf } from '../internal/suggest.ts';
 import { withAbort } from '../internal/time.ts';
 import type { ArtifactSink } from './fixtures.ts';
 import type { FailureEvidence } from './records.ts';
-import type { SessionSecrecy } from './secrecy.ts';
 
 /** The whole capture, observation and screenshot together, gets this long. */
 const EVIDENCE_TIMEOUT_MS = 5_000;
@@ -31,12 +31,12 @@ const MAX_CANDIDATE_BYTES = 1024;
 const MAX_NEAR_WORD_LENGTH = 24;
 const MAX_URL_BYTES = 2048;
 /** Report-relative path of the screen text under the attempt's artifact directory. */
-const SCREEN_FILE = 'failure/screen.txt';
+const SCREEN_FILE = 'screen-at-failure.txt';
 
 export interface FailureEvidenceOptions {
   readonly session: TargetSession;
   readonly error: E2EError;
-  readonly secrecy: SessionSecrecy;
+  readonly ledger: SecretLedger;
   readonly config: ResolvedConfig;
   /** The app base URL's origin, whose link targets the screen lists as paths. */
   readonly appOrigin: string | undefined;
@@ -57,7 +57,7 @@ export async function captureFailureEvidence(options: FailureEvidenceOptions): P
   const signal = AbortSignal.any([options.interrupt, timeout]);
   if (signal.aborted) return finish(evidence);
   const operation = options.operation(signal, EVIDENCE_TIMEOUT_MS);
-  const { redact, redactCut } = options.secrecy.ledger;
+  const { redact, redactCut } = options.ledger;
 
   // The engine is handed the budget, and the wait is abandoned at its end
   // either way: an engine stuck on a hung app may never honor it.
@@ -80,12 +80,14 @@ export async function captureFailureEvidence(options: FailureEvidenceOptions): P
   if (observation?.location !== undefined) evidence.url = truncateUtf8(observation.location, MAX_URL_BYTES);
 
   if (observation !== undefined) {
+    evidence.viewport = { width: observation.viewport.width, height: observation.viewport.height };
+    if (observation.kind === 'semantic') evidence.nodes = observation.nodes.size;
     try {
       const file = path.join(options.artifacts.dir, SCREEN_FILE);
       mkdirSync(path.dirname(file), { recursive: true });
       // An earlier run's file at the same path is overwritten: attempt
       // directories are named by test and attempt index, not by run.
-      writeFileSync(file, screenText(observation, evidence.url));
+      writeFileSync(file, `${observation.text}\n`);
       evidence.screen = options.artifacts.register('log', SCREEN_FILE);
     } catch {
       // An unwritable directory: the tree stays unrecorded.
@@ -94,9 +96,7 @@ export async function captureFailureEvidence(options: FailureEvidenceOptions): P
     if (candidates.length > 0) evidence.candidates = candidates;
   }
 
-  // Pixels only when no secret has been filled: rectangle masking cannot
-  // prove a tainted viewport redacted.
-  if (!options.secrecy.exposure.withholdsPixels && !signal.aborted) {
+  if (!signal.aborted) {
     try {
       const relative = await bounded(() => options.session.artifacts.screenshot('failure', operation));
       evidence.screenshot = options.artifacts.register('screenshot', relative);
@@ -109,20 +109,6 @@ export async function captureFailureEvidence(options: FailureEvidenceOptions): P
 
 function finish(evidence: FailureEvidence): FailureEvidence | undefined {
   return Object.keys(evidence).length === 0 ? undefined : evidence;
-}
-
-/** The screen file: a header a reader can trust, then the tree exactly as the model reads it. */
-function screenText(observation: AgentObservation, url: string | undefined): string {
-  const header = [
-    `# Screen at failure`,
-    ...(url === undefined ? [] : [`url: ${url}`]),
-    `revision: ${observation.revision}`,
-    `viewport: ${observation.viewport.width}x${observation.viewport.height}`,
-    observation.kind === 'semantic'
-      ? `nodes: ${observation.nodes.size}${observation.truncated ? ' (listing truncated)' : ''}`
-      : 'nodes: unavailable',
-  ];
-  return `${header.join('\n')}\n\n${observation.text}\n`;
 }
 
 /**

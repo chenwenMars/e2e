@@ -3,17 +3,18 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { envFlag } from '../internal/env.ts';
+import { envFlag, envValue } from '../internal/env.ts';
 import { ConfigurationError } from '../internal/errors.ts';
 import { canonicalDigest, sha256Hex } from '../internal/ids.ts';
 import { realpathOfExisting } from '../internal/paths.ts';
 import { didYouMean } from '../internal/suggest.ts';
 import { isRecordingMode, legacyTraceSpelling, RECORDING_MODES, type RecordingKind, type ResolvedRecording } from '../internal/recording-modes.ts';
 import { BUILTIN_REPORTER_LIST, BUILTIN_REPORTERS, isBuiltinReporter } from '../report/builtin.ts';
+import { ellipsize } from '../report/format.ts';
 import { isStepExecutor } from '../agent/executor.ts';
 import { compileGlob, compileGlobList, literalPrefix } from '../internal/globs.ts';
 import { isRecord } from './command.ts';
-import { boundedInt, describeValue, positiveInt } from './validate.ts';
+import { boundedInt, describeValue, positiveInt, timerMs } from './validate.ts';
 import type {
   ArtifactStore,
   ArtifactsConfig,
@@ -26,6 +27,7 @@ import type {
   SecretPurpose,
   RecordingMode,
   CacheStore,
+  TestFilter,
 } from '../types.ts';
 import { isModelInstance, resolveAgentConfig, runLimits, type ResolvedAgentConfig, type ResolvedLimits } from './agent.ts';
 import { bindTargets, digestTargets, resolveTargets, TARGET_NAME_PATTERN, type PortAssignments, type ResolvedTarget } from './targets.ts';
@@ -67,6 +69,8 @@ export interface ResolvedConfig {
   readonly cleanupTimeout: number;
   readonly retries: number;
   readonly failOnSkippedFailure: boolean;
+  /** Milliseconds the run may spend running tests before it stops; undefined for no limit. */
+  readonly maxDuration: number | undefined;
   readonly workers: number;
   /** Host store every produced artifact is handed to; undefined keeps files local only. */
   readonly artifactStore: ArtifactStore | undefined;
@@ -76,6 +80,8 @@ export interface ResolvedConfig {
   readonly reporters: readonly BuiltinReporter[];
   /** The reporter objects the config names; `--reporter` never removes one. */
   readonly customReporters: readonly Reporter[];
+  /** The test filters, in order; empty when unset. A run with `--changed-since` applies them. */
+  readonly filters: readonly TestFilter[];
   /**
    * The agents unpinned tests run as, one result each: `agents.default`, or
    * the names `--agent` gave, in order and deduplicated. Never empty.
@@ -86,6 +92,8 @@ export interface ResolvedConfig {
   /** Every configured agent, `default` included, by name. */
   readonly agents: ReadonlyMap<string, ResolvedAgentConfig>;
   readonly cache: ResolvedCacheConfig;
+  /** `--update-snapshots`: `toHaveScreenshot` rewrites a stored screenshot that differs. */
+  readonly updateSnapshots: boolean;
   readonly limits: ResolvedLimits;
   readonly credentials: ReadonlyMap<string, ResolvedCredential>;
   /** The `config.secrets` entries by name: what `secrets.get()` and an engine option take. */
@@ -131,13 +139,21 @@ export interface CacheStrictSource {
 export interface CliOverrides {
   retries?: number;
   workers?: number;
+  /** `--action-timeout <ms>`: the budget of every engine operation, over the config's `actionTimeout`. */
+  actionTimeout?: number;
+  /** `--assertion-timeout <ms>`: the default `expect` deadline, over the config's `assertionTimeout`. */
+  assertionTimeout?: number;
   reporters?: readonly BuiltinReporter[];
   /** Replay cache mode override; `--no-cache` maps to `'off'`. */
   cache?: CacheMode;
   /** `--strict-cache`: turns `cache.strict` on for the run. */
   cacheStrict?: boolean;
+  /** `--update-snapshots`: `toHaveScreenshot` rewrites a stored screenshot that differs. */
+  updateSnapshots?: boolean;
   /** `--output <dir>`: the results directory for this run, over the config's `output`. */
   output?: string;
+  /** `--cache-dir <dir>`: the replay cache directory for this run, over `E2E_CACHE_DIR` and `cache.dir`. */
+  cacheDir?: string;
   /** `--trace [mode]`: which attempts record a trace, over the config's and every target's `trace`. */
   trace?: RecordingMode;
   /** `--video [mode]`: which attempts record a video, over the config's and every target's `video`. */
@@ -157,6 +173,7 @@ const TOP_LEVEL_KEYS = new Set([
   'cleanupTimeout',
   'retries',
   'failOnSkippedFailure',
+  'maxDuration',
   'workers',
   'artifacts',
   'output',
@@ -164,6 +181,7 @@ const TOP_LEVEL_KEYS = new Set([
   'video',
   'reporters',
   'agents',
+  'filters',
   'cache',
   'credentials',
   'secrets',
@@ -245,7 +263,7 @@ export function resolveConfig(
     }
   }
 
-  const recordings = runRecordings(raw, cli, ci);
+  const recordings = runRecordings(raw, cli);
   const targets = resolveTargets(raw.targets, options.projectRoot, (target, where) => ({
     trace: targetRecording(recordings.trace, target.trace, `${where} trace`, 'trace'),
     video: targetRecording(recordings.video, target.video, `${where} video`, 'video'),
@@ -254,12 +272,18 @@ export function resolveConfig(
 
   const timeout = positiveInt(raw.timeout, 'timeout', 'milliseconds') ?? 120_000;
   const launchTimeout = positiveInt(raw.launchTimeout, 'launchTimeout', 'milliseconds') ?? 60_000;
-  const actionTimeout = positiveInt(raw.actionTimeout, 'actionTimeout', 'milliseconds') ?? 30_000;
-  const assertionTimeout = positiveInt(raw.assertionTimeout, 'assertionTimeout', 'milliseconds') ?? 5_000;
+  const configActionTimeout = positiveInt(raw.actionTimeout, 'actionTimeout', 'milliseconds');
+  const configAssertionTimeout = positiveInt(raw.assertionTimeout, 'assertionTimeout', 'milliseconds');
   const cleanupTimeout = positiveInt(raw.cleanupTimeout, 'cleanupTimeout', 'milliseconds') ?? 30_000;
+  const maxDuration = timerMs(raw.maxDuration, 'maxDuration');
 
   // CLI overrides obey the same bounds as the config keys they replace: a
-  // `--workers 0` would otherwise plan work no worker can ever take.
+  // `--workers 0` would otherwise plan work no worker can ever take. A
+  // timeout flag still leaves the config value checked, so a broken value
+  // fails with or without the flag, and it stops at what a timer can wait,
+  // as `--max-duration` does: a longer one fires at once.
+  const actionTimeout = timerMs(cli.actionTimeout, '--action-timeout') ?? configActionTimeout ?? 30_000;
+  const assertionTimeout = timerMs(cli.assertionTimeout, '--assertion-timeout') ?? configAssertionTimeout ?? 5_000;
   const retries =
     boundedInt(cli.retries, '--retries', 0, 10) ??
     boundedInt(raw.retries, 'retries', 0, 10) ??
@@ -276,14 +300,15 @@ export function resolveConfig(
 
   const artifactStore = resolveArtifactStore(raw);
   const { reporters, customReporters } = resolveReporters(raw, cli);
+  const filters = resolveTestFilters(raw.filters);
 
   const projectId = resolveProjectId(raw.projectId, options.projectRoot);
   const { credentials, secrets, allSecrets } = resolveSecrets(raw, env);
   checkEngineSecrets(targets, secrets, credentials);
   const { agents, agentNames, agent } = resolveAgents(raw.agents, cli.agents);
   const limits = runLimits(agents.values());
-  const cache = resolveCacheConfig(raw, ci, options.projectRoot, cli.cache, cli.cacheStrict === true);
-  const output = resolveOutput(raw.output, cli.output, options.projectRoot, cache.dir, tests);
+  const { cache, source: cacheSource } = resolveCacheConfig(raw, ci, options.projectRoot, cli, env);
+  const output = resolveOutput(raw.output, cli.output, options.projectRoot, cache.dir, cacheSource, tests);
 
   const resolved: ResolvedConfig = {
     projectId,
@@ -300,15 +325,18 @@ export function resolveConfig(
     cleanupTimeout,
     retries,
     failOnSkippedFailure,
+    maxDuration,
     workers,
     artifactStore,
     output,
     reporters,
     customReporters,
+    filters,
     agentNames,
     agent,
     agents,
     cache,
+    updateSnapshots: cli.updateSnapshots === true,
     limits,
     credentials,
     secrets,
@@ -337,15 +365,16 @@ export function assignPorts(config: ResolvedConfig, ports: PortAssignments): Res
  * learned unless the project says so. An explicit
  * `read-write` in the config is that statement of trust and is honored as
  * written, as is a host-supplied `cache.store`, which states its own trust
- * through the store's `writable` flag.
+ * through the store's `writable` flag. The directory comes from
+ * `resolveCacheDir`, with what named it.
  */
 function resolveCacheConfig(
   raw: E2EConfig,
   ci: boolean,
   projectRoot: string,
-  cliMode: CacheMode | undefined,
-  cliStrict: boolean,
-): ResolvedCacheConfig {
+  cli: CliOverrides,
+  env: NodeJS.ProcessEnv,
+): { readonly cache: ResolvedCacheConfig; readonly source: CacheDirSource } {
   const value = raw.cache;
   let mode: CacheMode = 'read-write';
   /** Whether the config named a mode; only a defaulted mode is demoted in CI. */
@@ -399,18 +428,56 @@ function resolveCacheConfig(
       `cache mode must be 'off', 'read-only', or 'read-write', got ${JSON.stringify(mode)}`,
     );
   }
-  if (cliMode !== undefined) mode = cliMode;
+  if (cli.cache !== undefined) mode = cli.cache;
   if (ci && mode === 'read-write' && !explicit && store === undefined) mode = 'read-only';
+  const cliStrict = cli.cacheStrict === true;
+  const cacheDir = resolveCacheDir(projectRoot, dir, store, cli.cacheDir, env);
   return {
-    mode,
-    store,
-    dir: path.resolve(projectRoot, dir ?? path.join('.e2e', 'cache')),
-    strict: strict || cliStrict ? { config: strict, flag: cliStrict } : false,
+    cache: { mode, store, dir: cacheDir.dir, strict: strict || cliStrict ? { config: strict, flag: cliStrict } : false },
+    source: cacheDir.source,
   };
 }
 
+/** What named the file store directory, for the errors that point at it. */
+type CacheDirSource = 'cache.dir' | '--cache-dir' | 'E2E_CACHE_DIR';
+
+/**
+ * The absolute file store directory and what named it: `--cache-dir`, else a
+ * non-blank `E2E_CACHE_DIR`, else `cache.dir`, else `.e2e/cache`, from the
+ * project root, with a leading `~` read as the home directory in the flag
+ * and the variable. A `cache.store` has no directory, so `--cache-dir`
+ * beside it is refused and the ambient `E2E_CACHE_DIR` is ignored.
+ */
+function resolveCacheDir(
+  projectRoot: string,
+  configured: string | undefined,
+  store: CacheStore | undefined,
+  flag: string | undefined,
+  env: NodeJS.ProcessEnv,
+): { readonly dir: string; readonly source: CacheDirSource } {
+  if (flag !== undefined) {
+    if (flag.trim() === '') throw new ConfigurationError('INVALID_CONFIG', '--cache-dir must be a non-empty path');
+    if (store !== undefined) {
+      throw new ConfigurationError('INVALID_CONFIG', '--cache-dir names a file store directory, but cache.store replaces the file store; drop one');
+    }
+    return { dir: path.resolve(projectRoot, expandHome(flag)), source: '--cache-dir' };
+  }
+  const variable = envValue(env, 'E2E_CACHE_DIR');
+  if (variable !== undefined && store === undefined) {
+    return { dir: path.resolve(projectRoot, expandHome(variable)), source: 'E2E_CACHE_DIR' };
+  }
+  return { dir: path.resolve(projectRoot, configured ?? path.join('.e2e', 'cache')), source: 'cache.dir' };
+}
+
+/** `value` with a leading `~` or `~/` read as the home directory, which no shell expands in an env file or `--flag=~/x`. */
+function expandHome(value: string): string {
+  if (value === '~') return os.homedir();
+  if (value.startsWith('~/') || value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
 /** The directories under the output a run clears or owns, which nothing else may live in. */
-const OUTPUT_OWNED_DIRS = ['artifacts', 'sessions', 'videos'] as const;
+const OUTPUT_OWNED_DIRS = ['results', 'sessions', 'videos'] as const;
 
 /** Whether `inner` is `outer` or a path below it. */
 function isWithin(inner: string, outer: string): boolean {
@@ -428,7 +495,7 @@ function nearestExisting(target: string): string | undefined {
 
 /**
  * Resolves the results directory, `--output` over the config's `output`,
- * from the project root. A run clears `<output>/artifacts` and writes over
+ * from the project root. A run clears `<output>/results` and writes over
  * its reports, so the directory must be one it can own: a directory (or a
  * path that does not exist yet) inside the project root and not the root
  * itself, not holding the directory a test glob scans, not the cache
@@ -443,6 +510,7 @@ function resolveOutput(
   flag: string | undefined,
   projectRoot: string,
   cacheDir: string,
+  cacheSource: CacheDirSource,
   tests: readonly string[],
 ): string {
   const where = flag === undefined ? 'output' : '--output';
@@ -458,7 +526,7 @@ function resolveOutput(
   const root = realpathOfExisting(projectRoot);
   const real = realpathOfExisting(output);
   const cache = realpathOfExisting(cacheDir);
-  if (real === root) refuse("is the project root; the run clears <output>/artifacts, so name a directory of its own, such as '.e2e'");
+  if (real === root) refuse("is the project root; the run clears <output>/results, so name a directory of its own, such as '.e2e'");
   if (!isWithin(real, root)) refuse(`is outside the project root ${projectRoot}; name a directory inside it`);
   const existing = nearestExisting(output);
   if (existing !== undefined && !statSync(existing).isDirectory()) {
@@ -471,7 +539,7 @@ function resolveOutput(
   if (isWithin(real, cache)) refuse(`is the cache directory ${path.relative(root, cache)} or inside it; keep results and the replay cache apart`);
   for (const owned of OUTPUT_OWNED_DIRS) {
     if (isWithin(cache, realpathOfExisting(path.join(output, owned)))) {
-      refuse(`would hold cache.dir ${path.relative(root, cache)} under ${owned}/, which the run owns; move cache.dir or the output`);
+      refuse(`would hold ${cacheSource} ${path.relative(root, cache)} under ${owned}/, which the run owns; move ${cacheSource} or the output`);
     }
   }
   for (const pattern of tests) {
@@ -580,13 +648,13 @@ interface RunRecording {
 }
 
 /**
- * The run's `trace` and `video` modes before any target speaks. A trace is
- * on by default locally and recorded on the first retry in CI, where a
- * trace of every attempt is the cost of a large share of the run.
+ * The run's `trace` and `video` modes before any target speaks. A failed
+ * attempt keeps its trace by default, locally and in CI alike: the trace is
+ * the runner's own text, cheap to write and worth reading on every failure.
  */
-function runRecordings(raw: E2EConfig, cli: CliOverrides, ci: boolean): Readonly<Record<RecordingKind, RunRecording>> {
+function runRecordings(raw: E2EConfig, cli: CliOverrides): Readonly<Record<RecordingKind, RunRecording>> {
   return {
-    trace: { cli: recordingMode(cli.trace, '--trace', 'trace'), config: recordingMode(raw.trace, 'trace', 'trace'), fallback: ci ? 'on-first-retry' : 'on' },
+    trace: { cli: recordingMode(cli.trace, '--trace', 'trace'), config: recordingMode(raw.trace, 'trace', 'trace'), fallback: 'retain-on-failure' },
     video: { cli: recordingMode(cli.video, '--video', 'video'), config: recordingMode(raw.video, 'video', 'video'), fallback: 'off' },
   };
 }
@@ -648,6 +716,54 @@ function resolveReporters(
     throw new ConfigurationError('INVALID_CONFIG', 'the json renderer cannot be combined with list');
   }
   return { reporters, customReporters };
+}
+
+const MAX_FILTER_NAME = 256;
+
+/**
+ * Resolves `filters`: a list of test filters, each checked structurally,
+ * never with `instanceof`, since the config may import another copy of
+ * `e2e`. A filter's name is how the report and errors tell it apart, so
+ * names are unique. Workers resolve it too and never call a filter, so the
+ * check stays synchronous.
+ */
+function resolveTestFilters(raw: E2EConfig['filters']): readonly TestFilter[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ConfigurationError('INVALID_CONFIG', 'filters must be a list of test filters: filters: [{ name, filter(tests, context) }]');
+  }
+  const names = new Set<string>();
+  return Array.from(raw as readonly unknown[], (value, index) => {
+    const label = `filters[${index}]`;
+    if (typeof value === 'function') {
+      throw new ConfigurationError('INVALID_CONFIG', `${label} is ${value.name ? `the function ${value.name}` : 'a function'}; call it, such as filters: [decisionFilter({ model })]`);
+    }
+    if (!isTestFilter(value)) {
+      throw new ConfigurationError('INVALID_CONFIG', `${label} must be a TestFilter: { name, filter(tests, context) }`);
+    }
+    const { name } = value;
+    if (!TARGET_NAME_PATTERN.test(name)) {
+      throw new ConfigurationError(
+        'INVALID_CONFIG',
+        `invalid filter name ${JSON.stringify(name)}: names are ASCII letters, numbers, "_", "-", or ".", and cannot be only dots`,
+      );
+    }
+    if (name.length > MAX_FILTER_NAME) {
+      throw new ConfigurationError('INVALID_CONFIG', `filter name ${JSON.stringify(ellipsize(name, 32))} is longer than ${MAX_FILTER_NAME} characters`);
+    }
+    if (names.has(name)) {
+      throw new ConfigurationError('INVALID_CONFIG', `filters has two filters named ${JSON.stringify(name)}; the report tells filters apart by name`);
+    }
+    names.add(name);
+    return value;
+  });
+}
+
+/** Structural test filter check: a string name and a `filter` function. */
+function isTestFilter(value: unknown): value is TestFilter {
+  if (typeof value !== 'object' || value === null) return false;
+  const { name, filter } = value as { name?: unknown; filter?: unknown };
+  return typeof name === 'string' && typeof filter === 'function';
 }
 
 /** Structural reporter check: a non-empty name and at least one handler, each a function when present. */
@@ -747,8 +863,9 @@ function resolveProjectId(explicit: string | undefined, projectRoot: string): st
   const packageJsonPath = path.join(projectRoot, 'package.json');
   if (existsSync(packageJsonPath)) {
     try {
-      const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { name?: unknown };
-      if (typeof parsed.name === 'string' && parsed.name.length > 0) return parsed.name;
+      const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+      const name = isRecord(parsed) ? parsed['name'] : undefined;
+      if (typeof name === 'string' && name.length > 0) return name;
     } catch {
       // fall through to hashed identity
     }
@@ -975,11 +1092,16 @@ function computeConfigDigest(
   // reporter object changes nothing about what a run records, so it never
   // enters the digest either; the built-in ids digest as they always have,
   // so adding a reporter to a config leaves its cache valid.
-  // `failOnSkippedFailure` decides only the exit code, never what runs.
+  // `failOnSkippedFailure` decides only the exit code, never what runs, and
+  // `maxDuration` only when the run stops. A test filter decides what runs
+  // before any worker starts and never changes what a test does, so adding
+  // one leaves the replays valid, like a reporter.
   // `targets` digest by declaration below and never enter the clone: an
   // engine holds `secrets.get()` handles, which refuse to serialize.
   const {
     failOnSkippedFailure: _failOnSkippedFailure,
+    maxDuration: _maxDuration,
+    filters: _filters,
     artifacts: _artifacts,
     output: _output,
     trace: _trace,

@@ -14,16 +14,18 @@ import type { ActionTrace, TraceEntry } from './trace.ts';
 /**
  * Whether a trace establishes its own starting point by navigating first.
  * Such a trace needs no start-path precondition — and a trace with neither
- * anchor can never replay at all, so it is not worth writing.
+ * anchor can never replay at all, so it is not worth writing. A resize
+ * before the navigate does not depend on the route, so it is passed over.
  */
 export function opensWithNavigate(trace: ActionTrace): boolean {
-  return trace.actions.find((action) => action.name !== 'tool')?.name === 'navigate';
+  return trace.actions.find((action) => action.name !== 'tool' && action.name !== 'resize')?.name === 'navigate';
 }
 
 /**
  * The full miss vocabulary of the report. `retry` is assigned before any read:
- * a retry attempt records but never replays. `no-entry` and `invalid-entry`
- * are assigned by the store-read path; this decision produces the other two.
+ * outside `cache.strict`, a retry attempt records but never replays (a strict
+ * retry replays and records nothing). `no-entry` and `invalid-entry` are
+ * assigned by the store-read path; this decision produces the other two.
  */
 export type TraceReplayMissReason = 'retry' | 'no-entry' | 'invalid-entry' | 'truncated' | 'wrong-context';
 

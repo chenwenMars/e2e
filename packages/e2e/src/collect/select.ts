@@ -2,9 +2,10 @@
 
 import { ConfigurationError, CollectionError } from '../internal/errors.ts';
 import { resultId } from '../internal/ids.ts';
+import { expectedFailureOption } from '../internal/expected-failure.ts';
 import { didYouMean, suggestionNote } from '../internal/suggest.ts';
 import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
-import { attemptRecording, type AttemptRecordings, type RecordingKind, type ResolvedRecording } from '../internal/recording-modes.ts';
+import { attemptKeep, attemptVideo, type AttemptRecordings, type RecordingKind, type ResolvedRecording } from '../internal/recording-modes.ts';
 import type { Capability, RecordingMode, TestOptions } from '../types.ts';
 import { excludingEntry, type Collection, type CollectedTest, type UncollectedFile } from './collect.ts';
 import { groupChain } from './registry.ts';
@@ -24,6 +25,8 @@ export interface ResolvedTestOptions {
    */
   readonly agents: readonly string[];
   readonly skipReason: string | undefined;
+  /** Why the test is expected to fail (its `fail` option), or undefined when it is not. */
+  readonly expectedFailure: string | undefined;
   readonly serial: boolean;
   /**
    * The test's own `trace`, innermost layer first; undefined leaves it to
@@ -35,17 +38,29 @@ export interface ResolvedTestOptions {
   readonly video: RecordingMode | undefined;
 }
 
-export interface SkipInfo {
-  readonly cause:
-    | 'explicit'
-    | 'filtered'
-    | 'platform-unavailable'
-    | 'capability-unavailable'
-    | 'setup-failed'
-    | 'serial-predecessor-failed'
-    | 'hook-failed'
-    | 'infrastructure-unavailable'
-    | 'failure-limit';
+/** Why a pair did not run; only a `filtered` one can name the test filter that left it out. */
+export type SkipInfo =
+  | (SkipDetail & {
+      readonly cause: 'filtered';
+      /** The name of the test filter that left the test out; absent when the selection did, as with `--tag`. */
+      readonly filter?: string;
+    })
+  | (SkipDetail & {
+      readonly cause:
+        | 'explicit'
+        | 'platform-unavailable'
+        | 'capability-unavailable'
+        | 'setup-failed'
+        | 'serial-predecessor-failed'
+        | 'hook-failed'
+        | 'infrastructure-unavailable'
+        | 'failure-limit'
+        | 'time-limit';
+      readonly filter?: never;
+    });
+
+/** What a skip says whatever its cause: why, and the id of a related test, such as the setup that failed. */
+interface SkipDetail {
   readonly reason: string;
   readonly relatedId?: string;
 }
@@ -80,6 +95,12 @@ export interface Selection {
   readonly perTarget: readonly TargetSelection[];
 }
 
+/** Why a test filter left a test out: the filter's name and its reason. */
+export interface TestExclusion {
+  readonly filter: string;
+  readonly reason: string;
+}
+
 /** How several `--tag` values combine: a test carries any of them, or every one. */
 export type TagMode = 'any' | 'all';
 
@@ -105,8 +126,14 @@ export interface SelectionFilters {
    * is selected.
    */
   readonly lastFailed?: ReadonlySet<string>;
-  /** The one shard of the selection to run, once every other filter applied (`--shard`). */
+  /** The one shard of the selection to run, cut once every flag applied and before the test filters (`--shard`). */
   readonly shard?: Shard;
+  /**
+   * Tests the `filters` left out, by test id. Only the pairs the shard
+   * would run are left out, and a serial group with a kept member stays
+   * whole.
+   */
+  readonly excluded?: ReadonlyMap<string, TestExclusion>;
   readonly targetIds?: readonly string[];
 }
 
@@ -195,6 +222,7 @@ export function resolveOptions(test: CollectedTest, config: ResolvedConfig): Res
     agents: effectiveAgents(test, pin, config.agentNames),
     agentContext: agentContextParts.length === 0 ? undefined : agentContextParts.join('\n'),
     skipReason,
+    expectedFailure: expectedFailureOption(test.options.fail),
     serial: serialRoot !== undefined,
     trace,
     video,
@@ -212,11 +240,11 @@ export function pairRecording(pair: Pick<TestTargetPair, 'options' | 'target'>, 
   return own === undefined ? pair.target[kind] : { mode: own, source: 'test' };
 }
 
-/** What an attempt of a pair at `attemptIndex` records: one decision for the trace and the video alike. */
+/** What an attempt of a pair at `attemptIndex` captures: one keep decision for the trace and the video alike. */
 export function pairRecordings(pair: Pick<TestTargetPair, 'options' | 'target'>, attemptIndex: number): AttemptRecordings {
   return {
-    trace: attemptRecording(pairRecording(pair, 'trace'), attemptIndex),
-    video: attemptRecording(pairRecording(pair, 'video'), attemptIndex),
+    trace: attemptKeep(pairRecording(pair, 'trace').mode, attemptIndex),
+    video: attemptVideo(pairRecording(pair, 'video'), attemptIndex),
   };
 }
 
@@ -324,7 +352,7 @@ export function select(
   collection: Collection,
   config: ResolvedConfig,
   filters: SelectionFilters = {},
-  flags: { passWithNoTests?: boolean } = {},
+  flags: { passWithNoTests?: boolean; noTestsHint?: string } = {},
 ): Selection {
   const tagMode = filters.tagMode ?? 'any';
   const targets = selectTargets(config.targets, filters.targetIds);
@@ -366,7 +394,13 @@ export function select(
 
   const withClosure = applySerialClosure(pairs);
   const withShard = filters.shard === undefined ? withClosure : applyShard(withClosure, filters.shard);
-  const withSessions = applySessionSelection(withShard, sessionProducers, collection.uncollected);
+  // The test filters judged the pairs this shard runs, serial groups already
+  // whole, so what they left out is taken from those, and a group with a
+  // kept member comes back whole. The shard is cut before they decide, so
+  // shard machines agree on the cut whatever a filter answers.
+  const withExclusions =
+    filters.excluded === undefined ? withShard : applySerialClosure(applyExclusions(withShard, filters.excluded));
+  const withSessions = applySessionSelection(withExclusions, sessionProducers, collection.uncollected);
 
   const runnableOrdinary = withSessions.filter(
     (pair) => pair.disposition === 'run' && pair.test.kind === 'test',
@@ -374,7 +408,7 @@ export function select(
   if (runnableOrdinary.length === 0 && flags.passWithNoTests !== true) {
     throw new ConfigurationError(
       'NO_TESTS',
-      `${describeNoTests(collection, config, filters, withSessions)}; pass --pass-with-no-tests to allow this`,
+      `${describeNoTests(collection, config, filters, withSessions)}; ${flags.noTestsHint ?? 'pass --pass-with-no-tests to allow this'}`,
     );
   }
 
@@ -444,6 +478,10 @@ function describeNoTests(
   if (discovered.length === 0) {
     const globs = config.tests.map((glob) => `"${glob}"`).join(', ');
     const where = `no test file matched ${globs} under ${config.projectRoot}`;
+    const javascript = ['.e2e.js', '.e2e.mjs'].find((suffix) => nearMisses.length > 0 && nearMisses.every((file) => file.endsWith(suffix)));
+    if (javascript !== undefined) {
+      return `${where}; found ${nameFiles(nearMisses)}, which the pattern does not match: set tests in the config to a glob such as "tests/**/*${javascript}"`;
+    }
     if (nearMisses.length > 0) {
       return `${where}; found ${nameFiles(nearMisses)}, which the pattern does not match: rename to *.e2e.ts, or set tests in the config to a glob that matches`;
     }
@@ -719,6 +757,19 @@ function classifyPair(
   return { ...base, disposition: 'run', skip: undefined };
 }
 
+/**
+ * Every pair the selection would run of a test the `filters` left out,
+ * reported as left out by the filter that named it. Skipped and
+ * filtered pairs keep their own reason: a filter only takes away what runs.
+ */
+function applyExclusions(pairs: readonly TestTargetPair[], excluded: ReadonlyMap<string, TestExclusion>): TestTargetPair[] {
+  return pairs.map((pair) => {
+    const left = pair.disposition === 'run' && pair.test.kind === 'test' ? excluded.get(pair.test.id) : undefined;
+    if (left === undefined) return pair;
+    return { ...pair, disposition: 'filtered' as const, skip: { cause: 'filtered' as const, reason: left.reason, filter: left.filter } };
+  });
+}
+
 function applySerialClosure(pairs: readonly TestTargetPair[]): TestTargetPair[] {
   // A serial group is one unit per target and agent; members of one variant
   // are selected together and never pull another variant in.
@@ -769,9 +820,12 @@ function shardItem(pair: TestTargetPair): string {
  * Keeps the shard's contiguous slice of the items and leaves the rest
  * unselected. Contiguous rather than dealt round-robin so a shard's tests
  * come from as few files as possible; the slices differ in size by at most
- * one item, the first shards taking the remainder. Applied after every other
- * filter and the serial closure, before the setup tests are chosen, so each
- * shard brings only the setups it needs.
+ * one item, the first shards taking the remainder. Applied after every flag
+ * and the serial closure, before the test filters' exclusions and before the
+ * setup tests are chosen, so the cut never depends on what a filter answers
+ * and each shard brings only the setups it needs. A skipped test is not an
+ * item: the shard holding the item before it in report order reports it, the
+ * first shard when none comes before, so the shards together report it once.
  */
 function applyShard(pairs: readonly TestTargetPair[], shard: Shard): TestTargetPair[] {
   const items = shardItems(pairs);
@@ -780,8 +834,13 @@ function applyShard(pairs: readonly TestTargetPair[], shard: Shard): TestTargetP
   const from = (shard.index - 1) * size + Math.min(shard.index - 1, remainder);
   const to = from + size + (shard.index - 1 < remainder ? 1 : 0);
   const kept = new Set(items.slice(from, to));
+  let previousKept = shard.index === 1;
   return pairs.map((pair) => {
-    if (pair.disposition !== 'run' || pair.test.kind !== 'test' || kept.has(shardItem(pair))) return pair;
+    if (pair.test.kind !== 'test') return pair;
+    if (pair.disposition === 'filtered') return pair;
+    if (pair.disposition === 'skip') return previousKept ? pair : { ...pair, disposition: 'filtered' as const };
+    previousKept = kept.has(shardItem(pair));
+    if (previousKept) return pair;
     return { ...pair, disposition: 'filtered' as const, skip: { cause: 'filtered' as const, reason: FILTERED_REASON.shard } };
   });
 }

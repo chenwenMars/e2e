@@ -1,19 +1,25 @@
 /**
  * Human-readable list reporter, styled after vitest's default reporter: one
  * block per test file and target with each test's agent steps nested, a
- * `Failed Tests` section with code frames, and a padded summary. On a TTY a
+ * `Failed Tests` section with code frames, cleanup failures shown under a
+ * passed test and in the summary, and a padded summary. On a TTY a
  * live window below the log shows the running tree (`RunningTree`) and the
  * counters.
  */
 
 import path from 'node:path';
 import picocolors from 'picocolors';
+import type { SkipInfo } from '../collect/select.ts';
 import type { SerializedError } from '../internal/errors.ts';
+import { resultId } from '../internal/ids.ts';
 import { packageVersion } from '../internal/package-version.ts';
 import type { RunEvent, RunEventFact, RunEventOf, RunEventResult, SetupStep } from '../run/events.ts';
-import { failureBeforeSkip, type ArtifactRecord, type AttemptRecord, type FailureEvidence, type ResultStatus, type SerialGroupRecord } from '../run/records.ts';
+import type { AppLogRecord, StepRecord } from '../run/steps.ts';
+import { cleanupErrorsOf, expectedFailureOf, failureBeforeSkip, type ArtifactRecord, type AttemptRecord, type AttemptStatus, type FailureEvidence, type ResultStatus, type SerialGroupRecord } from '../run/records.ts';
 import type { Reporter, ReporterSummary } from '../types.ts';
+import { projectSource } from './build.ts';
 import { codeFrame, userFrame } from './code-frame.ts';
+import { appErrorsOf, type AppErrors } from './failure-text.ts';
 import {
   addCacheTally,
   addModelTally,
@@ -33,10 +39,12 @@ import {
   formatClock,
   formatTime,
   modelsText,
+  notSavedCount,
   padTitle,
   rule,
   stateString,
   statusBucket,
+  STATUS_WORD,
   stepsCacheTally,
   repeatSuffix,
   stepsModelTally,
@@ -51,9 +59,10 @@ import {
   type Counters,
   type ModelTally,
 } from './format.ts';
+import { leftOutTests } from './left-out.ts';
 import { ExploreView } from './list-explore.ts';
-import { isShownEvent, type FileGroup, type RunningTest, type TestLine } from './list-model.ts';
-import { stepLine } from './list-steps.ts';
+import { isShownEvent, type ConfiguredModel, type FileGroup, type ReplayNotice, type RunningTest, type TestLine } from './list-model.ts';
+import { replayLine, replayNotices, stepLine } from './list-steps.ts';
 import { LiveWindow } from './live-window.ts';
 import { repeatGroups, repeatLine, repeatSummary, type RepeatRun } from './repeats.ts';
 import { RunningTree } from './running-tree.ts';
@@ -75,6 +84,8 @@ const BADGE_COLORS = ['bgYellowBright', 'bgCyanBright', 'bgGreenBright', 'bgMage
 
 /** Indentation of the `→ first error line` under a failed test in a file block. */
 const ERROR_GLANCE_INDENT = 7;
+/** How many `app.screenshot` files the summary names before it counts the rest. */
+const SHOWN_SCREENSHOTS = 10;
 
 export interface ListReporterOutput {
   write(line: string): void;
@@ -108,13 +119,51 @@ interface ResultDetails {
   readonly error: SerializedError | undefined;
   /** Where the recordings the attempts kept are, in attempt order: report-relative paths, or hosted URLs. */
   readonly videos: readonly string[];
+  /** Report-relative paths of the screenshots `app.screenshot` took, in attempt order. */
+  readonly screenshots: readonly string[];
   /** What the runner saw when the last failure landed, with the screen text's report path when it kept one. */
   readonly failure: FailureEvidence | undefined;
   readonly screenPath: string | undefined;
+  /** What the app logged during the told attempt that went wrong; undefined for nothing. */
+  readonly appLog: AppLogSummary | undefined;
+  /** Cleanup-phase secondary errors of attempts whose cleanup failed; shown under a passed or flaky test. */
+  readonly cleanupErrors: readonly SerializedError[];
+  /** Why the told attempt skipped itself, when it failed anyway. */
+  readonly skipReason: string | undefined;
+  readonly replays: readonly ReplayNotice[];
+}
+
+/** The app log lines that say something went wrong: the tally, and the errors a failure block quotes. */
+interface AppLogSummary {
+  /** `2 errors, 1 warning`. */
+  readonly tally: string;
+  readonly errors: AppErrors;
+}
+
+/** What went wrong in the app log, or undefined when nothing did. */
+function appLogSummary(appLog: readonly AppLogRecord[]): AppLogSummary | undefined {
+  const errors = appErrorsOf(appLog);
+  const warnings = appLog.filter((entry) => entry.level === 'warning').length;
+  const parts = [
+    ...(errors.count === 0 ? [] : [`${errors.count} ${errors.count === 1 ? 'error' : 'errors'}`]),
+    ...(warnings === 0 ? [] : [`${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`]),
+  ];
+  return parts.length === 0 ? undefined : { tally: parts.join(', '), errors };
+}
+
+/**
+ * The steps a passed or flaky result counts as not saved: its latest passing
+ * run's, since a retry may have saved what an earlier attempt did not.
+ */
+function passingRunSteps(
+  runs: readonly ({ readonly status: AttemptStatus; readonly steps: readonly StepRecord[] } | undefined)[],
+  passed: boolean,
+): readonly StepRecord[] {
+  return (passed ? runs.findLast((run) => run?.status === 'passed')?.steps : undefined) ?? [];
 }
 
 /** Details of an ordinary result: summed over its attempts, the error from the last. */
-function attemptDetails(attempts: readonly AttemptRecord[]): ResultDetails {
+function attemptDetails(attempts: readonly AttemptRecord[], passed: boolean, configured: ConfiguredModel | undefined): ResultDetails {
   const steps = attempts.map((attempt) => attempt.steps);
   // A retry the run interrupted tells nothing; the failure before it is the verdict.
   const told = attempts.findLast((attempt) => attempt.status !== 'interrupted') ?? attempts.at(-1);
@@ -122,10 +171,15 @@ function attemptDetails(attempts: readonly AttemptRecord[]): ResultDetails {
     durationMs: attempts.reduce((total, attempt) => total + attempt.durationMs, 0),
     usage: stepsUsage(steps),
     models: stepsModelTally(steps),
-    cache: stepsCacheTally(steps),
+    cache: { ...stepsCacheTally(steps), notSaved: notSavedCount(passingRunSteps(attempts, passed)) },
     error: told?.error,
     videos: videoPaths(attempts),
+    screenshots: attempts.flatMap((attempt) => requestedScreenshots(attempt.steps, attempt.artifacts)),
     ...failureOf(told),
+    appLog: appLogSummary(told?.appLog ?? []),
+    cleanupErrors: cleanupErrorsOf(attempts),
+    skipReason: told?.status === 'skipped' ? undefined : told?.skip?.reason,
+    replays: replayNotices(steps, configured),
   };
 }
 
@@ -151,6 +205,19 @@ function videoPaths(attempts: readonly { readonly artifacts: readonly ArtifactRe
   return paths;
 }
 
+/** Report-relative paths of the screenshots the `app.screenshot` steps among `steps` attached, in step order. */
+function requestedScreenshots(steps: readonly StepRecord[], artifacts: readonly ArtifactRecord[]): string[] {
+  const paths: string[] = [];
+  for (const step of steps) {
+    if (step.api !== 'app.screenshot') continue;
+    for (const id of step.artifacts) {
+      const where = artifacts.find((artifact) => artifact.id === id && artifact.kind === 'screenshot')?.path;
+      if (where !== undefined) paths.push(where);
+    }
+  }
+  return paths;
+}
+
 /**
  * Details of one serial member, read from its group: member results carry no
  * attempts of their own. Duration and usage sum over every group attempt the
@@ -158,7 +225,7 @@ function videoPaths(attempts: readonly { readonly artifacts: readonly ArtifactRe
  * that attempt never ran (skipped, or absent after a launch failure) inherits
  * the attempt's error, since that is what stopped it.
  */
-function serialMemberDetails(group: SerialGroupRecord, testId: string): ResultDetails {
+function serialMemberDetails(group: SerialGroupRecord, testId: string, passed: boolean, configured: ConfiguredModel | undefined): ResultDetails {
   const runs = group.attempts.map((attempt) => ({
     attempt,
     member: attempt.members.find((member) => member.testId === testId),
@@ -171,24 +238,44 @@ function serialMemberDetails(group: SerialGroupRecord, testId: string): ResultDe
     durationMs: runs.reduce((total, run) => total + (run.member?.durationMs ?? 0), 0),
     usage: stepsUsage(steps),
     models: stepsModelTally(steps),
-    cache: stepsCacheTally(steps),
+    cache: { ...stepsCacheTally(steps), notSaved: notSavedCount(passingRunSteps(runs.map((run) => run.member), passed)) },
     error: own?.error ?? (neverRan ? last?.attempt.error : undefined),
     // The group's recording covers every member, so a failed member points at it.
     videos: videoPaths(group.attempts),
+    screenshots: runs.flatMap((run) => requestedScreenshots(run.member?.steps ?? [], run.attempt.artifacts)),
     ...failureOf(own === undefined ? undefined : { failure: own.failure, artifacts: last?.attempt.artifacts ?? [] }),
+    appLog: appLogSummary(own?.appLog ?? []),
+    cleanupErrors: cleanupErrorsOf(group.attempts),
+    skipReason: neverRan ? undefined : own.skip?.reason,
+    replays: replayNotices(steps, configured),
   };
+}
+
+/** The list row's mark for a result whose `test.fail` mark covered its last attempt's failure. */
+function expectedFailureLine(result: RunEventResult): Pick<TestLine, 'expectedFailure'> {
+  const mark = expectedFailureOf(result);
+  if (mark?.error === undefined) return {};
+  const [first = ''] = bounded(`${mark.error.code}: ${mark.error.message}`).split('\n');
+  return { expectedFailure: { reason: bounded(mark.reason), errorLine: first } };
 }
 
 /** One failed pair, held for the `Failed Tests` section, or a skipped one for `Skipped After Failure`. */
 interface Failure {
+  /** The report result id, which keys the result's trace page. */
+  readonly id: string;
   readonly group: FileGroup;
   readonly title: string;
+  /** The line the test is declared on, where its file's run names it. */
+  readonly declaredLine: number | undefined;
   readonly status: ResultStatus;
   readonly error: SerializedError | undefined;
   /** Where the recordings the failed attempts kept are, if any: report-relative paths, or hosted URLs. */
   readonly videos: readonly string[];
   readonly failure: FailureEvidence | undefined;
   readonly screenPath: string | undefined;
+  readonly appLog: AppLogSummary | undefined;
+  /** Why a failed test skipped itself: the skip did not outrank the failure. */
+  readonly skipReason?: string | undefined;
 }
 
 const DEFAULT_OUTPUT: ListReporterOutput = {
@@ -227,6 +314,12 @@ export class ListReporter implements Reporter {
   private readonly live: boolean;
   private readonly failures: Failure[] = [];
   private readonly skippedFailures: Failure[] = [];
+  /** Every result a test filter left out, in the order they arrived, for the `Left out` row. */
+  private readonly leftOut: { readonly testId: string; readonly skip: SkipInfo | undefined }[] = [];
+  /** Passed or flaky tests whose cleanup failed, for the summary's `Cleanup` row. */
+  private readonly cleanupFailures: { readonly title: string; readonly error: SerializedError }[] = [];
+  /** Report-relative paths of every `app.screenshot` file, in result order, for the `Screenshots` row. */
+  private readonly screenshots: string[] = [];
   /** Every finished test's run, for the `Repeats` summary of a `--repeat-each` run. */
   private readonly runs: { key: string; label: string; run: RepeatRun }[] = [];
   /**
@@ -265,14 +358,19 @@ export class ListReporter implements Reporter {
    * there only when no step named one.
    */
   private models: string | undefined;
+  private configuredModel: ConfiguredModel | undefined;
   /**
    * The exploration an `e2e explore` run reports through `explore` events;
    * while present, its view stands in for the one synthetic test's file
    * block, live rows, failure entry, and test counters.
    */
   private explore: ExploreView | undefined;
+  /** The target the exploration's test started on, kept past the test's end for the record. */
+  private exploredTarget: string | undefined;
   /** The stream and source of the output line printed last, while nothing else printed since. */
   private lastOutput: string | undefined;
+  /** The `Failed` rows `runFinished` leaves for `rows` to print last. */
+  private closingRows: string[] = [];
   /**
    * Output not yet ended by a newline, by stream and source: a line written
    * in pieces prints once whole. Flushed when its test's result arrives and
@@ -463,6 +561,7 @@ export class ListReporter implements Reporter {
 
   private runStarted(event: RunEventOf<'run-started'>): void {
     const { pc } = this;
+    this.configuredModel = event.model === undefined ? undefined : { label: event.model, agent: event.agents?.[0] ?? 'default' };
     this.projectRoot = event.projectRoot;
     this.artifactsRoot = event.artifactsRoot;
     this.targets = event.targets;
@@ -505,8 +604,9 @@ export class ListReporter implements Reporter {
    * then the services and app commands. Without this the window showed only
    * zero counters while a database booted or a browser downloaded. The step
    * in flight ticks in the live window; a finished process prints once with
-   * its wait, a finished collection or provisioning only when it narrated;
-   * the process waits sum into the summary's startup split.
+   * its wait, a finished collection, provisioning, or filter only when it
+   * narrated, a filter that failed or timed out in yellow and never checked
+   * off; the process waits sum into the summary's startup split.
    */
   private setupStep(event: RunEventOf<'setup'>): void {
     const { pc } = this;
@@ -522,6 +622,10 @@ export class ListReporter implements Reporter {
     if (process) this.startupMs += event.durationMs;
     if (!process && !narrated) {
       this.window.redraw();
+      return;
+    }
+    if (event.outcome !== undefined && event.outcome !== 'reused') {
+      this.print(` ${pc.yellow(F_CROSS)} ${subject} ${pc.yellow(`${STATUS_WORD[event.outcome]} ${formatTime(event.durationMs)}`)}`);
       return;
     }
     const outcome = event.outcome ?? done;
@@ -654,17 +758,20 @@ export class ListReporter implements Reporter {
    * rather than failing the run.
    */
   private detailsOf(result: RunEventResult): ResultDetails {
-    if (result.serialGroupId === undefined) return attemptDetails(result.attempts);
+    const configured = this.configuredModel?.agent === result.agent ? this.configuredModel : undefined;
+    const passed = result.status === 'passed' || result.status === 'flaky';
+    if (result.serialGroupId === undefined) return attemptDetails(result.attempts, passed, configured);
     const pending = this.pendingSerial.get(result.serialGroupId);
-    if (pending === undefined) return attemptDetails([]);
+    if (pending === undefined) return attemptDetails([], passed, configured);
     pending.remaining -= 1;
     if (pending.remaining <= 0) this.pendingSerial.delete(result.serialGroupId);
-    return serialMemberDetails(pending.group, result.test.id);
+    return serialMemberDetails(pending.group, result.test.id, passed, configured);
   }
 
   private testFinished(result: RunEventResult): void {
     // Unselected pairs are report-only: they never print and the plan never
-    // counted them.
+    // counted them. The ones a filter left out are counted for the summary.
+    if (result.skip?.filter !== undefined) this.leftOut.push({ testId: result.test.id, skip: result.skip });
     if (!result.selected) return;
     const key = pairKey(result.test.id, result.agent, result.target.name, result.repeat);
     this.flushOutput(key);
@@ -673,16 +780,24 @@ export class ListReporter implements Reporter {
     const group = this.group(result.test.file, result.target.name);
     // Read before `detailsOf` releases the result's serial group.
     const skippedAfter = failureBeforeSkip(result, (id) => this.pendingSerial.get(id)?.group);
-    const { durationMs, usage, models, cache, error, videos, failure, screenPath } = this.detailsOf(result);
+    const id = resultId(result.test.id, result.target.name, result.agent, result.repeat);
+    const { durationMs, usage, models, cache, error, videos, screenshots, failure, screenPath, appLog, skipReason, replays, cleanupErrors } =
+      this.detailsOf(result);
+    this.screenshots.push(...screenshots);
     addUsage(this.runUsage, usage);
     addModelTally(this.runModels, models);
     addCacheTally(this.runCache, cache);
     const title = this.titledAs(result.test.titlePath.join(' > '), result.agent, result.repeat);
+    const declared = projectSource(this.projectRoot, result.test.source, result.test.file);
+    const declaredLine = declared?.file === result.test.file ? declared.line : undefined;
+    if (cleanupErrors.length > 0) {
+      this.cleanupFailures.push({ title, error: cleanupErrors[0]! });
+    }
     if (this.explore !== undefined) {
       // The exploration's verdict is its findings; any other error is a failure of its own, unless the run stopped it.
       this.explore.result(result.attempts.flatMap((attempt) => attempt.artifacts));
       if (error !== undefined && result.status !== 'interrupted' && !this.explore.isVerdict(error)) {
-        this.failures.push({ group, title, status: result.status, error, videos, failure, screenPath });
+        this.failures.push({ id, group, title, declaredLine, status: result.status, error, videos, failure, screenPath, appLog });
       }
       this.window.redraw();
       return;
@@ -695,9 +810,13 @@ export class ListReporter implements Reporter {
       usage,
       firstErrorLine: error === undefined ? undefined : bounded(error.message).split('\n')[0],
       skipReason: result.skip === undefined ? undefined : bounded(result.skip.reason),
+      ...expectedFailureLine(result),
+      cleanupErrors,
       steps,
+      replays,
     };
     group.lines.push(line);
+    if (!this.live) this.printTestRows(line, `${this.badge(group.target)} ${bounded(group.file)}${this.separator}`);
     this.runs.push({
       key: `${result.test.id}@${result.agent}@${result.target.name}`,
       label: `${this.badge(group.target)} ${bounded(group.file)}${this.separator}${this.titledAs(result.test.titlePath.join(' > '), result.agent, 0)}`,
@@ -705,10 +824,10 @@ export class ListReporter implements Reporter {
       run: { repeat: result.repeat, status: result.status, code: error?.code ?? result.attempts.findLast((attempt) => attempt.status !== 'passed')?.error?.code },
     });
     if (statusBucket(result.status) === 'failed') {
-      this.failures.push({ group, title, status: result.status, error, videos, failure, screenPath });
+      this.failures.push({ id, group, title, declaredLine, status: result.status, error, videos, failure, screenPath, appLog, skipReason });
     }
     if (skippedAfter !== undefined) {
-      this.skippedFailures.push({ group, title, status: result.status, error: skippedAfter.error, videos, ...failureOf(skippedAfter) });
+      this.skippedFailures.push({ id, group, title, declaredLine, status: result.status, error: skippedAfter.error, videos, ...failureOf(skippedAfter), appLog: undefined });
     }
     if (group.planned !== undefined && group.lines.length >= group.planned) this.printGroup(group);
     this.window.redraw();
@@ -738,7 +857,8 @@ export class ListReporter implements Reporter {
    * test with its finished agent steps nested, as vitest lists tests for a
    * failed module. With a live window the block is also the only permanent
    * record of a file's agent steps, so a file that has any lists its tests
-   * too; without one the steps already printed as they finished.
+   * too. Without one each test already printed as it finished, so the block
+   * is the file line alone.
    */
   private printGroup(group: FileGroup): void {
     if (group.printed) return;
@@ -778,39 +898,54 @@ export class ListReporter implements Reporter {
       counts.interrupted > 0 ||
       counts.flaky > 0 ||
       this.groups.size === 1 ||
+      group.lines.some((line) => line.replays.length > 0) ||
+      group.lines.some((line) => line.cleanupErrors.length > 0) ||
       (this.live && group.lines.some((line) => line.steps.length > 0));
-    if (!verbose) return;
+    if (!verbose || !this.live) return;
     const ordered = group.lines.toSorted((a, b) => a.declarationIndex - b.declarationIndex);
-    for (const line of ordered) {
-      for (const rendered of this.testLine(line)) this.print(rendered);
-      for (const step of line.steps) this.print(`${STEP_INDENT}${stepLine(pc, step)}`);
-    }
+    for (const line of ordered) this.printTestRows(line);
   }
 
-  /** One test row under its file line, plus the first error line for a failure. */
-  private testLine(line: TestLine): string[] {
+  /** Prints a test's row, prefixed with `context`, then its finished agent steps and replay notices. */
+  private printTestRows(line: TestLine, context = ''): void {
+    for (const rendered of this.testLine(line, context)) this.print(rendered);
+    for (const step of line.steps) this.print(`${STEP_INDENT}${stepLine(this.pc, step)}`);
+    for (const replay of line.replays) this.print(`${STEP_INDENT}${replayLine(this.pc, replay)}`);
+  }
+
+  /** One test row, its title after `context`, plus the first error line for a failure. */
+  private testLine(line: TestLine, context = ''): string[] {
     const { pc } = this;
+    const title = `${context}${line.title}`;
     const duration = pc.dim(formatTime(line.durationMs));
     const segment = aiSegment(line.usage);
     const ai = segment === undefined ? '' : ` ${pc.dim(segment)}`;
     switch (line.status) {
       case 'passed':
-        return [`   ${pc.green(F_CHECK)} ${line.title} ${duration}${ai}`];
+        return [
+          `   ${pc.green(F_CHECK)} ${title}${this.expectedTag(line)} ${duration}${ai}`,
+          ...this.expectedFailureLines(line),
+          ...this.cleanupLines(line),
+        ];
       case 'flaky':
-        return [`   ${pc.yellow(F_CHECK)} ${line.title} ${pc.yellow('(flaky)')} ${duration}${ai}`];
+        return [
+          `   ${pc.yellow(F_CHECK)} ${title} ${pc.yellow('(flaky)')}${this.expectedTag(line)} ${duration}${ai}`,
+          ...this.expectedFailureLines(line),
+          ...this.cleanupLines(line),
+        ];
       case 'skipped': {
         // `test.skip` without a message records the bare word; repeating it adds nothing.
         const reason =
           line.skipReason === undefined || line.skipReason === 'skipped'
             ? ''
             : pc.dim(pc.gray(` [${line.skipReason}]`));
-        return [`   ${pc.dim(pc.gray(F_DOWN))} ${line.title}${reason}`];
+        return [`   ${pc.dim(pc.gray(F_DOWN))} ${title}${reason}`];
       }
       case 'interrupted':
-        return [`   ${pc.yellow(F_CROSS)} ${line.title} ${pc.yellow('(interrupted)')} ${duration}${ai}`];
+        return [`   ${pc.yellow(F_CROSS)} ${title} ${pc.yellow('(interrupted)')} ${duration}${ai}`];
       default: {
         const status = line.status === 'failed' ? '' : pc.red(` (${line.status})`);
-        const rows = [`   ${pc.red(`${F_CROSS} ${line.title}`)}${status} ${duration}${ai}`];
+        const rows = [`   ${pc.red(`${F_CROSS} ${title}`)}${status} ${duration}${ai}`];
         if (line.firstErrorLine !== undefined) {
           // A glance line; the `Failed Tests` section carries the whole message.
           const glance = fitColumns(line.firstErrorLine, terminalColumns() - ERROR_GLANCE_INDENT);
@@ -819,6 +954,28 @@ export class ListReporter implements Reporter {
         return rows;
       }
     }
+  }
+
+  /** ` (failed as expected)` after the title of a test whose `test.fail` mark covered its failure. */
+  private expectedTag(line: TestLine): string {
+    return line.expectedFailure === undefined ? '' : ` ${this.pc.dim('(failed as expected)')}`;
+  }
+
+  /** The reason and the covered failure's first line under a test that failed as expected. */
+  private expectedFailureLines(line: TestLine): string[] {
+    const mark = line.expectedFailure;
+    if (mark === undefined) return [];
+    const glance = fitColumns(`${mark.reason}: ${mark.errorLine}`, terminalColumns() - ERROR_GLANCE_INDENT);
+    return [`     ${this.pc.dim(`${F_RIGHT} ${glance}`)}`];
+  }
+
+  /** One yellow glance line per cleanup failure under the test. */
+  private cleanupLines(line: TestLine): string[] {
+    const { pc } = this;
+    return line.cleanupErrors.map((error) => {
+      const [first = ''] = bounded(error.message).split('\n');
+      return `     ${pc.yellow(`${F_RIGHT} cleanup failed: ${bounded(error.code)}: ${first}`)}`;
+    });
   }
 
   /**
@@ -838,6 +995,8 @@ export class ListReporter implements Reporter {
         padTitle(pc, 'Test Files') + (files.total === 0 ? this.emptyState('no test files', 'none started') : stateString(pc, files)),
         padTitle(pc, 'Tests') + (tests.total === 0 ? this.emptyState('no tests executed', 'none executed') : stateString(pc, tests)),
       ];
+    const leftOut = this.leftOutText();
+    if (leftOut !== undefined) rows.push(padTitle(pc, 'Left out') + leftOut);
     const ai = usageText(this.runUsage);
     if (ai !== undefined) {
       const models = modelsText(this.runModels) ?? this.models;
@@ -853,12 +1012,37 @@ export class ListReporter implements Reporter {
       const count = this.errors.length;
       rows.push(padTitle(pc, 'Errors') + pc.bold(pc.red(`${count} error${count === 1 ? '' : 's'}`)));
     }
+    if (final && this.cleanupFailures.length > 0) {
+      const [first, ...rest] = this.cleanupFailures;
+      const [message = ''] = bounded(first!.error.message).split('\n');
+      rows.push(
+        padTitle(pc, 'Cleanup') +
+          pc.yellow(
+            `${this.cleanupFailures.length} cleanup failure${this.cleanupFailures.length === 1 ? '' : 's'}: ${bounded(first!.error.code)}: ${message}${rest.length === 0 ? '' : ` (+${rest.length} more)`}`,
+          ),
+      );
+    }
     const startedAt = this.startedAt ?? (final ? this.launchedAt : undefined);
     if (startedAt !== undefined) {
       rows.push(padTitle(pc, 'Start at') + formatClock(startedAt));
       rows.push(padTitle(pc, 'Duration') + durationText(pc, Date.now() - startedAt.getTime(), this.startupMs));
     }
     return rows;
+  }
+
+  /**
+   * The `Left out` row: how many tests each test filter left out, as its
+   * line counts them (`35 tests by affected`, `35 by affected, 3 by
+   * areas`); undefined when none did.
+   */
+  private leftOutText(): string | undefined {
+    const counts = [...leftOutTests(this.leftOut)].map(([name, count]) => ({ name: bounded(name), count }));
+    if (counts.length === 0) return undefined;
+    if (counts.length === 1) {
+      const { name, count } = counts[0]!;
+      return `${count} test${count === 1 ? '' : 's'} by ${name}`;
+    }
+    return counts.map(({ name, count }) => `${count} by ${name}`).join(', ');
   }
 
   /**
@@ -894,9 +1078,14 @@ export class ListReporter implements Reporter {
     return this.tree.render(running, this.summaryRows(false), Date.now(), room, this.inFlight);
   }
 
-  /** The badge of the explored target: an exploration runs on exactly one. */
+  /**
+   * The badge of the explored target: an exploration runs on exactly one,
+   * the one its test started on. `targets` lists every configured target,
+   * so the first of those is only right when `--target` named it.
+   */
   private exploreBadge(): string {
-    return this.badge(this.targets[0] ?? '');
+    this.exploredTarget ??= [...this.pairs.values()].find((test) => test.executing)?.group.target;
+    return this.badge(this.exploredTarget ?? this.targets[0] ?? '');
   }
 
   /**
@@ -941,13 +1130,13 @@ export class ListReporter implements Reporter {
   }
 
   /** vitest's `Failed Tests` section: a banner, then each failure with its code frame. */
-  private printFailures(heading: string, failures: readonly Failure[]): void {
+  private printFailures(heading: string, failures: readonly Failure[], pages: Readonly<Record<string, string>>): void {
     const { pc } = this;
     if (failures.length === 0) return;
     this.print('');
     this.print(this.errorBanner(`${heading} ${failures.length}`));
     this.print('');
-    failures.forEach(({ group, title, status, error, videos, failure, screenPath }, index) => {
+    failures.forEach(({ id, group, title, status, error, videos, failure, screenPath, appLog, skipReason }, index) => {
       this.print(
         `${pc.bold(pc.bgRed(status === 'skipped' ? ' SKIP ' : ' FAIL '))} ${this.badge(group.target)} ${bounded(group.file)}${this.separator}${title}`,
       );
@@ -959,7 +1148,8 @@ export class ListReporter implements Reporter {
         for (const line of rest) this.print(pc.red(line));
         this.printFailureLocation(error.stack);
       }
-      this.printEvidence(failure, screenPath);
+      if (skipReason !== undefined) this.print(pc.yellow(` ${pc.dim(F_POINTER)} ${pc.dim('skipped')} ${bounded(skipReason)}`));
+      this.printEvidence(failure, screenPath, pages[id], appLog);
       this.printVideos(videos);
       const marker = `[${index + 1}/${failures.length}]`;
       const { before, after } = rule(marker, 'right');
@@ -979,21 +1169,40 @@ export class ListReporter implements Reporter {
 
   /**
    * What the runner saw when the failure landed: the location, the nodes
-   * closest to what a failed locator asked for, and where the screen text
-   * is. The message says what was asked; these lines say what was there.
+   * closest to what a failed locator asked for, what the app logged as an
+   * error, and where the trace page is (else the screen text). The message
+   * says what was asked; these lines say what was there.
    */
-  private printEvidence(failure: FailureEvidence | undefined, screenPath: string | undefined): void {
-    if (failure === undefined) return;
+  private printEvidence(failure: FailureEvidence | undefined, screenPath: string | undefined, page: string | undefined, appLog: AppLogSummary | undefined): void {
     const { pc } = this;
     const row = (label: string, text: string): void => {
       this.print(pc.cyan(` ${pc.dim(F_POINTER)} ${pc.dim(label)} ${text}`));
     };
-    if (failure.url !== undefined) row('at', bounded(failure.url));
-    for (const candidate of failure.candidates ?? []) row('on screen', bounded(candidate));
-    if (screenPath !== undefined) {
+    if (failure?.url !== undefined) row('at', bounded(failure.url));
+    for (const candidate of failure?.candidates ?? []) row('on screen', bounded(candidate));
+    if (appLog !== undefined) {
+      row('app', `${appLog.tally} logged`);
+      for (const { label, text } of appLog.errors.shown) this.print(`   ${pc.red(`${F_CROSS} ${label}:`)} ${bounded(text)}`);
+      if (appLog.errors.more !== undefined) this.print(pc.dim(`   ${appLog.errors.more}`));
+    }
+    // The page tells the screen too, and every step before it.
+    if (page !== undefined) {
+      row('trace', bounded(page));
+    } else if (screenPath !== undefined) {
       const target = this.artifactsRoot === undefined ? screenPath : path.join(this.artifactsRoot, screenPath);
       row('screen', this.displayPath(target));
     }
+  }
+
+  /** The `Screenshots` row: each `app.screenshot` file, so a caller never has to search the results directory. */
+  private printScreenshots(): void {
+    const { pc } = this;
+    const shown = this.screenshots.slice(0, SHOWN_SCREENSHOTS).map((relative) =>
+      this.displayPath(this.artifactsRoot === undefined ? relative : path.join(this.artifactsRoot, relative)),
+    );
+    shown.forEach((file, index) => this.print(padTitle(pc, index === 0 ? 'Screenshots' : '') + file));
+    const rest = this.screenshots.length - shown.length;
+    if (rest > 0) this.print(padTitle(pc, '') + pc.dim(`and ${rest} more (the report lists every artifact)`));
   }
 
   /** Where to watch a failed attempt: one line per recording it kept. */
@@ -1038,12 +1247,21 @@ export class ListReporter implements Reporter {
     }
   }
 
-  /** Prints the rows reporters resolved with under the summary, in the summary's layout. */
+  /**
+   * Prints the rows reporters resolved with under the summary, in the
+   * summary's layout, then the run's `Failed` rows: the runner calls this
+   * last, so they close the output.
+   */
   rows(rows: ReporterSummary): void {
-    if (rows.length === 0) return;
-    for (const row of rows) {
-      this.print(padTitle(this.pc, bounded(row.label)) + bounded(row.text));
-    }
+    this.printBlock(rows.map((row) => padTitle(this.pc, bounded(row.label)) + bounded(row.text)));
+    this.printBlock(this.closingRows);
+    this.closingRows = [];
+  }
+
+  /** Prints `lines`, then a blank line; nothing for none. */
+  private printBlock(lines: readonly string[]): void {
+    if (lines.length === 0) return;
+    for (const line of lines) this.print(line);
     this.print('');
   }
 
@@ -1058,20 +1276,49 @@ export class ListReporter implements Reporter {
       if (!group.printed && group.lines.length > 0) this.printGroup(group);
     }
     this.printExplore();
-    this.printFailures('Failed Tests', this.failures);
-    this.printFailures('Skipped After Failure', this.skippedFailures);
+    const pages = event.traces ?? {};
+    this.printFailures('Failed Tests', this.failures, pages);
+    this.printFailures('Skipped After Failure', this.skippedFailures, pages);
     this.printErrors();
     this.print('');
     for (const row of this.summaryRows(true)) this.print(row);
-    this.print(
-      padTitle(pc, 'Report') +
-        (event.reportPath === undefined ? pc.dim('(not written)') : this.displayPath(event.reportPath)),
-    );
+    // The report is for scripts, so a run names it only when it is missing: `--last-failed` reads it next.
+    if (event.reportPath === undefined) this.print(padTitle(pc, 'Report') + pc.dim('(not written)'));
+    const paged = Object.values(pages);
+    if (paged.length > 0) {
+      // A page is `<results>/<test>/trace.md`; the row names the results directory.
+      const dir = path.posix.dirname(path.posix.dirname(paged[0]!));
+      this.print(padTitle(pc, 'Traces') + `${bounded(dir)}/ ${pc.dim(`(${paged.length} ${paged.length === 1 ? 'page' : 'pages'}, trace.md in each test's directory)`)}`);
+    }
+    this.printScreenshots();
     if (event.aiTracePath !== undefined) {
       const shown = this.displayPath(event.aiTracePath);
       this.print(padTitle(pc, 'AI trace') + `${shown} ${pc.dim(`(open with: npx unbox-ai ${shown})`)}`);
     }
     this.print('');
+    this.closingRows = this.failedRows(pages);
+  }
+
+  /**
+   * The `Failed` rows closing the output: each failed test's location and
+   * title, its error's first line, and its trace page. Last, so a run piped
+   * through `tail` still names what broke.
+   */
+  private failedRows(pages: Readonly<Record<string, string>>): string[] {
+    const { pc } = this;
+    return this.failures.flatMap(({ id, group, title, declaredLine, error }, index) => {
+      // The failing line when the test file itself threw, else the test's declaration.
+      const line = error?.source?.file === group.file ? error.source.line : declaredLine;
+      const location = `${bounded(group.file)}${line === undefined ? '' : `:${line}`}`;
+      const rows = [`${padTitle(pc, index === 0 ? 'Failed' : '')}${pc.red(F_CROSS)} ${this.badge(group.target)} ${location}${this.separator}${title}`];
+      if (error !== undefined) {
+        const [first = ''] = bounded(error.message).split('\n');
+        rows.push(`${padTitle(pc, '')}  ${pc.red(`${bounded(error.code)}: ${first}`)}`);
+      }
+      const page = pages[id];
+      if (page !== undefined) rows.push(`${padTitle(pc, '')}  ${pc.dim('trace')} ${bounded(page)}`);
+      return rows;
+    });
   }
 }
 
@@ -1085,6 +1332,8 @@ function setupWording(step: SetupStep): { verb: string; subject: string; done: s
   switch (step.kind) {
     case 'collect':
       return { verb: 'collecting', subject: 'tests', done: 'collected' };
+    case 'filter':
+      return { verb: 'running', subject: `filter "${bounded(step.name)}"`, done: 'done' };
     case 'prepare':
       return {
         verb: 'preparing',
@@ -1092,7 +1341,8 @@ function setupWording(step: SetupStep): { verb: string; subject: string; done: s
         done: 'prepared',
       };
     case 'service':
-    case 'app':
       return { verb: 'starting', subject: bounded(step.label), done: 'ready' };
+    case 'app':
+      return { verb: 'starting', subject: step.url === undefined ? bounded(step.label) : `${bounded(step.label)} at ${bounded(step.url)}`, done: 'ready' };
   }
 }

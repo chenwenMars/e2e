@@ -488,7 +488,7 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
   );
 
   it(
-    'a failing endAttempt marks cleanup failed with a secondary error but keeps the test passed',
+    'a failing endAttempt marks cleanup failed with a secondary error and exits 3 even though the test passed',
     async () => {
       const fake = createFakeEngine({
         onEndAttempt() {
@@ -504,7 +504,7 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
       const attempt = result.attempts[0]!;
       expect(attempt.cleanup).toBe('failed');
       expect(attempt.secondaryErrors.some((error) => error.phase === 'cleanup')).toBe(true);
-      expect(outcome.exitCode).toBe(0);
+      expect(outcome.exitCode).toBe(3);
       project.cleanup();
     },
     60_000,
@@ -820,12 +820,12 @@ test('asserts after a degraded pixel request', async ({ app, agent }) => {
       const fake = createFakeEngine();
       const { outcome, project } = await runProject(
         { 'tests/artifact.e2e.ts': PASSING_TEST },
-        { appUrl: APP_URL, config: { targets: [{ name: 'fake', platform: 'fake', engine: fake.engine, trace: 'on' }] } },
+        { appUrl: APP_URL, config: { targets: [{ name: 'fake', platform: 'fake', engine: fake.engine, video: 'on' }] } },
       );
       expect(outcome.status).toBe('error');
       expect(fake.stats().attemptsStarted).toBe(0);
       expect(outcome.report.run.errors.find((error) => error.code === 'UNSUPPORTED_ARTIFACT')?.message).toBe(
-        "target \"fake\" (engine fake) cannot record a trace, and the target sets trace: 'on'",
+        "target \"fake\" (engine fake) cannot record video, and the target sets video: 'on'",
       );
       project.cleanup();
     },
@@ -898,6 +898,14 @@ test('drives the gadget', async (fixtures) => {
 test('bounds a hanging fixture call', async (fixtures) => {
   await (fixtures as any).gadget.hang({ timeout: 200 });
 });
+
+test('waits for the test deadline with timeout 0', { timeout: 3_000 }, async (fixtures) => {
+  await (fixtures as any).gadget.hang({ timeout: 0 });
+});
+
+test('refuses a negative timeout', async (fixtures) => {
+  await (fixtures as any).gadget.hang({ timeout: -1 });
+});
 `;
       const { outcome, project } = await runProject(
         { 'tests/gadget.e2e.ts': file },
@@ -925,6 +933,10 @@ test('bounds a hanging fixture call', async (fixtures) => {
       expect(hangs.status).toBe('failed');
       expect(hangs.attempts[0]!.error?.code).toBe('ACTION_FAILED');
       expect(hangs.attempts[0]!.error?.message).toContain('gadget.hang exceeded its timeout of 200ms');
+      const unbounded = resultByTitle(outcome, 'waits for the test deadline with timeout 0');
+      expect(unbounded.attempts[0]!.error?.code).toBe('TEST_TIMEOUT');
+      const negative = resultByTitle(outcome, 'refuses a negative timeout');
+      expect(negative.attempts[0]!.error?.code).toBe('INVALID_ARGUMENT');
       assertValidReport(outcome.report);
       project.cleanup();
     },
@@ -1061,7 +1073,6 @@ test('fails on purpose', async ({ app }) => {
       const fake = createFakeEngine({ video: true });
       const { outcome, project } = await runProject(
         { 'tests/video.e2e.ts': PASSING_TEST },
-        // The default trace is best-effort: the fake has no trace, and the run does not mind.
         { appUrl: APP_URL, config: plainConfig(fake), runOptions: { video: 'on' } },
       );
       expect(outcome.status).toBe('passed');
@@ -1070,13 +1081,41 @@ test('fails on purpose', async ({ app }) => {
       expect(videos).toHaveLength(1);
       const video = videos[0]!;
       expect(video).toMatchObject({ mediaType: 'video/webm', redaction: 'incomplete', producer: { kind: 'attempt' } });
-      expect(video.path).toMatch(/\/attempt-0\/video\/fake\.webm$/);
+      expect(video.path).toMatch(/\/attempt-1\/video\/fake\.webm$/);
       expect(video.size).toBe(8);
       expect(Number.isNaN(Date.parse(video.startedAt!))).toBe(false);
-      expect(existsSync(path.join(project.dir, '.e2e', 'artifacts', video.path!))).toBe(true);
+      expect(existsSync(path.join(project.dir, '.e2e', 'results', video.path!))).toBe(true);
       expect(fake.operations.map((op) => op.method)).toEqual(
         expect.arrayContaining(['artifacts.startVideo', 'artifacts.stopVideo']),
       );
+      project.cleanup();
+    },
+    60_000,
+  );
+
+  it(
+    'a required video that fails to stop fails cleanup and exits 3 even though the test passed (#1231)',
+    async () => {
+      const fake = createFakeEngine({
+        video: true,
+        onStopVideo() {
+          throw new Error('video finalization exploded');
+        },
+      });
+      const { outcome, project } = await runProject(
+        { 'tests/video.e2e.ts': PASSING_TEST },
+        { appUrl: APP_URL, config: plainConfig(fake), runOptions: { video: 'on' } },
+      );
+      const result = resultByTitle(outcome, 'taps a node');
+      expect(result.status).toBe('passed');
+      const attempt = result.attempts[0]!;
+      expect(attempt.cleanup).toBe('failed');
+      expect(attempt.secondaryErrors.some((error) => error.phase === 'cleanup')).toBe(true);
+      expect(attempt.secondaryErrors.find((error) => error.phase === 'cleanup')?.message).toContain(
+        'video finalization exploded',
+      );
+      expect(outcome.exitCode).toBe(3);
+      assertValidReport(outcome.report);
       project.cleanup();
     },
     60_000,
@@ -1095,11 +1134,11 @@ test('fails on purpose', async ({ app }) => {
       );
       expect(outcome.status).toBe('failed');
       expect(videosOf(outcome, 'taps a node')).toEqual([]);
-      const passedDir = path.join(project.dir, '.e2e', 'artifacts', 'fake');
+      const passedDir = path.join(project.dir, '.e2e', 'results');
       expect(readdirSync(passedDir).some((entry) => entry.includes('pass'))).toBe(true);
       const kept = videosOf(outcome, 'fails on purpose');
       expect(kept).toHaveLength(1);
-      expect(existsSync(path.join(project.dir, '.e2e', 'artifacts', kept[0]!.path!))).toBe(true);
+      expect(existsSync(path.join(project.dir, '.e2e', 'results', kept[0]!.path!))).toBe(true);
       // The passing attempt's recording was written, then removed with its verdict.
       const passedVideos = readdirSync(passedDir, { recursive: true })
         .map(String)
@@ -1125,7 +1164,7 @@ test('fails on purpose', async ({ app }) => {
       const videos = attempt.artifacts.filter((artifact) => artifact.kind === 'video');
       expect(videos.map((video) => video.url ?? video.path)).toEqual([
         'https://recordings.example/r.mp4',
-        expect.stringMatching(/\/attempt-0\/video\/fake\.webm$/),
+        expect.stringMatching(/\/attempt-1\/video\/fake\.webm$/),
       ]);
       project.cleanup();
     },
@@ -1225,7 +1264,7 @@ test.describe('checkout', () => {
   );
 });
 
-describe('trace capability and plan notices', () => {
+describe('video capability and plan notices', () => {
   /** Runs `files` on `fake` with `config` and returns the outcome with the run's notices. */
   const runWithNotices = async (fake: FakeEngineHandle, files: Record<string, string>, config: Partial<E2EConfig> = {}) => {
     const notices: string[] = [];
@@ -1239,11 +1278,11 @@ describe('trace capability and plan notices', () => {
   };
 
   it(
-    'applies a config trace best-effort, naming the targets that cannot trace, and says nothing for the default',
+    'applies a config video best-effort, naming the targets that cannot record it, and says nothing for the default',
     async () => {
-      const set = await runWithNotices(createFakeEngine({ artifacts: true }), { 'tests/a.e2e.ts': PASSING_TEST }, { trace: 'on' });
+      const set = await runWithNotices(createFakeEngine({ artifacts: true }), { 'tests/a.e2e.ts': PASSING_TEST }, { video: 'on' });
       expect(set.outcome.status).toBe('passed');
-      expect(set.notices).toEqual(['trace records only on targets whose engine can record it; target "fake" (engine fake) records no trace']);
+      expect(set.notices).toEqual(['video records only on targets whose engine can record it; target "fake" (engine fake) records no video']);
       const fallback = await runWithNotices(createFakeEngine({ artifacts: true }), { 'tests/a.e2e.ts': PASSING_TEST });
       expect(fallback.outcome.status).toBe('passed');
       expect(fallback.notices).toEqual([]);
@@ -1252,37 +1291,23 @@ describe('trace capability and plan notices', () => {
   );
 
   it(
-    "refuses a test's trace on an engine that cannot trace, naming the test",
+    "refuses a test's video on an engine that cannot record it, naming the test",
     async () => {
       const fake = createFakeEngine({ artifacts: true });
       const { outcome } = await runWithNotices(fake, {
-        'tests/a.e2e.ts': PASSING_TEST.replace("test('taps a node', async", "test('taps a node', { trace: 'retain-on-failure' }, async"),
+        'tests/a.e2e.ts': PASSING_TEST.replace("test('taps a node', async", "test('taps a node', { video: 'retain-on-failure' }, async"),
       });
       expect(outcome.status).toBe('error');
       expect(fake.stats().attemptsStarted).toBe(0);
       expect(outcome.report.run.errors.find((error) => error.code === 'UNSUPPORTED_ARTIFACT')?.message).toBe(
-        "target \"fake\" (engine fake) cannot record a trace, and test \"taps a node\" in tests/a.e2e.ts sets trace: 'retain-on-failure'",
+        "target \"fake\" (engine fake) cannot record video, and test \"taps a node\" in tests/a.e2e.ts sets video: 'retain-on-failure'",
       );
     },
     60_000,
   );
 
   it(
-    'warns at plan time that a retry mode with no retries records no traces',
-    async () => {
-      const fake = createFakeEngine({ trace: true });
-      const { outcome, notices } = await runWithNotices(fake, { 'tests/a.e2e.ts': PASSING_TEST }, { trace: 'on-first-retry', retries: 0 });
-      expect(outcome.status).toBe('passed');
-      expect(notices).toEqual([
-        "trace: 'on-first-retry' records retries only, and 1 test runs with retries: 0, so no traces will be recorded for it; set retries, or trace: 'on'",
-      ]);
-      expect(fake.operations.some((operation) => operation.method === 'artifacts.startTrace')).toBe(false);
-    },
-    60_000,
-  );
-
-  it(
-    'warns at plan time that a retry mode with no retries records no videos, as for traces',
+    'warns at plan time that a retry mode with no retries records no videos',
     async () => {
       const fake = createFakeEngine({ video: true });
       const { outcome, notices } = await runWithNotices(fake, { 'tests/a.e2e.ts': PASSING_TEST }, { video: 'on-all-retries', retries: 0 });
@@ -1294,24 +1319,10 @@ describe('trace capability and plan notices', () => {
     },
     60_000,
   );
-
-  it(
-    'traces with the fake engine, keeping a passed attempt out of the report under retain-on-failure',
-    async () => {
-      const fake = createFakeEngine({ trace: true });
-      const { outcome } = await runWithNotices(fake, { 'tests/a.e2e.ts': PASSING_TEST }, { trace: 'retain-on-failure' });
-      expect(outcome.status).toBe('passed');
-      const attempt = resultByTitle(outcome, 'taps a node').attempts[0]!;
-      expect(attempt.artifacts.filter((artifact) => artifact.kind === 'trace')).toEqual([]);
-      expect(existsSync(path.join(fake.attempts[0]!.artifactsDir, 'trace', 'fake.zip'))).toBe(false);
-      expect(fake.operations.map((operation) => operation.method)).toEqual(expect.arrayContaining(['artifacts.startTrace', 'artifacts.stopTrace']));
-    },
-    60_000,
-  );
 });
 
 describe('artifact directories', () => {
-  /** A describe long enough that the two test ids below share their first 120 characters. */
+  /** A describe long enough that the two tests below share every word their artifact directories keep. */
   const LONG_DESCRIBE =
     'a returning customer with a saved card and an expired coupon on file who reloads the checkout page twice before paying';
   const SHARED_PREFIX_FILE = `import { test } from 'e2e';
@@ -1330,7 +1341,7 @@ test.describe(${JSON.stringify(LONG_DESCRIBE)}, () => {
 `;
 
   it(
-    'two failing tests whose ids share a 120-character prefix keep their evidence apart, on disk and in the report',
+    'two failing tests whose titles share their first words keep their evidence apart, on disk and in the report',
     async () => {
       const fake = createFakeEngine({ artifacts: true });
       const { outcome, project } = await runProject(
@@ -1348,12 +1359,14 @@ test.describe(${JSON.stringify(LONG_DESCRIBE)}, () => {
       expect(a.path).not.toBe(b.path);
       expect(a.sha256).not.toBe(b.sha256);
       for (const artifact of [a, b]) {
-        const absolute = path.join(project.dir, '.e2e', 'artifacts', artifact.path!);
+        const absolute = path.join(project.dir, '.e2e', 'results', artifact.path!);
         expect(existsSync(absolute)).toBe(true);
         expect(createHash('sha256').update(readFileSync(absolute)).digest('hex')).toBe(artifact.sha256);
       }
-      // One directory per test under the target, not one written twice.
-      expect(readdirSync(path.join(project.dir, '.e2e', 'artifacts', 'fake'))).toHaveLength(2);
+      // One directory per test, the same words and another id, not one written twice.
+      const dirs = readdirSync(path.join(project.dir, '.e2e', 'results'));
+      expect(dirs).toHaveLength(2);
+      expect(dirs.map((dir) => dir.slice(0, -16))).toEqual(['checkouts-a-returning-customer-with-a-', 'checkouts-a-returning-customer-with-a-']);
       assertValidReport(outcome.report);
       project.cleanup();
     },

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window and the launch splash use the canvas color, so the app never flashes white. -->
+    <style name="Theme.WithCompose" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/canvas</item>
+    </style>
+
+    <color name="canvas">#000000</color>
+    <color name="icon_background">#1A5FFF</color>
+</resources>

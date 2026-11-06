@@ -56,7 +56,6 @@ describe('SessionHost', { timeout: 60_000 }, () => {
     readonly idleMs?: number;
     readonly ttlMs?: number;
     readonly maxSessions?: number;
-    readonly trace?: RecordingMode;
     readonly video?: RecordingMode;
     /** The target's app; the fake's own URL by default. */
     readonly app?: TargetApp;
@@ -87,7 +86,6 @@ describe('SessionHost', { timeout: 60_000 }, () => {
             targets: [{ name: 'kiosk', platform: 'kiosk', engine: engine().engine, app: options.app ?? FAKE_APP }],
             credentials: { admin: { username: 'admin', password: 'kiosk-pw' } },
             ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
-            ...(options.trace === undefined ? {} : { trace: options.trace }),
             ...(options.video === undefined ? {} : { video: options.video }),
             ...(options.tools === undefined ? {} : { agents: { default: { tools: options.tools } } }),
           } as never,
@@ -127,6 +125,18 @@ describe('SessionHost', { timeout: 60_000 }, () => {
     expect(fake.inits[1]?.headed).toBe(false);
     await headless.close('done');
     expect(fake.stats()).toMatchObject({ attemptsStarted: 2, attemptsEnded: 2, disposes: 2 });
+  });
+
+  it("launches a device target's pinned app before the first observation", async () => {
+    const fake = createFakeEngine({ device: true, scene: () => [{ id: 'greet', role: 'button', name: 'Greet' }] });
+    const device = host(() => fake, { app: { bundleId: 'com.example.greeter' } });
+    const text = await device.open({});
+    expect(text).toContain('App: com.example.greeter, launched fresh.');
+    expect(text).toContain('button "Greet"');
+    const methods = fake.operations.map((operation) => operation.method);
+    expect(methods.indexOf('session.restart')).toBeGreaterThan(-1);
+    expect(methods.indexOf('session.restart')).toBeLessThan(methods.indexOf('observe'));
+    await device.close('done');
   });
 
   it("lets open_session's headed override the server's default either way", async () => {
@@ -321,6 +331,32 @@ describe('SessionHost', { timeout: 60_000 }, () => {
     await expect(fetch(url)).rejects.toThrow();
   });
 
+  it('names the app command it started and the port it assigned, without args or env values', async () => {
+    writeStartupScripts(dir);
+    const command = {
+      executable: process.execPath,
+      args: ['server.cjs', '{port}', '--token=arg-secret-5678'],
+      env: { DATABASE_URL: 'postgres://app:db-pass-1234@127.0.0.1:55432/app' },
+      inheritEnv: ['STRIPE_*'],
+      log: 'app log.txt',
+    };
+    const started = host(engines().next, { app: { url: 'http://127.0.0.1:0', readyUrl: 'http://127.0.0.1:{port}/health?token=query-secret-42', command } });
+    const text = await started.open({});
+    const port = /App: http:\/\/127\.0\.0\.1:(\d+)\/ \(port \1, assigned for the declared port 0\)\./.exec(text)?.[1];
+    expect(port, text).toBeDefined();
+    expect(text).toContain(
+      `Process: app.command ${JSON.stringify(process.execPath)} (ready at http://127.0.0.1:${port}/health; env DATABASE_URL; inherits STRIPE_*; log app log.txt). e2e starts no other app process for this session;`,
+    );
+    expect(text).not.toContain('db-pass-1234');
+    expect(text).not.toContain('arg-secret-5678');
+    expect(text).not.toContain('query-secret-42');
+    await started.close('done');
+
+    const external = host(engines().next);
+    expect(await external.open({})).toContain('Process: none; the target declares no app.command, so the app runs outside e2e.');
+    await external.close('done');
+  });
+
   it('cancels a session still opening when it shuts down, waits for it, and admits none meanwhile', async () => {
     const loading = gate();
     const fakes = engines();
@@ -466,35 +502,40 @@ describe('SessionHost', { timeout: 60_000 }, () => {
     expect(existsSync(path.join(fake.attempts[0]!.artifactsDir, 'video', 'fake.webm'))).toBe(false);
   });
 
-  it('traces the one attempt under on, and records no trace under a retry or retain-on-failure mode', async () => {
-    /** The trace operations one session with the config's `trace` ran. */
-    const traced = async (trace: RecordingMode | undefined) => {
-      const fake = createFakeEngine({ trace: true });
-      const session = host(() => fake, trace === undefined ? {} : { trace });
-      await session.open({});
-      await session.close('done');
-      return fake.operations.map((operation) => operation.method).filter((method) => method.includes('Trace'));
-    };
-    expect(await traced(undefined)).toEqual(['artifacts.startTrace', 'artifacts.stopTrace']);
-    expect(await traced('on')).toEqual(['artifacts.startTrace', 'artifacts.stopTrace']);
-    for (const mode of ['off', 'on-first-retry', 'on-all-retries', 'retain-on-failure'] as const) expect(await traced(mode)).toEqual([]);
-  });
-
-  it('says once that a trace the config asks for is not recorded on an engine that cannot trace', async () => {
-    const session = host(engines().next, { trace: 'on' });
-    await session.open({});
-    await session.close('done');
-    expect(logs.filter((line) => line.includes('records no trace'))).toEqual([
-      'info: kiosk: trace records only on targets whose engine can record it; target "kiosk" (engine fake) records no trace',
-    ]);
-  });
-
   it('lists no recording tools when the engine records no video', async () => {
     const plain = host(engines().next);
     const opened = await plain.open({});
     expect(opened).not.toContain('start_recording');
     const closed = await plain.close('done');
     expect(closed).not.toContain('Recording');
+  });
+
+  it('counts a cancelled queued request as a received call with an error result', async () => {
+    const started = gate();
+    const released = gate();
+    const summaries: McpSessionSummary[] = [];
+    let mutated = false;
+    const counted = host(engines().next, { onSessionEnd: (summary) => summaries.push(summary), tools: {
+      hold: defineTool({ description: 'Hold the session queue.', inputSchema: z.object({}), execute: async () => { started.open(); await released.promise; return 'released'; } }, { mutates: false }),
+      mutate: defineTool({ description: 'Mark a mutation.', inputSchema: z.object({}), execute: async () => { mutated = true; return 'mutated'; } }, { mutates: true }),
+    } });
+    const id = sessionId(await counted.open({}));
+    const first = counted.call(id, 'hold', {}, { signal: new AbortController().signal });
+    try {
+      await started.promise;
+      const cancelled = new AbortController();
+      const second = counted.call(id, 'mutate', {}, { signal: cancelled.signal });
+      cancelled.abort();
+      released.open();
+      await first;
+      expect((await second).isError).toBe(true);
+      expect(mutated).toBe(false);
+    } finally {
+      released.open();
+      await first.catch(() => undefined);
+      await counted.close('done', id);
+    }
+    expect(summaries[0]).toMatchObject({ projectToolCalls: 2, failedCalls: 1, errorCodes: new Map([['CANCELLED', 1]]) });
   });
 
   it('reports one summary per open: its calls by tool, its failures by code, and how it ended', async () => {

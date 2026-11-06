@@ -66,10 +66,10 @@ afterEach(() => {
   for (const project of projects.splice(0)) project.cleanup();
 });
 
-function runCli(files: Record<string, string>) {
+function runCli(files: Record<string, string>, args: readonly string[] = []) {
   const project = createProject(files);
   projects.push(project);
-  const cli = spawnSync(process.execPath, [CLI, 'run'], {
+  const cli = spawnSync(process.execPath, [CLI, 'run', ...args], {
     cwd: project.dir,
     env: { ...process.env, CI: '', E2E_TELEMETRY_DISABLED: '1', NO_COLOR: '1' },
     encoding: 'utf8',
@@ -100,6 +100,61 @@ describe('e2e run redacts what user code prints outside a test', () => {
       'after the run: <secret:apiToken>',
     ]) {
       expect(lines).toContain(line);
+    }
+  });
+
+  it('prints a test body on its own stream without the list reporter', () => {
+    const cli = runCli({ 'e2e.config.ts': CONFIG, 'tests/print.e2e.ts': TEST }, ['--reporter', 'junit']);
+    expect(cli.status, cli.stdout + cli.stderr).toBe(0);
+    expect(cli.stdout.split('\n')).toContain('test body: <secret:apiToken>');
+    expect(`${cli.stdout}\n${cli.stderr}`).not.toContain(TOKEN);
+  });
+
+  it('keeps stdout for the json report and prints user output on stderr', () => {
+    const cli = runCli({ 'e2e.config.ts': CONFIG, 'tests/print.e2e.ts': TEST }, ['--reporter', 'json']);
+    expect(cli.status, cli.stdout + cli.stderr).toBe(0);
+    expect(JSON.parse(cli.stdout)).toMatchObject({ schemaVersion: 'report-1' });
+    const lines = cli.stderr.split('\n');
+    for (const line of ['config console.log: <secret:apiToken>', 'test file top level: <secret:apiToken>', 'test body: <secret:apiToken>']) {
+      expect(lines).toContain(line);
+    }
+    expect(cli.stderr).not.toContain(TOKEN);
+  });
+
+  it('decodes a string written with an encoding, in the config and a test body', () => {
+    const hex = (text: string) => Buffer.from(text).toString('hex');
+    const base64 = (text: string) => Buffer.from(text).toString('base64');
+    const latin1 = (text: string) => Buffer.from(text).toString('latin1');
+    const config = `import { defineEngine } from 'e2e/engine';
+
+process.stdout.write('${hex('config hex\n')}', 'hex');
+
+export default {
+  targets: [{ name: 'headless', platform: 'test', engine: defineEngine({ name: 'noop', version: '1', spiVersion: 1 }) }],
+  workers: 1,
+  secrets: { apiToken: '${TOKEN}' },
+};
+`;
+    const test = `import { test } from 'e2e';
+
+test('prints encoded', () => {
+  process.stdout.write('${hex(`test hex: ${TOKEN}\n`)}', 'hex');
+  process.stderr.write('${base64('test base64\n')}', 'base64');
+  process.stdout.write(${JSON.stringify(latin1('test latin1: café\n'))}, 'latin1');
+  process.stdout.write('${hex('test upper hex\n')}', 'HEX');
+});
+`;
+    const cli = runCli({ 'e2e.config.ts': config, 'tests/print.e2e.ts': test }, ['--reporter', 'junit']);
+    expect(cli.status, cli.stdout + cli.stderr).toBe(0);
+    const stdout = cli.stdout.split('\n');
+    expect(stdout.filter((line) => line === 'config hex'), cli.stdout).toHaveLength(2);
+    expect(stdout).toContain('test hex: <secret:apiToken>');
+    expect(stdout).toContain('test latin1: café');
+    expect(stdout).toContain('test upper hex');
+    expect(cli.stderr.split('\n')).toContain('test base64');
+    const output = `${cli.stdout}\n${cli.stderr}`;
+    for (const encoded of [hex('config hex\n'), hex(`test hex: ${TOKEN}\n`), base64('test base64\n'), latin1('test latin1: café\n'), hex('test upper hex\n')]) {
+      expect(output).not.toContain(encoded);
     }
   });
 

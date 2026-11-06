@@ -1,0 +1,26 @@
+name: with_flutter
+description: "A greeting app for the e2e examples."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # The fonts (SIL OFL, see assets/fonts/OFL.txt).
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter_400Regular.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono_400Regular.ttf

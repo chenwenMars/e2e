@@ -1,20 +1,15 @@
 /**
  * The `e2e run` process's stdout and stderr. User code runs in this process
  * too (the config's top-level code, test files while they are collected,
- * reporters) and may print a secret, so every write to either stream goes
- * through a `RunnerOutput`, redacted, until the process exits; only the list
- * reporter writes to the terminal past it.
+ * test filters, reporters) and may print a secret, so every write to either
+ * stream goes through a `RunnerOutput`, redacted, until the process exits;
+ * only the list reporter writes to the terminal past it.
  */
 
-import { RunnerOutput, type OutputStream } from '../run/process-output.ts';
+import { leftWorkBehind } from '../internal/abandoned.ts';
+import { killManagedProcessGroups, stopsSettled } from '../run/managed-process.ts';
+import { claimProcessOutput, type RunnerOutput } from '../run/process-output.ts';
 import { processSecrets } from '../run/secrecy.ts';
-
-/**
- * Encodings in which a string spells bytes rather than text: the write puts
- * those bytes on the terminal, so they are what is redacted. A string in any
- * other encoding is the text itself, redacted and written as UTF-8.
- */
-const BYTE_ENCODINGS: ReadonlySet<BufferEncoding> = new Set(['hex', 'base64', 'base64url']);
 
 /** The process's claimed output, once claimed: the wrappers stay for the rest of the process. */
 let claimed: RunnerOutput | undefined;
@@ -29,20 +24,52 @@ let claimed: RunnerOutput | undefined;
  */
 export function claimRunnerOutput(): RunnerOutput {
   if (claimed !== undefined) return claimed;
-  const streams = { stdout: process.stdout, stderr: process.stderr } as const;
-  const terminal = {
-    stdout: streams.stdout.write.bind(streams.stdout) as (text: string, callback?: () => void) => boolean,
-    stderr: streams.stderr.write.bind(streams.stderr) as (text: string, callback?: () => void) => boolean,
-  };
-  const output = new RunnerOutput(terminal, processSecrets);
-  for (const name of ['stdout', 'stderr'] as const satisfies readonly OutputStream[]) {
-    streams[name].write = ((chunk: string | Uint8Array, encoding?: BufferEncoding | (() => void), callback?: () => void): boolean => {
-      const done = typeof encoding === 'function' ? encoding : callback;
-      const bytes = typeof chunk === 'string' && typeof encoding === 'string' && BYTE_ENCODINGS.has(encoding);
-      return output.write(name, bytes ? Buffer.from(chunk, encoding) : chunk, done);
-    }) as typeof process.stdout.write;
-  }
+  const output = claimProcessOutput(processSecrets);
   process.once('exit', () => output.end());
   claimed = output;
   return output;
+}
+
+/**
+ * Resolves once the terminal took everything the process wrote, through
+ * the claimed output when there is one: what the CLI waits for before it
+ * exits at once, after Ctrl-C or once it left work behind.
+ */
+async function drainRunnerOutput(): Promise<void> {
+  if (claimed !== undefined) return claimed.drain();
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise<void>((resolve) => void stream.write('', () => resolve()))));
+}
+
+/**
+ * Exits once the output is out when the command was stopped by Ctrl-C
+ * (exit 130), or stopped waiting for a test filter or a reporter past its
+ * timeout or cancelled by a watch key: the work it left behind may ignore
+ * its signal, such as the filter's request or the reporter's upload, and
+ * nothing it does can change the run. Otherwise the process ends when its
+ * work does, so a timer or exit hook user code left still runs.
+ */
+export async function exitIfStopped(exit: () => void = () => process.exit()): Promise<void> {
+  if (process.exitCode !== 130 && !leftWorkBehind()) return;
+  await drainRunnerOutput();
+  exit();
+}
+
+/** How long the process may outlive its command, for the timers and `beforeExit` hooks user code left. */
+const EXIT_GRACE_MS = 2_000;
+
+/**
+ * Exits if the process is still alive `EXIT_GRACE_MS` after the command: a
+ * timer or socket the config or a test file opened would keep it open forever.
+ * A process with nothing left ends on its own first, and an app stop still in
+ * flight finishes within its `shutdownTimeout` before the exit.
+ */
+export function exitAfterGrace(exit: () => void = () => process.exit()): void {
+  setTimeout(() => {
+    void (async () => {
+      await stopsSettled();
+      killManagedProcessGroups();
+      await drainRunnerOutput();
+      exit();
+    })();
+  }, EXIT_GRACE_MS).unref();
 }

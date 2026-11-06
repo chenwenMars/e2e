@@ -14,7 +14,7 @@ interface SelectorChannel {
 }
 
 /**
- * Playwright 1.63 seeds custom selectors only in newly created contexts, not
+ * Playwright 1.64 seeds custom selectors only in newly created contexts, not
  * the persistent context returned by connectOverCDP. Its public register API
  * rejects an already registered name before reaching that context. Use the
  * same context channel as selectors.register, without allocating global names
@@ -50,7 +50,7 @@ export async function registerCdpSelectors(context: BrowserContext, budget: Conn
 export async function requireCdpShadowTracking(page: Page, budget: ConnectionBudget): Promise<void> {
   if (budget.signal.aborted) throw connectionAbort(budget.signal, 'CDP tracking verification');
   const tracked = await Promise.all(page.frames().map((frame) =>
-    frame.evaluate((key) => Reflect.get(globalThis, Symbol.for(key)) instanceof WeakMap, CLOSED_SHADOW_ROOTS_KEY),
+    frame.evaluate((key) => Symbol.for(key) in globalThis, CLOSED_SHADOW_ROOTS_KEY),
   ));
   if (budget.signal.aborted) throw connectionAbort(budget.signal, 'CDP tracking verification');
   if (tracked.some((present) => !present)) {

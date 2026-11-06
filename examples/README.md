@@ -1,21 +1,31 @@
 # Examples
 
 Standalone apps with three locator tests and two agent tests each.
-Every app uses the same demo: enter a name and press Greet.
+Every app uses the same demo: enter a name and press greet.
 
 | Example | Technology | Runs on |
 | --- | --- | --- |
 | [with-vite](with-vite) | Vite + React | Chromium |
 | [with-next](with-next) | Next.js App Router | Chromium |
+| [with-astro](with-astro) | Astro | Chromium |
+| [with-angular](with-angular) | Angular | Chromium |
 | [with-expo](with-expo) | Expo + React Native | Chromium, iOS simulator, Android emulator |
 | [with-swiftui](with-swiftui) | SwiftUI | iOS simulator |
+| [with-compose](with-compose) | Jetpack Compose | Android emulator |
+| [with-kotlin-multiplatform](with-kotlin-multiplatform) | Kotlin Multiplatform + Compose Multiplatform | Android emulator, iOS simulator |
+| [with-flutter](with-flutter) | Flutter | Android emulator, iOS simulator |
+| [with-maui](with-maui) | .NET MAUI | Android emulator, iOS simulator |
 
 Each folder installs published packages from npm and works outside this
 repository. See its README for run commands. Agent tests need
 `AI_GATEWAY_API_KEY`; without it, they skip.
 
-## For contributors
+Start a new project from one with `npx e2e init my-app --example with-expo`.
+`init` downloads the folder from the tag of the CLI's version.
 
-Run the suite locally after changes. Update the README's "Last checked"
-versions. CI does not run these examples. Oxlint and fallow exclude them.
-Do not commit lockfiles. Keep the demo and tests consistent across examples.
+## Contributing
+
+[e2e.com/examples](https://e2e.com/examples) lists these
+examples and partner and community ones from other repositories, from
+[`examples.json`](examples.json). To add yours, or to change an example
+here, see [CONTRIBUTING.md](CONTRIBUTING.md).

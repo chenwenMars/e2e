@@ -20,6 +20,21 @@ export function realpathOfExisting(target: string): string {
   return resolveThroughLinks(target, 0);
 }
 
+/**
+ * `target` as the filesystem spells it, the way git and `process.cwd()`
+ * report a directory: symlinks resolved and, on a case-insensitive
+ * filesystem (default macOS, Windows), each name in its on-disk case,
+ * which `realpathOfExisting` keeps as typed. A path that does not exist
+ * resolves as `realpathOfExisting` does.
+ */
+export function onDiskPath(target: string): string {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return realpathOfExisting(target);
+  }
+}
+
 /** `realpathOfExisting`, having followed `hops` dangling symlinks so far. */
 function resolveThroughLinks(target: string, hops: number): string {
   const tail: string[] = [];
@@ -59,6 +74,15 @@ export function relativeToProjectRoot(projectRoot: string, target: string): stri
   const relative = path.relative(realpathOfExisting(projectRoot), realpathOfExisting(target));
   const inside = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
   return inside ? relative : undefined;
+}
+
+/**
+ * `target` as a message shows it, with `/` separators: relative to the
+ * project root when strictly below it (see `relativeToProjectRoot`), else
+ * absolute.
+ */
+export function displayPath(projectRoot: string, target: string): string {
+  return (relativeToProjectRoot(projectRoot, target) ?? target).split(path.sep).join('/');
 }
 
 /** Whether `target` is a path strictly below the project root; see `relativeToProjectRoot`. */

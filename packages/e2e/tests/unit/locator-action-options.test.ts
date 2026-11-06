@@ -2,7 +2,8 @@
  * Every locator action refuses an option key it does not take. A JavaScript
  * test ported from Playwright can pass `{ trial: true }` or `{ force: true }`;
  * ignoring the key would commit the action the test meant to only rehearse,
- * so the call fails before a node is resolved or a step recorded.
+ * so the call fails before a node is resolved or a step recorded. The same
+ * file covers each action's own argument checks.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -25,6 +26,7 @@ const CALLS: Record<string, Call> = {
   tap: (locator, options) => locator.tap(options),
   click: (locator, options) => locator.click(options),
   doubleTap: (locator, options) => locator.doubleTap(options),
+  dblclick: (locator, options) => locator.dblclick(options),
   secondaryTap: (locator, options) => locator.secondaryTap(options),
   longPress: (locator, options) => locator.longPress(options),
   fill: (locator, options) => locator.fill('yes', options),
@@ -96,11 +98,12 @@ describe('locator action options', () => {
       ['tap', (locator: Locator) => locator.tap({ modifiers: ['Shift'] })],
       ['click', (locator: Locator) => locator.click({ modifiers: ['Shift'] })],
       ['doubleTap', (locator: Locator) => locator.doubleTap({ modifiers: ['Shift'] })],
+      ['dblclick', (locator: Locator) => locator.dblclick({ modifiers: ['Shift'] })],
       ['secondaryTap', (locator: Locator) => locator.secondaryTap({ modifiers: ['Shift'] })],
     ] as const)('%s hands the held keys to an engine that declares tapModifiers', async (verb, call) => {
       const { screen, steps, received } = modifierScreen(true);
       await call(screen.getByLabel('Agree'));
-      expect(received).toEqual([{ kind: verb === 'click' ? 'tap' : verb, modifiers: ['Shift'] }]);
+      expect(received).toEqual([{ kind: verb === 'click' ? 'tap' : verb === 'dblclick' ? 'doubleTap' : verb, modifiers: ['Shift'] }]);
       expect(steps.all()).toEqual([
         expect.objectContaining({ api: `locator.${verb}`, label: 'getByLabel("Agree") with Shift', status: 'passed' }),
       ]);
@@ -176,4 +179,25 @@ describe('locator action options', () => {
     });
     expect(performed).toEqual([]);
   });
+
+  it('setInputFiles hands an empty list to the engine, which clears the input', async () => {
+    const { screen, steps, actions } = boxScreen();
+    await screen.getByLabel('Agree').setInputFiles([]);
+    expect(actions).toEqual([{ kind: 'setInputFiles', paths: [] }]);
+    expect(steps.all()).toEqual([expect.objectContaining({ api: 'locator.setInputFiles', status: 'passed' })]);
+  });
+
+  it.each([[''], ['  '], [['fixtures/a.txt', '']], [invalid<readonly string[]>(['fixtures/a.txt', 1])]])(
+    'setInputFiles refuses %j before any lookup or action',
+    async (paths) => {
+      const { screen, steps, performed, locate } = boxScreen();
+      await expect(Promise.resolve().then(() => screen.getByLabel('Agree').setInputFiles(paths))).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+        message: 'setInputFiles paths must be non-empty strings',
+      });
+      expect(locate).not.toHaveBeenCalled();
+      expect(performed).toEqual([]);
+      expect(steps.all()).toEqual([]);
+    },
+  );
 });

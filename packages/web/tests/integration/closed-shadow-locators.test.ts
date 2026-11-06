@@ -21,7 +21,7 @@ import type {
 } from 'e2e/engine';
 import { web } from '../../src/index.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
-import { noSecrets } from '../helpers/secrets.ts';
+import { ignoreTrace, noSecrets } from '../helpers/secrets.ts';
 
 function cleanup(): EngineCleanupContext {
   return { signal: new AbortController().signal, timeoutMs: 30_000 };
@@ -91,7 +91,7 @@ describe('locators inside closed shadow roots', () => {
     app = await startFixtureApp();
     artifactsDir = mkdtempSync(path.join(tmpdir(), 'e2e-closed-'));
     await boot(engine, app);
-    await engine.startAttempt!({ attemptId: 'closed-1', artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets });
+    await engine.startAttempt!({ attemptId: 'closed-1', artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets, ...ignoreTrace });
     await engine.session!.open!(`${app.url}/closed-form`, op);
   });
 
@@ -174,6 +174,8 @@ describe('locators inside closed shadow roots', () => {
     expect(withSubmit).toHaveLength(1);
     const withSidecar = await locate({ kind: 'filter', source: host, has: byRole('button', 'Sidecar') });
     expect(withSidecar).toHaveLength(0);
+    expect(await locate({ kind: 'filter', source: host, hasNot: byRole('button', 'Submit') })).toHaveLength(0);
+    expect(await locate({ kind: 'filter', source: host, hasNot: byRole('button', 'Sidecar') })).toHaveLength(1);
   });
 
   it('reads hasText as Playwright does, so text inside a closed root does not count toward the host', async () => {
@@ -183,6 +185,21 @@ describe('locators inside closed shadow roots', () => {
     // Inside the root the text is ordinary text again.
     const hintParagraph = await locate({ kind: 'filter', source: byTestId('hint'), hasText: loose('SHADOW-42') });
     expect(hintParagraph).toHaveLength(1);
+  });
+
+  it('reads hasNotText as Playwright does, so text inside a closed root does not exclude the host', async () => {
+    const host: LocatorExpression = { kind: 'selector', selector: 'x-access' };
+    expect(await locate({ kind: 'filter', source: host, hasNotText: loose('SHADOW-42') })).toHaveLength(1);
+    expect(await locate({ kind: 'filter', source: byTestId('hint'), hasNotText: loose('SHADOW-42') })).toHaveLength(0);
+  });
+
+  it('excludes button text with string and RegExp filters across roots', async () => {
+    const buttons = byRole('button');
+    const retained = await locate({ kind: 'filter', source: buttons, hasNotText: loose('twin') });
+    expect(retained.map((node) => node.name)).toEqual(['Submit', 'Open inside closed', 'Closed inside open', 'Sidecar']);
+    const regex = await locate({ kind: 'filter', source: buttons, hasNotText: { kind: 'regexp', source: '^Twin$', flags: 'i' } });
+    expect(regex.map((node) => node.name)).toEqual(retained.map((node) => node.name));
+    expect(await locate({ kind: 'filter', source: buttons, hasText: loose('Twin'), hasNotText: loose('Twin') })).toEqual([]);
   });
 
   it('matches a label an aria-labelledby id names in the control\'s own tree, in a closed root and an open one below it', async () => {
@@ -242,7 +259,7 @@ describe('match order across one closed root', () => {
     app = await startFixtureApp();
     artifactsDir = mkdtempSync(path.join(tmpdir(), 'e2e-closed-order-'));
     await boot(engine, app);
-    await engine.startAttempt!({ attemptId: 'closed-order', artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets });
+    await engine.startAttempt!({ attemptId: 'closed-order', artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets, ...ignoreTrace });
     await engine.session!.open!(`${app.url}/closed-order`, op);
   });
 

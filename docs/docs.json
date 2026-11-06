@@ -1,35 +1,6 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
   "name": "e2e",
   "description": "An open framework for agentic end-to-end testing.",
-  "colors": {
-    "primary": "#171717",
-    "light": "#fafafa",
-    "dark": "#171717"
-  },
-  "logo": {
-    "light": "/logo-black.png",
-    "dark": "/logo-white.png"
-  },
-  "favicon": {
-    "light": "/favicon-black.png",
-    "dark": "/favicon-white.png"
-  },
-  "seo": {
-    "metatags": {
-      "og:image": "https://e2e.tester.army/docs/images/og.png",
-      "twitter:card": "summary_large_image",
-      "twitter:image": "https://e2e.tester.army/docs/images/og.png"
-    }
-  },
-  "integrations": {
-    "posthog": {
-      "apiKey": "phc_rT8hpREuSj5bRGPHP6KLKNuf4kfwhP4FEf6ahHHV2ZgH",
-      "apiHost": "https://eu.i.posthog.com",
-      "sessionRecording": false
-    }
-  },
   "contextual": {
     "options": [
       "copy",
@@ -44,7 +15,7 @@
           "query": [
             {
               "key": "prompt",
-              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.tester.army/docs$path.md"
+              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.com/docs$path.md"
             }
           ]
         }
@@ -59,7 +30,7 @@
           "query": [
             {
               "key": "q",
-              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.tester.army/docs$path.md"
+              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.com/docs$path.md"
             }
           ]
         }
@@ -73,56 +44,14 @@
           "query": [
             {
               "key": "text",
-              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.tester.army/docs$path.md"
+              "value": "Read this documentation page, so I can ask questions about it:\n\nhttps://e2e.com/docs$path.md"
             }
           ]
         }
       }
     ]
   },
-  "fonts": {
-    "heading": {
-      "family": "Geist",
-      "weight": 500
-    },
-    "body": {
-      "family": "Geist"
-    }
-  },
-  "appearance": {
-    "default": "system"
-  },
-  "background": {
-    "color": {
-      "light": "#ffffff",
-      "dark": "#0a0a0a"
-    }
-  },
-  "styling": {
-    "codeblocks": {
-      "theme": {
-        "light": "github-light",
-        "dark": "github-dark"
-      }
-    },
-    "eyebrows": "breadcrumbs"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "label": "GitHub",
-      "href": "https://github.com/tester-army/e2e"
-    }
-  },
   "navigation": {
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Shipping faster than you can test?",
-          "href": "https://tester.army/?utm_source=e2e&utm_medium=docs&utm_campaign=docs_sidebar_banner"
-        }
-      ]
-    },
     "tabs": [
       {
         "tab": "Documentation",
@@ -134,7 +63,10 @@
               "index",
               "quickstart",
               "core-concepts",
-              "explore"
+              "agentic-vs-deterministic",
+              "coding-agents",
+              "mcp-server",
+              "ci"
             ]
           },
           {
@@ -146,60 +78,87 @@
             ]
           },
           {
+            "group": "Features",
+            "pages": [
+              "cache",
+              "explore",
+              "visual-testing",
+              "authentication",
+              "bug-bash",
+              "agents"
+            ]
+          },
+          {
             "group": "Models and agents",
             "pages": [
               "models",
               "decision-models",
-              "subscriptions",
-              "cache"
+              "subscriptions"
             ]
           },
           {
-            "group": "Automate",
+            "group": "Run in CI",
             "pages": [
-              "coding-agents",
-              "ci",
-              "mobile-ci",
+              "ci/github-actions",
+              "ci/eas-workflows",
+              "ci/bitrise",
+              "ci/codemagic",
+              "ci/norrix",
               "github"
             ]
           },
           {
-            "group": "Integrations",
+            "group": "Hosted browsers and devices",
             "pages": [
               "integrations/index",
               "integrations/kernel",
-              "integrations/eas"
+              "integrations/lightpanda",
+              "integrations/eas",
+              "integrations/smol",
+              "integrations/limrun",
+              "integrations/testmu",
+              "integrations/browserstack"
             ]
           },
           {
             "group": "Extend",
             "pages": [
               "tools",
+              "fixtures",
               "executors",
-              "writing-an-engine"
+              "filters"
+            ]
+          },
+          {
+            "group": "Engines",
+            "pages": [
+              "engines",
+              "writing-an-engine",
+              "engine-servers"
             ]
           },
           {
             "group": "Deep dive",
             "pages": [
               "browser",
-              "bug-bash",
-              "authentication",
               "security",
               "telemetry",
               "debugging",
-              "agents",
-              "agent-steps"
+              "agent-steps",
+              "self-healing",
+              "page-object-model"
             ]
           },
           {
             "group": "Migrate",
             "pages": [
+              "migrate/index",
               "migrate/playwright",
               "migrate/cypress",
               "migrate/selenium",
               "migrate/detox",
-              "migrate/maestro"
+              "migrate/maestro",
+              "migrate/testerarmy"
             ]
           }
         ]
@@ -223,10 +182,12 @@
             "pages": [
               "reference/config",
               "reference/cli",
+              "reference/runner",
               "reference/mcp",
               "reference/reporters",
               "reference/environment",
-              "reference/errors"
+              "reference/errors",
+              "reference/security"
             ]
           },
           {
@@ -242,9 +203,10 @@
             ]
           },
           {
-            "group": "Engine contract",
+            "group": "Engines",
             "pages": [
-              "reference/engine"
+              "reference/engine",
+              "reference/engine-protocol"
             ]
           }
         ]
@@ -258,12 +220,23 @@
       }
     ]
   },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/tester-army/e2e"
-    }
-  },
   "redirects": [
+    {
+      "source": "/acp",
+      "destination": "/subscriptions#use-your-coding-agent"
+    },
+    {
+      "source": "/page-objects",
+      "destination": "/page-object-model"
+    },
+    {
+      "source": "/integrations/testmu-browsers",
+      "destination": "/integrations/testmu#run-web-targets-in-browsers"
+    },
+    {
+      "source": "/mobile-ci",
+      "destination": "/ci#mobile-jobs"
+    },
     {
       "source": "/introduction",
       "destination": "/"

@@ -1,9 +1,12 @@
 /**
  * The catalog of a live session: every tool `call` can run, as AI SDK tools.
  * `observe` shows the whole screen, the grammar is what the target's engine
- * honors, `screenshot` and the point tools (`tap_at`, `hover_at`, `type_at`,
- * `press_at`, `select_at`) among it, answering `PIXEL_TAINTED` once a secret
- * has been filled, `locate` tries a semantic locator the way a test would,
+ * honors, `screenshot` (which also saves a file when given a path) and the
+ * point tools (`tap_at`, `hover_at`, `drag_at`, `type_at`, `press_at`,
+ * `select_at`) among it, `locate` tries a semantic
+ * locator the way a test would, `run_code` runs whole test statements on
+ * the session's fixtures, `test_lines` returns the test line every action
+ * printed (`test-lines.ts`) and the statements `run_code` passed,
  * `start_recording` and `stop_recording` follow when the engine records video,
  * and the project's own tools come last. The config load refuses a project
  * tool named like a built-in; should one reach here anyway, the built-in
@@ -11,20 +14,25 @@
  * the testing agent's toolset applies.
  */
 
+import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import path from 'node:path';
 import type { ToolSet } from 'ai';
 import { z } from 'zod';
 import { projectTools } from '../agent/default-agent.ts';
 import type { ExecutorNode, StepExecutorContext } from '../agent/executor.ts';
 import { projectTree, redactNode, type NodeRedaction } from '../agent/observation.ts';
 import { GRAMMAR_TOOL_NAMES } from '../agent/action-names.ts';
-import { createGrammarTools } from '../agent/primitives.ts';
+import { grammarTools } from '../agent/primitives.ts';
 import type { ScreenPresenter } from '../agent/screen-update.ts';
 import type { LocatorExpression, SemanticNode, TargetSession } from '../engine/surface.ts';
 import { ConfigurationError } from '../internal/errors.ts';
+import { relativeToProjectRoot } from '../internal/paths.ts';
 import { describeExpression, roleQuery, testIdQuery, textQuery } from '../locator/expression.ts';
 import type { LocatorEngine } from '../locator/engine.ts';
 import type { AgentTool, Role } from '../types.ts';
 import { recordingTools, type SessionRecorder } from './recording.ts';
+import { SessionTestLines, type TestLineFills } from './test-lines.ts';
+import { runCodeTool, type RunCodeSession } from './run-code.ts';
 
 /** How many matching nodes `locate` describes. */
 const MAX_LOCATE_NODES = 10;
@@ -40,6 +48,10 @@ export interface SessionCatalog {
   readonly readOnly: ReadonlySet<string>;
   /** The project's own tools among them. */
   readonly project: ReadonlySet<string>;
+  /** The step context the tools run on, keeping every observation for the test lines; the first screen is read through it too. */
+  readonly context: StepExecutorContext;
+  /** The test lines the session's actions printed and `run_code` passed. */
+  readonly lines: SessionTestLines;
 }
 
 export interface CatalogOptions {
@@ -51,28 +63,56 @@ export interface CatalogOptions {
   readonly tools: Readonly<Record<string, AgentTool>>;
   /** The attempt's secret ledger: what `locate` shows of a node passes through it, as `observe` does. */
   readonly redaction: NodeRedaction;
+  /** Where a relative `screenshot` path resolves. */
+  readonly projectRoot: string;
+  /** The attempt's artifact directory, where the engine writes a screenshot before `screenshot` copies it out. */
+  readonly attemptDir: string;
   /** The session's recorder, when the engine records video. */
   readonly recorder: SessionRecorder | undefined;
+  /** The target's app URL, which a navigation's test line is made relative to. */
+  readonly appBase?: { readonly href: string; readonly origin: string } | undefined;
+  /** The credentials and secrets a fill's test line names. */
+  readonly fills?: TestLineFills | undefined;
+  /** The test the session ran first, as `file:line`, which its test lines carry on from. */
+  readonly testRan?: string | undefined;
   readonly warn: (message: string) => void;
   /** Told the cause of every grammar action that failed into a result. */
   readonly onActionFailed?: ((cause: unknown) => void) | undefined;
+  /** The attempt's fixtures and what guards them, for `run_code`; without them the catalog has no `run_code`. */
+  readonly runCode?: RunCodeSession | undefined;
 }
 
 /** Builds the session's catalog from the step context and the target. */
 export function createSessionCatalog(options: CatalogOptions): SessionCatalog {
-  const { context, screen } = options;
+  const { screen, locator } = options;
+  const lines = new SessionTestLines({
+    query: locateQuery,
+    resolve: (expression) => locator.resolveNow(expression),
+    read: (ref) => options.session.read(ref, locator.operation()),
+    redact: options.redaction.redact,
+    appBase: options.appBase,
+    fills: options.fills,
+    testRan: options.testRan,
+  });
+  const context = lines.watch(options.context);
   // The grammar's own observe reports a diff for the model loop; the
   // session's shows the whole screen, so it replaces the grammar's.
-  const { observe: _diffObserve, ...verbs } = createGrammarTools(context, { screen, onActionFailed: options.onActionFailed });
+  const { observe: _diffObserve, ...verbs } = grammarTools(context, {
+    screen,
+    onActionFailed: options.onActionFailed,
+    saveScreenshot: (file) => saveScreenshot(options, file),
+  });
   const recording = options.recorder === undefined ? {} : recordingTools(options.recorder);
   const builtIn: ToolSet = {
     observe: fullObserveTool(context, screen),
-    ...verbs,
-    locate: locateTool(options.locator, options.session, options.redaction),
+    ...lines.wrap(verbs),
+    locate: locateTool(locator, options.session, options.redaction),
+    ...(options.runCode === undefined ? {} : { run_code: runCodeTool({ ...options.runCode, context, screen, record: (passed) => lines.ran(passed) }) }),
+    test_lines: lines.tool(),
     ...recording,
   };
   const defined = options.tools;
-  const readOnly = new Set(['observe', 'locate', 'screenshot']);
+  const readOnly = new Set(['observe', 'locate', 'test_lines', 'screenshot']);
   const project: ToolSet = {};
   for (const [name, tool] of Object.entries(projectTools(context, defined))) {
     if (name in builtIn) {
@@ -82,7 +122,27 @@ export function createSessionCatalog(options: CatalogOptions): SessionCatalog {
     project[name] = tool;
     if (defined[name]?.annotations.mutates === false) readOnly.add(name);
   }
-  return { tools: { ...builtIn, ...project }, readOnly, project: new Set(Object.keys(project)) };
+  return { tools: { ...builtIn, ...project }, readOnly, project: new Set(Object.keys(project)), context, lines };
+}
+
+/**
+ * Saves the engine's masked screenshot, the one `app.screenshot` keeps, to
+ * `file` resolved against the project root, and returns the absolute path.
+ * As with `upload`, a path outside the project or under a hidden directory
+ * is refused.
+ */
+async function saveScreenshot(options: CatalogOptions, file: string): Promise<string> {
+  const destination = path.resolve(options.projectRoot, file);
+  const relative = relativeToProjectRoot(options.projectRoot, destination);
+  if (relative === undefined) throw new ConfigurationError('POLICY_DENIED', `${JSON.stringify(file)} is outside the project root; screenshots are saved inside the project`);
+  if (relative.split(path.sep).some((segment) => segment.startsWith('.'))) {
+    throw new ConfigurationError('POLICY_DENIED', `${JSON.stringify(file)} is a hidden file or sits under a hidden directory; screenshots are never saved there`);
+  }
+  const source = path.join(options.attemptDir, await options.session.artifacts.screenshot(path.basename(destination, path.extname(destination)), options.locator.operation()));
+  mkdirSync(path.dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+  rmSync(source, { force: true });
+  return destination;
 }
 
 /**
@@ -139,6 +199,8 @@ export interface LocateArgs {
 export interface LocateQuery {
   readonly expression: LocatorExpression;
   readonly code: string;
+  /** What to try when nothing matches. */
+  readonly notFound: string;
 }
 
 /** Builds the expression and the matching `screen.*` call from the tool arguments. */
@@ -149,26 +211,43 @@ export function locateQuery(args: LocateArgs): LocateQuery {
   if (given !== 1) {
     throw new ConfigurationError('INVALID_ARGUMENT', 'locate needs exactly one of role, text, label, placeholder, or testId');
   }
+  const notFound = `Check the accessible name in the observation (observe)${exact ? ', or loosen the match with exact: false' : ''}.`;
   if (role !== undefined) {
     const options = name === undefined ? '' : `, ${JSON.stringify(name)}${exact ? '' : ', { exact: false }'}`;
     return {
       expression: roleQuery(role as Role, name === undefined ? undefined : { name, exact }, undefined),
       code: `screen.getByRole(${JSON.stringify(role)}${options})`,
+      notFound: name !== undefined && CONTENT_NAMED_ROLES.has(role) ? contentNameNotFound(role, name, exact) : notFound,
     };
   }
   if (name !== undefined) throw new ConfigurationError('INVALID_ARGUMENT', 'name only narrows a role query');
-  if (testId !== undefined) return { expression: testIdQuery(testId, undefined, undefined), code: `screen.getByTestId(${JSON.stringify(testId)})` };
+  if (testId !== undefined) return { expression: testIdQuery(testId, undefined, undefined), code: `screen.getByTestId(${JSON.stringify(testId)})`, notFound };
   const options = exact ? '' : `, { exact: false }`;
-  if (text !== undefined) return { expression: textQuery('text', text, { exact }, undefined), code: `screen.getByText(${JSON.stringify(text)}${options})` };
-  if (label !== undefined) return { expression: textQuery('label', label, { exact }, undefined), code: `screen.getByLabel(${JSON.stringify(label)}${options})` };
-  return { expression: textQuery('placeholder', placeholder!, { exact }, undefined), code: `screen.getByPlaceholder(${JSON.stringify(placeholder)}${options})` };
+  if (text !== undefined) return { expression: textQuery('text', text, { exact }, undefined), code: `screen.getByText(${JSON.stringify(text)}${options})`, notFound };
+  if (label !== undefined) return { expression: textQuery('label', label, { exact }, undefined), code: `screen.getByLabel(${JSON.stringify(label)}${options})`, notFound };
+  return { expression: textQuery('placeholder', placeholder!, { exact }, undefined), code: `screen.getByPlaceholder(${JSON.stringify(placeholder)}${options})`, notFound };
+}
+
+/**
+ * Roles `observe` names from their text even though the platform gives them no
+ * accessible name, so a message or list row reads as one line. A name read off
+ * such a node is text no role query matches.
+ */
+const CONTENT_NAMED_ROLES: ReadonlySet<string> = new Set(['status', 'alert', 'listitem']);
+
+/** The zero-match advice for a content-named role: match the text instead of retrying it as a name. */
+function contentNameNotFound(role: string, name: string, exact: boolean): string {
+  const quoted = JSON.stringify(name);
+  const article = /^[aeiou]/.test(role) ? 'an' : 'a';
+  const text = `screen.getByText(${quoted}${exact ? '' : ', { exact: false }'})`;
+  return `A role query matches the accessible name only, and observe shows ${article} ${role} by its text in its place. If ${quoted} is that text, use screen.getByRole(${JSON.stringify(role)}).filter({ hasText: ${quoted} }) or ${text}.${exact ? ' Otherwise loosen the match with exact: false.' : ''}`;
 }
 
 /** Renders a locate result: the count, the verdict a test would get, and the nodes, each through the attempt's redactor. */
 export function describeLocate(query: LocateQuery, count: number, nodes: readonly SemanticNode[], redaction: NodeRedaction): string {
   const lines = [`${count === 1 ? '1 node matches' : `${count} nodes match`} ${describeExpression(query.expression)}.`];
   if (count === 1) lines.push(`Use: ${query.code}`);
-  else if (count === 0) lines.push('A test using this locator would fail with LOCATOR_NOT_FOUND. Check the accessible name in the observation (observe), or loosen the match with exact: false.');
+  else if (count === 0) lines.push(`A test using this locator would fail with LOCATOR_NOT_FOUND. ${query.notFound}`);
   else lines.push(`A test action on ${query.code} would fail with LOCATOR_AMBIGUOUS. Narrow it with a name, getByRole(role, name), .filter({ hasText }), .first(), or .nth(i), or scope it under a container.`);
   for (const node of nodes) lines.push(`- ${describeNode(projectTree(redactNode(node, redaction)))}`);
   if (count > nodes.length) lines.push(`- and ${count - nodes.length} more`);

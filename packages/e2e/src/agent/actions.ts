@@ -12,22 +12,23 @@
 import type { ViewportPoint, ViewportSize } from '../engine/surface.ts';
 import { redactNode, type NodeRedaction, type RedactedNode } from './observation.ts';
 import {
-  bound,
   isNodeAction,
   MAX_TRACE_DESCRIPTOR_CHARS,
   MAX_TRACE_SUMMARY_CHARS,
+  targetLabel,
   type NodeActionName,
   type PointActionName,
   type TraceTargetDescriptor,
   type TracePosition,
 } from '../cache/trace.ts';
 import { sanitizeText } from '../internal/errors.ts';
-import { collapseText } from '../internal/text.ts';
-import type { ScrollDirection } from '../types.ts';
+import type { KeyModifier } from '../engine/contract.ts';
+import { bound, collapseText } from '../internal/text.ts';
+import type { ActionDetails, ActionEvent, ScrollDirection } from '../types.ts';
 
 /** One committed grammar action, addressed by the node it actually ran against. */
 export type RecordableAction =
-  | ({ readonly name: NodeActionName; readonly node: RedactedNode } & Placement)
+  | ({ readonly name: NodeActionName; readonly node: RedactedNode; readonly modifiers?: readonly KeyModifier[] } & Placement)
   | ({ readonly name: 'type'; readonly node: RedactedNode; readonly value: string } & Placement)
   | ({ readonly name: 'typeSecret'; readonly node: RedactedNode; readonly secret: string } & Placement)
   | ({ readonly name: 'press'; readonly node: RedactedNode; readonly key: string } & Placement)
@@ -60,27 +61,36 @@ export type RecordableAction =
     } & Placement)
   | { readonly name: 'navigate'; readonly url: string }
   | { readonly name: 'back' }
+  /** The viewport set to a size, in CSS pixels. */
+  | { readonly name: 'resize'; readonly size: ViewportSize }
   /** Keyboard input to whatever held focus, with no node resolved. */
   | { readonly name: 'typeText'; readonly value: string; readonly replace: boolean }
   | { readonly name: 'pressKey'; readonly key: string }
   | { readonly name: 'dismissKeyboard' }
   /**
-   * A tap or hover on a bare viewport point that no listed control
-   * contained, with the viewport it was placed in and, when one is listed,
-   * the node whose box contained it: the trace records the point's place
-   * inside that box so replay can follow the node when the layout shifts.
+   * A tap or hover on a bare viewport point, with the viewport it was placed
+   * in and, when one is listed, the node whose box contained it and where
+   * that node sat: the trace records the point's place inside that box so
+   * replay can follow the node when the layout shifts.
    */
-  | {
-      readonly name: PointActionName;
-      readonly point: ViewportPoint;
-      readonly viewport: ViewportSize;
-      readonly under?: RedactedNode;
-    };
+  | ({ readonly name: PointActionName; readonly viewport: ViewportSize } & PlacedPoint)
+  /**
+   * A drag from one bare viewport point to another, with the viewport it was
+   * placed in; each end is placed the way a point action's one point is, so
+   * the trace can follow both nodes when the layout shifts.
+   */
+  | { readonly name: 'dragAt'; readonly from: PlacedPoint; readonly to: PlacedPoint; readonly viewport: ViewportSize };
 
 /** Where the node sat when it was acted on: its container's key and its place among identical twins. */
 export interface Placement {
   readonly within?: string;
   readonly position?: TracePosition;
+}
+
+/** A bare viewport point and, when one is listed, the node whose box contained it and where that node sat. */
+export interface PlacedPoint extends Placement {
+  readonly point: ViewportPoint;
+  readonly under?: RedactedNode;
 }
 
 
@@ -97,6 +107,11 @@ const MAX_WITHIN_CHARS = 80;
  * one. A row whose only text is its own (`<li>Alpha <button><svg/></li>`)
  * is keyed by it. Only the nearest container counts: the list around a row
  * with no text names every row alike, so its key would tell no twin apart.
+ * A container whose first text belongs to a twin of the row the node came
+ * up through is such a list, and keys nothing by that text: a windowed list
+ * renders whichever rows are near the viewport, so its first row is a scroll
+ * position, not a place, and the same row would read as `Row 0512 in Row
+ * 0500` one time and `in Row 0501` the next. Its own label still keys it.
  */
 export function containerKey(
   id: string,
@@ -105,17 +120,35 @@ export function containerKey(
 ): string | undefined {
   const node = nodes.get(id);
   const own = node === undefined ? '' : squash(node.name ?? node.text ?? '');
+  let came = id;
   let cursor = parents.get(id);
   while (cursor !== undefined) {
     const container = nodes.get(cursor);
     if (container !== undefined && CONTAINER_ROLES.has(container.role ?? '')) {
-      const key = firstLeafText(container) ?? ownLabel(container);
+      const key = (namedAfterTwinOf(container, nodes.get(came)) ? undefined : firstLeafText(container)) ?? ownLabel(container);
       const clean = key === undefined ? '' : bound(collapseText(key), MAX_WITHIN_CHARS);
       return clean === '' || squash(clean) === own ? undefined : clean;
     }
+    came = cursor;
     cursor = parents.get(cursor);
   }
   return undefined;
+}
+
+/**
+ * Whether `container`'s first text sits in a child that is a container of
+ * the same role as `branch`, the child the keyed node came up through, and
+ * not `branch` itself: the container is then a list of such rows, named
+ * after whichever one comes first.
+ */
+function namedAfterTwinOf(container: RedactedNode, branch: RedactedNode | undefined): boolean {
+  if (branch === undefined || !CONTAINER_ROLES.has(branch.role ?? '')) return false;
+  for (const child of container.children ?? []) {
+    const own = (child.children?.length ?? 0) === 0 ? (child.text ?? child.name ?? '').trim() : '';
+    if (own === '' && firstLeafText(child) === undefined) continue;
+    return child.ref.id !== branch.ref.id && child.role === branch.role;
+  }
+  return false;
 }
 
 /** Parent id of every non-root node, derived from the tree the node map indexes. */
@@ -178,6 +211,43 @@ const NODE_ACTION_PROSE: Readonly<Record<NodeActionName, (where: string) => stri
 /** How each point verb reads: `tap the point (x, y)`, `hover over the point (x, y)`. */
 const POINT_ACTION_PROSE: Readonly<Record<PointActionName, string>> = { tapAt: 'tap', hoverAt: 'hover over' };
 
+/** What every `onAction` event carries, whatever its action. */
+type ActionEventFields = Pick<ActionEvent, 'index' | 'summary' | 'source'>;
+
+/**
+ * The `onAction` event of each action that has `ActionDetails`. Points are
+ * copied, so a hook that mutates them cannot move what the trace cache records.
+ */
+const DETAILED_EVENTS: {
+  readonly [A in keyof ActionDetails]: (
+    action: RecordableAction & { readonly name: A },
+    fields: ActionEventFields,
+  ) => Extract<ActionEvent, { readonly action: A }>;
+} = {
+  tapAt: (action, fields) => ({ ...fields, action: action.name, point: { ...action.point } }),
+  hoverAt: (action, fields) => ({ ...fields, action: action.name, point: { ...action.point } }),
+  dragAt: (action, fields) => ({ ...fields, action: action.name, from: { ...action.from.point }, to: { ...action.to.point } }),
+};
+
+/** Whether `onAction` reports `ActionDetails` for the action. */
+function isDetailed(action: RecordableAction): action is RecordableAction & { readonly name: keyof ActionDetails } {
+  return Object.hasOwn(DETAILED_EVENTS, action.name);
+}
+
+/** The event of one action whose name has details. */
+function detailedEvent<A extends keyof ActionDetails>(
+  name: A,
+  action: RecordableAction & { readonly name: A },
+  fields: ActionEventFields,
+): ActionEvent {
+  return DETAILED_EVENTS[name](action, fields);
+}
+
+/** The `onAction` event for one committed action. */
+export function actionEvent(action: RecordableAction, fields: ActionEventFields): ActionEvent {
+  return isDetailed(action) ? detailedEvent(action.name, action, fields) : { ...fields, action: action.name };
+}
+
 /**
  * Describes one committed action for recording and for the live event. Its
  * nodes pass the ledger again as it is now: a secret resolved after the
@@ -188,14 +258,24 @@ export function describeAction(action: RecordableAction, redaction: NodeRedactio
     'node' in action
       ? describePlaced(action.node, action, redaction)
       : 'point' in action
-        ? describePlaced(action.under, {}, redaction)
-        : undefined;
+        ? describePlaced(action.under, action, redaction)
+        : action.name === 'dragAt'
+          ? describePlaced(action.from.under, action.from, redaction)
+          : undefined;
   const destination =
-    action.name === 'drag' ? describePlaced(action.destination.node, action.destination, redaction) : undefined;
+    action.name === 'drag'
+      ? describePlaced(action.destination.node, action.destination, redaction)
+      : action.name === 'dragAt'
+        ? describePlaced(action.to.under, action.to, redaction)
+        : undefined;
   const where = describeForSummary(target);
   const safe = (value: string) => quote(redaction.redact(sanitizeText(value)));
   const prose = (() => {
-    if (isNodeAction(action)) return NODE_ACTION_PROSE[action.name](where);
+    if (isNodeAction(action)) {
+      const said = NODE_ACTION_PROSE[action.name](where);
+      const held = 'modifiers' in action ? action.modifiers : undefined;
+      return held === undefined || held.length === 0 ? said : `${said} with ${held.join('+')} held`;
+    }
     switch (action.name) {
       case 'type':
         return `type ${safe(action.value)} into ${where}`;
@@ -223,6 +303,8 @@ export function describeAction(action: RecordableAction, redaction: NodeRedactio
         return `navigate to ${safe(action.url)}`;
       case 'back':
         return 'navigate back';
+      case 'resize':
+        return `resize the viewport to ${String(action.size.width)}x${String(action.size.height)}`;
       case 'typeText':
         return `type ${safe(action.value)} into the focused field${action.replace ? ', replacing its value' : ''}`;
       case 'pressKey':
@@ -233,6 +315,13 @@ export function describeAction(action: RecordableAction, redaction: NodeRedactio
       case 'hoverAt': {
         const at = `${POINT_ACTION_PROSE[action.name]} the point (${String(action.point.x)}, ${String(action.point.y)})`;
         return target === undefined ? at : `${at} on ${where}`;
+      }
+      case 'dragAt': {
+        const { point: start } = action.from;
+        const { point: end } = action.to;
+        const from = `drag from the point (${String(start.x)}, ${String(start.y)})${target === undefined ? '' : ` on ${where}`}`;
+        const to = `the point (${String(end.x)}, ${String(end.y)})${destination === undefined ? '' : ` on ${describeForSummary(destination)}`}`;
+        return `${from} to ${to}`;
       }
     }
   })();
@@ -295,19 +384,13 @@ export function describeTarget(node: RedactedNode): TraceTargetDescriptor | unde
 }
 
 function describeForSummary(target: TraceTargetDescriptor | undefined): string {
-  const where = describeWhere(target);
+  const where = target === undefined ? 'the screen' : targetLabel(target);
   const placed = target?.within === undefined ? where : `${where} in ${JSON.stringify(bound(target.within, 40))}`;
   return target?.position === undefined
     ? placed
     : `${placed} (${target.position.index + 1} of ${target.position.of})`;
 }
 
-function describeWhere(target: TraceTargetDescriptor | undefined): string {
-  if (target === undefined) return 'the screen';
-  const label = target.name ?? target.text ?? target.placeholder ?? target.testId ?? '';
-  const role = target.role ?? 'node';
-  return label === '' ? role : `${role} ${JSON.stringify(bound(label, 40))}`;
-}
 
 function quote(value: string): string {
   return JSON.stringify(bound(value, 40));

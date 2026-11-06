@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="WithMaui.MainPage"
+             BackgroundColor="#000000">
+
+    <!--
+      e2e design system: black canvas, square corners, e2e blue for the one action, green and mint accents,
+      an 8px spacing grid, and lowercase headings and UI. Inter and JetBrains Mono stand in for the brand's
+      own typefaces. LineHeight multiplies the font's own line height, so 1.16 on Inter gives 1.4 of the size.
+      CharacterSpacing is points on iOS but sixteenths of an em on Android, so the tracking differs per platform.
+    -->
+    <ContentPage.Resources>
+        <Color x:Key="OffWhite">#F7F7F7</Color>
+        <Color x:Key="Neutral800">#1C1C1C</Color>
+        <Color x:Key="Neutral500">#8D8D8D</Color>
+        <Color x:Key="Neutral400">#B1B1B1</Color>
+        <Color x:Key="Blue">#1A5FFF</Color>
+        <Color x:Key="Green">#64FF9D</Color>
+        <Color x:Key="Mint">#8AF9FF</Color>
+    </ContentPage.Resources>
+
+    <!-- Scrolls when the keyboard leaves too little height for the form. -->
+    <ScrollView>
+        <VerticalStackLayout Padding="24,0">
+            <!-- The e2e logotype, drawn from the official logo's bars so it stays sharp at any size. -->
+            <Path Margin="0,12"
+                  WidthRequest="69"
+                  HeightRequest="24"
+                  HorizontalOptions="Start"
+                  Aspect="Uniform"
+                  Fill="{StaticResource OffWhite}"
+                  SemanticProperties.Description="e2e"
+                  Data="M155.91,0 h90.24 v19.06 h-90.24 Z M26.94,24.48 h82.4 v19.09 h-82.4 Z M145.32,24.48 h35.83 v19.09 h-35.83 Z M220.91,24.48 h35.84 v19.09 h-35.84 Z M297.82,24.48 h82.43 v19.09 h-82.43 Z M10.59,49.04 h32.69 v19.05 h-32.69 Z M92.79,49.04 h33.14 v19.05 h-33.14 Z M210.32,49.04 h35.83 v19.05 h-35.83 Z M281.46,49.04 h32.69 v19.05 h-32.69 Z M363.66,49.04 h33.18 v19.05 h-33.18 Z M0,73.54 h135.96 v19.08 h-135.96 Z M185.09,73.54 h35.8 v19.08 h-35.8 Z M270.88,73.54 h135.97 v19.08 h-135.97 Z M4.13,98.07 h32.68 v19.05 h-32.68 Z M158.07,98.04 h35.83 v19.08 h-35.83 Z M274.98,98.07 h32.68 v19.05 h-32.68 Z M26.94,122.57 h82.4 v19.05 h-82.4 Z M145.32,122.57 h113.33 v19.05 h-113.33 Z M297.82,122.57 h82.43 v19.05 h-82.43 Z" />
+
+            <BoxView HeightRequest="1" Color="{StaticResource Neutral800}" />
+
+            <Label Text="[ with-maui ]"
+                   Margin="0,48,0,0"
+                   FontFamily="JetBrainsMono"
+                   FontSize="12"
+                   CharacterSpacing="{OnPlatform iOS=0.48, Android=0.64}"
+                   TextColor="{StaticResource Green}" />
+            <Label Text="say hello"
+                   Margin="0,8,0,0"
+                   FontFamily="Inter"
+                   FontSize="39"
+                   CharacterSpacing="{OnPlatform iOS=-1.17, Android=-0.48}"
+                   TextColor="{StaticResource OffWhite}"
+                   SemanticProperties.HeadingLevel="Level1" />
+            <Label Text="A demo screen for the e2e examples. Type a name and the app greets you."
+                   Margin="0,24,0,0"
+                   FontFamily="Inter"
+                   FontSize="18"
+                   LineHeight="1.16"
+                   TextColor="{StaticResource Neutral500}" />
+
+            <!--
+              The design system's text field: the label sits inside the field, above the value. The outline is
+              always 2 wide and idles in the field's own colour, so focus and the error change its colour only
+              and nothing moves.
+            -->
+            <Border x:Name="NameField"
+                    Margin="0,40,0,0"
+                    Padding="14,6"
+                    HeightRequest="56"
+                    BackgroundColor="{StaticResource Neutral800}"
+                    Stroke="{StaticResource Neutral800}"
+                    StrokeThickness="2"
+                    StrokeShape="Rectangle">
+                <VerticalStackLayout Spacing="0" VerticalOptions="Center">
+                    <!-- On iOS the field carries the name, so the label stays out of the tree there; Android reads it. -->
+                    <Label Text="name"
+                           FontFamily="JetBrainsMono"
+                           FontSize="12"
+                           TextColor="{StaticResource Neutral400}"
+                           AutomationProperties.IsInAccessibleTree="{OnPlatform iOS=False, Android=True}" />
+                    <!--
+                      AutomationId is what getByTestId finds: the accessibility identifier on iOS, and on Android
+                      the resource id MAUI writes as dev.e2e.examples.maui:id/name. iOS takes the field's name
+                      from SemanticProperties.Description. Android is left without it: there MAUI writes the
+                      description into the field's text, and a filled field reads "name, Ada".
+                    -->
+                    <Entry x:Name="NameEntry"
+                           AutomationId="name"
+                           SemanticProperties.Description="{OnPlatform iOS='name'}"
+                           FontFamily="Inter"
+                           FontSize="16"
+                           HeightRequest="32"
+                           TextColor="{StaticResource OffWhite}"
+                           BackgroundColor="Transparent"
+                           IsSpellCheckEnabled="False"
+                           IsTextPredictionEnabled="False"
+                           ReturnType="Done"
+                           Focused="OnNameFocusChanged"
+                           Unfocused="OnNameFocusChanged"
+                           Completed="OnGreet" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- Buttons change no colour when pressed; a press scales them a little. -->
+            <Button AutomationId="greet"
+                    Text="greet"
+                    Margin="0,16,0,0"
+                    HeightRequest="48"
+                    FontFamily="JetBrainsMono"
+                    FontSize="15"
+                    TextTransform="None"
+                    TextColor="{StaticResource OffWhite}"
+                    BackgroundColor="{StaticResource Blue}"
+                    CornerRadius="0"
+                    BorderWidth="0"
+                    Clicked="OnGreet">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal" />
+                        <VisualState x:Name="Pressed">
+                            <VisualState.Setters>
+                                <Setter Property="Scale" Value="0.98" />
+                            </VisualState.Setters>
+                        </VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+            </Button>
+
+            <Label x:Name="ErrorLabel"
+                   AutomationId="error"
+                   Text="enter a name first."
+                   Margin="0,16,0,0"
+                   FontFamily="Inter"
+                   FontSize="14"
+                   TextColor="{StaticResource Mint}"
+                   IsVisible="False" />
+
+            <Border x:Name="GreetingPanel"
+                    Margin="0,16,0,0"
+                    Padding="16"
+                    BackgroundColor="{StaticResource Neutral800}"
+                    StrokeThickness="0"
+                    StrokeShape="Rectangle"
+                    IsVisible="False">
+                <Label x:Name="GreetingLabel"
+                       AutomationId="greeting"
+                       FontFamily="Inter"
+                       FontSize="16"
+                       LineHeight="1.13"
+                       TextColor="{StaticResource OffWhite}" />
+            </Border>
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

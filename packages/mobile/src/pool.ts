@@ -2,8 +2,9 @@
  * The devices one target drives: one simulator or emulator per worker slot,
  * each under its own agent-device session. A named `device` is a pool of one
  * and a list a pool of many; with no `device` the pool is every booted device
- * of the platform, discovered in `prepare`; a `DeviceProvider` leases one
- * hosted device per slot instead. Each is a `DeviceSource`; `prepare` binds
+ * of the platform no other agent-device session holds, discovered in
+ * `prepare`; a `DeviceProvider` leases one hosted device per slot instead.
+ * Each is a `DeviceSource`; `prepare` binds
  * one `SlotBinding` per slot from it, warms each once per run before any
  * worker exists, and hands the bindings to the workers through the run's
  * environment. The worker that owns a slot then resumes its session in
@@ -56,7 +57,8 @@ export function deviceSelection(
 /** The agent-device session slot `slot` of a target drives: the `session` option or `e2e-<target>`, then `-<slot>`. */
 type SessionNamer = (targetName: string, slot: number) => string;
 
-function isDeviceList(device: unknown): device is readonly string[] {
+/** Whether the `device` option names a pool of devices rather than one device or a provider. */
+export function isDeviceList(device: unknown): device is readonly string[] {
   return Array.isArray(device);
 }
 
@@ -64,7 +66,7 @@ function isDeviceList(device: unknown): device is readonly string[] {
 function sourceFor(options: MobileOptions, createClient: ClientFactory, session: SessionNamer): DeviceSource {
   const { device } = options;
   if (device === undefined) return new BootedDevices(options.platform, createClient, session);
-  if (typeof device === 'string') return new ConfiguredDevices([device]);
+  if (typeof device === 'string') return new ConfiguredDevices([namedDevice(device)]);
   if (isDeviceList(device)) {
     if (device.length === 0) {
       throw new ConfigurationError(
@@ -72,9 +74,17 @@ function sourceFor(options: MobileOptions, createClient: ClientFactory, session:
         'mobile: `device` is an empty pool; name at least one simulator or emulator, or omit it to use every booted one',
       );
     }
-    return new ConfiguredDevices(device);
+    return new ConfiguredDevices(device.map(namedDevice));
   }
   return new LeasedDevices(asDeviceProvider(device), options);
+}
+
+/** A device name from the `device` option; a blank one would select no device, and the daemon would refuse several booted ones as ambiguous. */
+function namedDevice(device: unknown): string {
+  if (typeof device !== 'string' || device.trim() === '') {
+    throw new ConfigurationError('INVALID_CONFIG', 'mobile: `device` names a simulator, emulator, or phone by name, UDID, or serial, and must not be blank; omit it to use every booted one');
+  }
+  return device;
 }
 
 /** The devices named in the config, bound in order, as many as the run has slots. */
@@ -92,7 +102,18 @@ class ConfiguredDevices implements DeviceSource {
   }
 }
 
-/** Every booted device of the platform, as many as the run has slots; with none booted, one slot the daemon fills. */
+/** A booted device as the inventory lists it, with the agent-device session that holds it, when one does. */
+interface BootedDevice {
+  readonly id: string;
+  readonly name: string;
+  readonly claimedBy?: string | undefined;
+}
+
+/**
+ * Every booted device of the platform no other agent-device session holds, as
+ * many as the run has slots; with none booted, one slot the daemon fills. A
+ * device held by one of this target's own slot sessions stays in the pool.
+ */
 class BootedDevices implements DeviceSource {
   constructor(
     private readonly platform: MobilePlatform,
@@ -102,30 +123,48 @@ class BootedDevices implements DeviceSource {
 
   async bind(info: EnginePrepareInfo): Promise<readonly SlotBinding[]> {
     const booted = await this.inventory(info.targetName, info.signal);
-    const chosen = booted.slice(0, info.slots);
+    const own = new Set(Array.from({ length: info.slots }, (_, slot) => this.session(info.targetName, slot)));
+    const held = booted.filter((device) => device.claimedBy !== undefined && !own.has(device.claimedBy));
+    const chosen = booted.filter((device) => !held.includes(device)).slice(0, info.slots);
+    const heldBy = held.map((device) => `${device.name} by session "${device.claimedBy}"`).join(', ');
+    if (chosen.length === 0 && held.length > 0) {
+      throw new EngineError(
+        'ENGINE_FAILURE',
+        `every booted ${this.platform} device is held by another agent-device session (${heldBy}); boot another one, close a holding session, or name the device in the target's \`device\` option`,
+        { retryable: false },
+      );
+    }
     if (chosen.length === 0) {
       info.log(`no booted ${this.platform} device; agent-device boots one`);
       return [{}];
     }
-    info.log(`${booted.length} booted ${this.platform} device(s); driving ${chosen.length}: ${chosen.map((device) => device.name).join(', ')}`);
+    const skipped = held.length === 0 ? '' : `, skipping ${held.length} held by another agent-device session (${heldBy})`;
+    info.log(`${booted.length} booted ${this.platform} device(s)${skipped}; driving ${chosen.length}: ${chosen.map((device) => device.name).join(', ')}`);
     return chosen.map((device) => ({ deviceId: device.id }));
   }
 
-  /** Every booted device of the platform, by stable id and name, in agent-device's inventory order. */
-  private async inventory(targetName: string, signal: AbortSignal): Promise<{ id: string; name: string }[]> {
+  /** Every booted device of the platform, by stable id and name, with the session holding it, in agent-device's inventory order. */
+  private async inventory(targetName: string, signal: AbortSignal): Promise<BootedDevice[]> {
     const client = this.createClient(this.session(targetName, 0));
     const inventory: unknown = await runCommand('devices', () => client.devices.list({ platform: this.platform }), signal);
     if (!Array.isArray(inventory)) return [];
     return inventory
       .filter(
-        (device): device is { id: string; name?: string } =>
+        (device): device is { id: string; name?: unknown; claimedBy?: { session?: unknown } } =>
           typeof device === 'object' &&
           device !== null &&
           (device as { booted?: unknown }).booted === true &&
           (device as { platform?: unknown }).platform === this.platform &&
           typeof (device as { id?: unknown }).id === 'string',
       )
-      .map((device) => ({ id: device.id, name: typeof device.name === 'string' ? device.name : device.id }));
+      .map((device) => {
+        const session = device.claimedBy?.session;
+        return obj({
+          id: device.id,
+          name: typeof device.name === 'string' ? device.name : device.id,
+          claimedBy: typeof session === 'string' ? session : undefined,
+        });
+      });
   }
 }
 
@@ -193,27 +232,24 @@ export class DevicePool {
   /**
    * Binds a device to every worker slot the run will use and warms each,
    * once per run and outside every launch budget, so `init` finds a booted
-   * device. The bindings, each naming the app its session is on, are
-   * reported back as the target's worker cap and left in the environment
-   * for the workers. A target nothing runs on binds
+   * device. The bindings are reported back as the target's worker cap and
+   * left in the environment for the workers. A target nothing runs on binds
    * nothing: a hosted session is billed from the moment it starts.
    */
   async prepare(info: EnginePrepareInfo): Promise<EnginePrepareResult> {
     if (info.slots === 0) return {};
-    const bindings = await this.warm(await this.source.bind(info), info);
+    const bindings = await this.source.bind(info);
+    await this.warm(bindings, info);
     this.bound.set(info.targetName, bindings);
     return { workers: bindings.length, env: { [bindingsVariable(info.targetName)]: encodeBindings(bindings) } };
   }
 
   /**
-   * Closes every session `warm` opened for the target and releases what the
-   * source acquired. A worker closes its own session in `dispose`, but a run
-   * that failed in `prepare` never had one, and an agent-device session
-   * outlives the process: left open, the next run resumes it by name with
-   * the runner state that failed this one. The closes are best-effort under
-   * the hook's budget and run beside the release, so a close that hangs or
-   * fails never keeps a leased device billed; a local pool has nothing to
-   * release.
+   * Closes every engine session `warm` opened for the target and releases
+   * what the source acquired. This is the normal run-end close for leased
+   * slots and a fallback for local sessions or a failed `prepare`. Session
+   * closes and source release run concurrently under the hook's cleanup
+   * budget, so a hung close does not delay lease release.
    */
   async finish(info: EngineFinishInfo): Promise<void> {
     const clients = this.warmed.get(info.targetName) ?? [];
@@ -227,9 +263,8 @@ export class DevicePool {
 
   /**
    * Boots every bound device, starts the iOS automation runner on it, and
-   * opens the pinned app on it once, so the slot's session is on the app,
-   * which the returned binding records for the worker: a permission it
-   * presets there needs no open first. A plain foreground open, with none of the engine's
+   * opens the pinned app on it once, so a test that starts without
+   * `app.open()` finds it on screen. A plain foreground open, with none of the engine's
    * launch options: an app still running from an earlier run keeps its
    * process either way, and a test's `app.open()` relaunches it with them.
    * One slot after another, on purpose: workers
@@ -242,13 +277,11 @@ export class DevicePool {
    * its first observation with the app blamed, and the message names the
    * recovery, which a wait of up to the runner's recycle window would only
    * hide. A runner that did not start leaves the slot unopened: the open
-   * would start it again under a shorter budget, and its timeout resets the
-   * daemon every earlier slot is on. A build `appPath` installs in `init` is
+   * would start it again under a shorter budget. A build `appPath` installs in `init` is
    * not on the device yet, so that slot boots and starts the runner only,
    * unless a lease says the build is already there.
    */
-  private async warm(bindings: readonly SlotBinding[], info: EnginePrepareInfo): Promise<readonly SlotBinding[]> {
-    const warmed: SlotBinding[] = [];
+  private async warm(bindings: readonly SlotBinding[], info: EnginePrepareInfo): Promise<void> {
     for (const [slot, binding] of bindings.entries()) {
       const label = deviceLabel(binding) ?? `a booted ${this.options.platform} device`;
       const where = deviceSelection(this.options.platform, binding);
@@ -260,27 +293,20 @@ export class DevicePool {
       await runCommand('boot', () => client.devices.boot(where), info.signal, at);
       const runnerUp = this.options.platform !== 'ios' || (await prepareRunner(client, where, info, at));
       const app = pinnedApp(info.app, binding.installedApp);
-      if (app === undefined || !runnerUp) {
-        warmed.push(binding);
-        continue;
-      }
+      if (app === undefined || !runnerUp) continue;
       // A build the suite installs itself is not on the device yet, so there
       // is nothing to open: the first attempt installs it.
       if (info.app.appPath !== undefined && binding.installedApp === undefined) {
         info.log(`${label}: ${app} awaits the suite's device.installApp()`);
-        warmed.push(binding);
         continue;
       }
       try {
         await runCommand(`open ${app}`, () => client.apps.open({ app, ...where }), info.signal, at);
-        warmed.push({ ...binding, sessionApp: app });
       } catch (cause) {
         if (info.signal.aborted || isRunnerFailure(cause)) throw cause;
         info.log(`${label}: ${app} did not open (${message(cause)}); the first attempt opens it`);
-        warmed.push(binding);
       }
     }
-    return warmed;
   }
 
   /** Holds a warm-up client for `finish`, before its first command: a boot that fails still opened the session. */
@@ -295,8 +321,7 @@ export class DevicePool {
  * Starts the slot's iOS automation runner under `prepare ios-runner`, whose
  * startup budget covers a cold simulator. Left to the first `open`, the
  * start runs inside that request's 90 s envelope, which a cold runner on a
- * loaded CI Mac outlasts; a timed-out `open` resets the daemon, ending every
- * other slot's session with it. A runner that is busy or wedged ends the run
+ * loaded CI Mac outlasts. A runner that is busy or wedged ends the run
  * here, like a warm-up open that meets one; any other failure is logged and
  * left to the first attempt. True when the runner is up.
  */

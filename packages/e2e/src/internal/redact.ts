@@ -465,9 +465,14 @@ function fragmentOwners(values: readonly string[]): Map<string, number> {
  * each occur in a value replaced by the marker of the value owning its first
  * window. Windows are looked up by `readingKey`, as `owners` is keyed, so a
  * fragment in another case or with another whitespace run is one too, and
- * the stretch is cut back out of `text` whole, its whitespace runs included.
- * The stretch grows one window at a time, so the scan is linear in the text
- * and a run spanning two values becomes one marker.
+ * the stretch is cut back out of `text` whole, its inner whitespace runs
+ * included. A whitespace run at either end stays outside the marker, so
+ * where a diff's `+` or `-` prefix splits a multi-line value, the line break
+ * and the prefix keep their places; a context line that continues the value
+ * folds into the same marker. The scan resumes on the whitespace it kept, so
+ * a fragment starting there is rewritten too. The stretch grows one window at
+ * a time, so the scan is linear in the text and a run spanning two values
+ * becomes one marker.
  */
 function rewriteFragments(text: string, owners: ReadonlyMap<string, number>, markers: readonly string[]): string {
   if (owners.size === 0) return text;
@@ -483,9 +488,11 @@ function rewriteFragments(text: string, owners: ReadonlyMap<string, number>, mar
     }
     let end = start + FRAGMENT_LENGTH;
     while (end < key.length && owners.has(key.slice(end + 1 - FRAGMENT_LENGTH, end + 1))) end += 1;
-    out += `${text.slice(kept, at(start))}${markers[owner] ?? ''}`;
-    kept = at(end);
-    start = end;
+    const from = key.charCodeAt(start) === 0x20 ? start + 1 : start;
+    const to = key.charCodeAt(end - 1) === 0x20 ? end - 1 : end;
+    out += `${text.slice(kept, at(from))}${markers[owner] ?? ''}`;
+    kept = at(to);
+    start = to;
   }
   return out + text.slice(kept);
 }
@@ -616,9 +623,10 @@ export class SecretLedger {
   /**
    * `redact` that also rewrites every fragment of a value: a run of at least
    * `FRAGMENT_LENGTH` consecutive characters of one, anywhere in the text,
-   * becomes its marker. For a recording that keeps what an engine read raw
-   * (a Playwright trace holds the page's cut text and selections), where a
-   * value cut or selected partway through survives whole-value matching.
+   * becomes its marker. For text where a value shows only in part, which
+   * whole-value matching misses: a text download the runner keeps as the app
+   * wrote it, or what a test filter sends to a model, such as a diff whose
+   * line prefixes split a multi-line value.
    * Matched in any case and with whitespace runs collapsed, like `redactCut`. A
    * base64 or base64url run that decodes to text holding a value or a
    * fragment is rewritten whole (a basic-auth header the engine sent). Bound
@@ -629,17 +637,6 @@ export class SecretLedger {
   /** The most text one registered value can match in any spelling; a piece shorter than this holds at most part of one occurrence. */
   get maxFormLength(): number {
     return this.compile().maxFormLength;
-  }
-
-  /**
-   * Whether any registered value, in any of its forms, occurs in `bytes`.
-   * The check for content that is not text and so cannot be rewritten: what
-   * holds a secret has to be withheld instead.
-   */
-  appearsIn(bytes: Uint8Array): boolean {
-    const { pattern } = this.compile();
-    if (pattern === undefined) return false;
-    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8').search(pattern) !== -1;
   }
 
   /**
@@ -680,9 +677,11 @@ export class SecretLedger {
  * value split across two writes is still caught. Each `push` returns what is
  * safe to pass on and holds back the rest: the tail a later piece could
  * complete into a value or a `<secret:name>` marker, as the ledger measures
- * it. Bytes are decoded as UTF-8 with a character split across pieces kept
- * whole. `flush` releases what is held, redacted, when the stream ends. The
- * pieces together redact to exactly what the whole text would.
+ * it. Bytes are decoded as UTF-8 with a character split across byte pieces
+ * kept whole; a string piece ends an unfinished character first, as a
+ * terminal shows the bytes Node wrote before it. `flush` releases what is
+ * held, redacted, when the stream ends. The pieces together redact to
+ * exactly what the whole text would.
  */
 export class StreamRedactor {
   private readonly decoder = new StringDecoder('utf8');
@@ -692,7 +691,8 @@ export class StreamRedactor {
 
   /** Redacts and returns what `chunk` completes; the rest waits for the next piece or `flush`. */
   push(chunk: string | Uint8Array): string {
-    const text = this.held + (typeof chunk === 'string' ? chunk : this.decoder.write(chunk));
+    if (chunk.length === 0) return '';
+    const text = this.held + (typeof chunk === 'string' ? this.decoder.end() + chunk : this.decoder.write(chunk));
     const cut = this.ledger.holdFrom(text);
     this.held = text.slice(cut);
     return this.ledger.redact(text.slice(0, cut));

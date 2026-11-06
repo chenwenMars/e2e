@@ -35,7 +35,7 @@ Without the key, the agent tests skip. Add `-- --no-cache` to use fresh
 model calls. Results are in `.e2e/report.json`.
 
 See [e2e.config.ts](e2e.config.ts) and [tests/](tests/) for the setup.
-For your own app, follow the [Quickstart](https://e2e.tester.army/docs/quickstart).
+For your own app, follow the [Quickstart](https://e2e.com/docs/quickstart).
 
-Last checked on 2026-10-05 with Expo SDK 57, e2e 0.16.0,
-@e2e-dev/web 0.11.2 and @e2e-dev/mobile 0.9.2.
+Last checked on 2026-11-04 with Expo SDK 57, e2e 0.22.0,
+@e2e-dev/web 0.15.4 and @e2e-dev/mobile 0.12.5.

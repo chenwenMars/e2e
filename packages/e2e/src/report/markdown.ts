@@ -3,6 +3,7 @@
  * a headline with the counts and what the run spent, the run-level errors,
  * one block per test that failed with the step it went wrong at and the
  * agent's last word, the flaky tests folded away with the same block each,
+ * what the run's test filters left out, folded away with each reason,
  * and every test folded away under that as one table, a row per file with
  * its counts and time above the rows of its tests. A green run is the
  * headline, the folds, and the footer: nothing to read unless the reader
@@ -20,11 +21,13 @@
 
 import path from 'node:path';
 import { collapseText } from '../internal/text.ts';
-import type { Report1Document, ReportError, ReportExplore, ReportExploreFinding, ReportResult, ReportStep, ReportTarget } from './build.ts';
+import type { Report1Document, ReportChanges, ReportError, ReportExplore, ReportExploreFinding, ReportFilter, ReportResult, ReportStep, ReportTarget } from './build.ts';
 import { ENDED_TEXT, orderFindings, SEVERITY_WORDS, stepCountParts } from './explore-text.ts';
-import { formatCost, formatTokens, repeatSuffix, statusBucket, tally, type Counters } from './format.ts';
+import { filterDecision, formatCost, formatTokens, repeatSuffix, shortCommit, statusBucket, tally, type Counters } from './format.ts';
+import { leftOutTests } from './left-out.ts';
 import { repeatGroups, repeatLine, repeatSummary, type RepeatGroup } from './repeats.ts';
 import {
+  appErrorLines,
   attemptsLine,
   detailLines,
   evidenceOf,
@@ -33,7 +36,6 @@ import {
   failureSource,
   lastTurnLines,
   MAX_DETAIL_CHARS,
-  renderFailurePage,
   screenLines,
   sourceText,
   stepLabel,
@@ -41,10 +43,9 @@ import {
 } from './failure-text.ts';
 import { cell, code, formatDuration, link, MAX_ID_CHARS, MAX_PATH_CHARS, MAX_TITLE_CHARS, plural } from './markdown-text.ts';
 import { outcome, type Outcome } from './outcome.ts';
-import { sanitizePathSegment } from '../run/artifacts.ts';
+import { isExploreVerdict } from './traces.ts';
 import { toPosixPath, writeTextReport } from './write.ts';
 import type { Reporter, ReporterSummary } from '../types.ts';
-import { readFileSync, rmSync } from 'node:fs';
 
 type ReportRun = Report1Document['run'];
 type ReportArtifact = ReportResult['attempts'][number]['artifacts'][number];
@@ -56,18 +57,18 @@ export interface MarkdownReportOptions {
   readonly artifactsUrl?: string | undefined;
   /**
    * The directory the report's artifact paths are relative to, as the reader
-   * should see it (`.e2e/artifacts` for a file the project root is read
+   * should see it (`.e2e/results` for a file the project root is read
    * from). Without `artifactsUrl`, evidence is listed as paths under it.
    */
   readonly artifactsDir?: string | undefined;
   /** A link to a source line, when the commit is known. */
   readonly sourceUrl?: ((file: string, line: number) => string) | undefined;
   /**
-   * Where each failed or flaky result's own page is, by result id, as the
-   * reader should see the path; the block links there. The `markdown`
-   * reporter writes the pages under `failures/` beside the report.
+   * Where each traced result's page is, by result id, as the reader should
+   * see the path; the block links there. The runner writes each as
+   * `trace.md` in its test's directory under `results/`.
    */
-  readonly failurePages?: ReadonlyMap<string, string> | undefined;
+  readonly traces?: ReadonlyMap<string, string> | undefined;
   /**
    * Tells this run's page apart from another's on the same pull request in
    * the headline: `e2e regression: 77 passed`. The GitHub reporter passes
@@ -90,6 +91,8 @@ const MAX_FINDINGS = 30;
 const MAX_EVIDENCE_PATHS = 4;
 const MAX_ASSESSMENT_CHARS = 2_000;
 const MAX_GOAL_CHARS = 400;
+const MAX_LEFT_OUT_ROWS = 50;
+const SITE_URL = 'https://e2e.com';
 const TRUNCATED_NOTE = '_Truncated to fit a pull request comment; the full report is in `report.json`._';
 
 /** A result with what it left behind, read once. */
@@ -98,8 +101,8 @@ interface Entry {
   readonly final: Outcome;
 }
 
-/** Screenshots first, then the recording, then the trace; the compiler fails when a kind is missing here. */
-const KIND_RANK: Record<ArtifactKind, number> = { screenshot: 0, video: 1, trace: 2, download: 3, log: 4 };
+/** Screenshots first, then the recording; the compiler fails when a kind is missing here. */
+const KIND_RANK: Record<ArtifactKind, number> = { screenshot: 0, video: 1, download: 2, log: 3 };
 
 const ICON: Record<Bucket, string> = { failed: '🔴', interrupted: '⏹️', flaky: '⚠️', skipped: '⏭️', passed: '🟢' };
 /** Worst first: the order failures are listed, files are sorted, and a file's glyph is chosen in. */
@@ -139,9 +142,61 @@ function runIcon(run: ReportRun, results: readonly ReportResult[]): string {
   return ICON.passed;
 }
 
-function headline(run: ReportRun, results: readonly ReportResult[], options: MarkdownReportOptions): string {
+/**
+ * The headline: the counts, and how many tests the test filters left out,
+ * so a filtered pull request run never reads as the whole suite passing.
+ */
+function headline(run: ReportRun, results: readonly ReportResult[], counts: ReadonlyMap<string, number>, options: MarkdownReportOptions): string {
   const summary = countText(tally(results)) || (run.errors.length > 0 ? 'no tests ran' : 'no tests selected');
-  return `### ${runIcon(run, results)} ${pageName(options)}: ${summary}`;
+  const leftOut = totalLeftOut(counts);
+  return `### ${runIcon(run, results)} ${pageName(options)}: ${summary}${leftOut === 0 ? '' : `, ${leftOut} left out by filters`}`;
+}
+
+/** How many tests the test filters left out in all, from `leftOutTests`' counts: a test is left out by one filter. */
+function totalLeftOut(counts: ReadonlyMap<string, number>): number {
+  return [...counts.values()].reduce((total, count) => total + count, 0);
+}
+
+/** `` `affected` kept 7 of 42 tests, left out 35 (note) ``: what one filter decided, its tests left out from `counts`. */
+function filterLine(record: ReportFilter, counts: ReadonlyMap<string, number>): string {
+  const note = record.note === undefined ? '' : ` (${cell(record.note)})`;
+  return `**Filter** ${code(record.name, MAX_ID_CHARS)} ${filterDecision(record.candidates, counts.get(record.name) ?? 0)}${note}`;
+}
+
+/**
+ * What the test filters judged (`12 files changed since abc1234`), or why
+ * no filter ran. Nothing for a run without `--changed-since`.
+ */
+function changesLine(changes: ReportChanges | undefined): string | undefined {
+  if (changes === undefined) return undefined;
+  // Checking `base` first narrows the union, so `files` and `base` are known below.
+  if (changes.base === undefined) return `**Filters** none ran: ${cell(changes.skipped)}`;
+  if (changes.skipped !== undefined) return `**Filters** none ran: ${cell(changes.skipped)}`;
+  return `**Change** ${plural(changes.files, 'file')} changed since ${code(shortCommit(changes.base))}`;
+}
+
+/**
+ * What the run's test filters decided: the change they judged, a line per
+ * filter, then what they left out folded away as one table with each
+ * reason, capped, the target named when there is more than one. Every count
+ * of tests left out comes from `counts`, read off the results. Nothing when
+ * the run named no filter.
+ */
+function filtersSection(run: ReportRun, manyTargets: boolean, counts: ReadonlyMap<string, number>): string[] {
+  const records = run.filters ?? [];
+  const leftOut = run.results.filter((result) => result.skip?.filter !== undefined);
+  const withTarget = manyTargets || new Set(leftOut.map((result) => result.targetId)).size > 1;
+  const changes = changesLine(run.changes);
+  const said = [...(changes === undefined ? [] : [changes]), ...records.map((record) => filterLine(record, counts))];
+  const parts = said.length === 0 ? [] : [said.join('  \n')];
+  if (leftOut.length === 0) return parts;
+  const lines = [row(['Test', 'Filter', 'Reason']), row(['---', '---', '---'])];
+  for (const result of leftOut.slice(0, MAX_LEFT_OUT_ROWS)) {
+    lines.push(row([`${fileLabel(result.file, result.targetId, withTarget)} › ${testName(result)}`, code(result.skip?.filter ?? '', MAX_ID_CHARS), cell(result.skip?.reason ?? '')]));
+  }
+  if (leftOut.length > MAX_LEFT_OUT_ROWS) lines.push(row([`and ${leftOut.length - MAX_LEFT_OUT_ROWS} more in report.json`, '', '']));
+  const summary = `${plural(totalLeftOut(counts), 'test')} left out by filters`;
+  return [...parts, ...(parts.length === 0 ? [] : ['']), ['<details>', `<summary>${summary}</summary>`, '', lines.join('\n'), '</details>'].join('\n')];
 }
 
 /** The model calls an agent step made; the step's metrics are the source of truth. */
@@ -179,7 +234,7 @@ function spendLine(run: ReportRun, entries: readonly Entry[]): string | undefine
   return parts.join(' · ');
 }
 
-/** `screenshot \`.e2e/artifacts/web/.../001-failure.png\``: each file as the reader finds it under `artifactsDir`, capped. */
+/** `screenshot \`.e2e/results/<test>/attempt-1/screenshots/001-failure.png\``: each file as the reader finds it under `artifactsDir`, capped. */
 function evidencePaths(sorted: readonly ReportArtifact[], dir: string): string[] {
   const files = sorted.flatMap((artifact) => (artifact.path === undefined ? [] : [{ artifact, file: path.posix.join(dir, artifact.path) }]));
   const shown = files.slice(0, MAX_EVIDENCE_PATHS).map(({ artifact, file }) => `${artifact.kind} ${code(file)}`);
@@ -263,25 +318,26 @@ function runErrorLine(error: ReportError): string {
  * under it, where the reader looks first; one lead sentence naming the
  * error and the step it happened at; what the error and the agent said,
  * quoted; the facts as a list (expected and observed, whether every attempt
- * failed alike, the last turns, the screen); and the evidence. The file is
+ * failed alike, the last turns, the screen, what the app logged as an
+ * error); and the evidence. The file is
  * named once, in the source link. The steps before the failed one are not
- * retold: the lead says where in the flow it was, and the trace has the
- * rest. A flaky test's story is its last failed attempt, not the retry that
+ * retold: the lead says where in the flow it was, and the trace page has
+ * the rest. A flaky test's story is its last failed attempt, not the retry that
  * passed.
  */
 function failureBlock({ result, final }: Entry, manyTargets: boolean, options: MarkdownReportOptions): string {
   const kind = statusBucket(result.status);
   const told = toldAttempt(result, final);
-  const at = failedStepOf(told.steps);
+  const at = failedStepOf(told);
   const error = told.error;
   const name = error === undefined ? `**${cell(result.status, MAX_ID_CHARS)}**` : errorName(error);
   const lead = at === undefined ? name : `${name} ${stepClause(told.steps, at)}`;
   const alike = attemptsLine(result, final);
-  const facts = [...detailLines(error), ...(alike === undefined ? [] : [alike]), ...lastTurnLines(at?.step), ...screenLines(told)];
+  const facts = [...detailLines(error), ...(alike === undefined ? [] : [alike]), ...lastTurnLines(at?.step), ...screenLines(told), ...appErrorLines(told)];
   const where = evidence(evidenceOf(told), options);
-  const page = options.failurePages?.get(result.id);
+  const page = options.traces?.get(result.id);
   const about = [sourceText(failureSource(result, told), options.sourceUrl), ...(manyTargets ? [cell(result.targetId, MAX_ID_CHARS)] : [])];
-  const tail = [...(where === '' ? [] : [`Evidence: ${where}`]), ...(page === undefined ? [] : [`Details: ${code(page, MAX_PATH_CHARS)}`])];
+  const tail = [...(where === '' ? [] : [`Evidence: ${where}`]), ...(page === undefined ? [] : [`Trace: ${code(page, MAX_PATH_CHARS)}`])];
   const paragraphs = [
     // Two trailing spaces: a hard break, so the title and its line stay two lines wherever the page is rendered.
     `**${ICON[kind]} ${testName(result)}**  \n${about.join(' · ')}`,
@@ -381,10 +437,17 @@ function row(cells: readonly string[]): string {
   return `| ${cells.join(' | ')} |`;
 }
 
-/** `⚠️ | title (1 failed attempt first) | 1 step · 4 calls | 3.4s`: one test's row, how it ended noted when it did not simply pass. The file's row above names the target. */
+/** `⚠️ | title (1 failed attempt first) | 1 step · 4 calls | 3.4s`: one test's row, how it ended noted when it did not simply pass or failed as `test.fail` expected. The file's row above names the target. */
 function testRow({ result, final }: Entry, withAgent: boolean): string {
   const skipped = result.status === 'skipped';
-  const note = skipped ? `skipped: ${cell(result.skip?.reason ?? 'skipped')}` : result.status === 'flaky' ? `${plural(final.failedAttempts, 'failed attempt')} first` : '';
+  const expected = result.attempts.at(-1)?.expectedFailure;
+  const note = skipped
+    ? `skipped: ${cell(result.skip?.reason ?? 'skipped')}`
+    : expected?.error !== undefined
+      ? `failed as expected: ${cell(expected.reason)}, ${cell(expected.error.code)}: ${cell(expected.error.message)}`
+      : result.status === 'flaky'
+        ? `${plural(final.failedAttempts, 'failed attempt')} first`
+        : '';
   const name = `${testName(result)}${note === '' ? '' : ` (${note})`}`;
   return row([ICON[statusBucket(result.status)], name, ...(withAgent ? [agentCell(final.final.steps)] : []), skipped ? '' : formatDuration(final.durationMs)]);
 }
@@ -433,12 +496,12 @@ function ranTargets(run: ReportRun, selected: readonly ReportResult[]): readonly
   return targets.length === 0 ? run.targets : targets;
 }
 
-/** `<sub>e2e 0.13.0 · 2m 15s · web · run artifacts</sub>`: one line of small print. */
+/** `<sub>Tested by e2e 0.13.0 · 2m 15s · web · run artifacts</sub>`: one line of small print. */
 function footer(run: ReportRun, targets: readonly ReportTarget[], options: MarkdownReportOptions): string[] {
   const duration = formatDuration(Date.parse(run.finishedAt) - Date.parse(run.startedAt));
   const shown = targets.slice(0, MAX_FOOTER_TARGETS).map((target) => cell(target.id, MAX_ID_CHARS));
   if (targets.length > shown.length) shown.push(`and ${targets.length - shown.length} more`);
-  const parts = [`e2e ${cell(run.runner.version, MAX_ID_CHARS)}`, duration];
+  const parts = [`Tested by ${link('e2e', SITE_URL)} ${cell(run.runner.version, MAX_ID_CHARS)}`, duration];
   if (targets.length === 1) parts.push(shown[0] ?? '');
   else if (targets.length > 1) parts.push(`${plural(targets.length, 'target')} (${shown.join(', ')})`);
   if (options.artifactsUrl !== undefined) parts.push(link('run artifacts', options.artifactsUrl));
@@ -493,14 +556,6 @@ function findingsSection(run: ReportRun, explore: ReportExplore, options: Markdo
 }
 
 /**
- * Whether a result's failure is the exploration's verdict, which the findings
- * already express; only a failure that is not gets a block of its own.
- */
-function isVerdict(entry: Entry, explore: ReportExplore): boolean {
-  return entry.final.final.error?.code === 'ASSERTION_FAILED' && explore.findings.some((finding) => finding.kind === 'issue');
-}
-
-/**
  * Greedy fit: keeps whole parts in order while they fit under the budget,
  * then says what was cut. `parts` are lines or indivisible blocks, already
  * separated by blank lines.
@@ -528,18 +583,20 @@ export function renderMarkdownReport(report: Report1Document, options: MarkdownR
   const explore = run.explore;
   const serialGroups = new Map(run.serialGroups.map((group) => [group.id, group]));
   // A result the selection left out (another suite's file, a tag filter) is
-  // report-only: the JSON keeps it, the page never counts or lists it. A
-  // document written before results carried the flag is all selected.
+  // report-only: the JSON keeps it, and the page counts or lists it only
+  // when a test filter left it out, in the headline and the filters section.
+  // A document written before results carried the flag is all selected.
   const selected = run.results.filter((result) => result.selected !== false);
   const entries: Entry[] = selected.map((result) => ({ result, final: outcome(result, serialGroups) }));
   const targets = ranTargets(run, selected);
   const manyTargets = targets.length > 1;
+  const leftOut = leftOutTests(run.results);
 
   const errors = run.errors.slice(0, MAX_RUN_ERRORS).map(runErrorLine);
   if (run.errors.length > errors.length) errors.push(`> and ${run.errors.length - errors.length} more`);
   // An exploration is the run's one test and its failure is the verdict the
   // findings express, so that block gives way to them; any other failure stays.
-  const notPassed = entries.filter((entry) => explore === undefined || !isVerdict(entry, explore));
+  const notPassed = entries.filter((entry) => explore === undefined || !isExploreVerdict(entry.final, explore));
   const failed = notPassed.filter(({ result }) => statusBucket(result.status) === 'failed');
   const failures = failed.slice(0, MAX_FAILURE_BLOCKS).map((entry) => [failureBlock(entry, manyTargets, options)]);
   if (failed.length > failures.length) failures.push([`and ${failed.length - failures.length} more failed`]);
@@ -550,11 +607,11 @@ export function renderMarkdownReport(report: Report1Document, options: MarkdownR
   );
 
   const spend = spendLine(run, entries);
-  const head = [explore === undefined ? headline(run, selected, options) : exploreHeadline(run, selected, explore, options), ...(spend === undefined ? [] : [spend]), ''];
+  const head = [explore === undefined ? headline(run, selected, leftOut, options) : exploreHeadline(run, selected, explore, options), ...(spend === undefined ? [] : [spend]), ''];
   const groups = fileGroups(entries);
   const sections =
     explore === undefined
-      ? [errors, ...failures, flaky, repeatsSection(entries, manyTargets), allTests(groups, selected.length, manyTargets)]
+      ? [errors, ...failures, flaky, repeatsSection(entries, manyTargets), filtersSection(run, manyTargets, leftOut), allTests(groups, selected.length, manyTargets)]
       : [
           [`**Goal:** ${cell(explore.goal, MAX_GOAL_CHARS)}  `, `**Steps:** ${exploreSteps(explore)}`],
           errors,
@@ -567,65 +624,22 @@ export function renderMarkdownReport(report: Report1Document, options: MarkdownR
   return fit(head, body.length === 0 ? [] : [...body, ''], footer(run, targets, options));
 }
 
-/** Where a result's page goes under `failures/`: the file and title, made a path segment, made unique by the result id. */
-function failurePageName(result: ReportResult): string {
-  return `${sanitizePathSegment(`${result.file}-${result.titlePath.join('-')}`)}-${result.id.slice(0, 8)}.md`;
-}
-
-/**
- * The results that get a page: every one that failed, timed out, or was
- * flaky, except an exploration's own verdict, which its findings already
- * tell. An interrupted test reached no verdict, so it has no failure to tell.
- */
-function pagedResults(report: Report1Document): ReportResult[] {
-  const explore = report.run.explore;
-  const serialGroups = new Map(report.run.serialGroups.map((group) => [group.id, group]));
-  return report.run.results.filter((result) => {
-    const bucket = statusBucket(result.status);
-    if (bucket !== 'failed' && bucket !== 'flaky') return false;
-    return explore === undefined || !isVerdict({ result, final: outcome(result, serialGroups) }, explore);
-  });
-}
-
 /**
  * The built-in `markdown` reporter: the report as one markdown page in
  * `summary.md` beside `report.json`, with evidence listed as paths from the
  * project root, for a reader with the checkout in front of it: a pull
- * request description, a coding agent's handoff, a wiki page. Every test
- * that failed or was flaky gets a page of its own under `failures/`, with the
- * screen at failure inline; the run page links each block to its page. The
- * directory is the reporter's: what an earlier run left there is removed
- * first, so a stale page never describes a failure this run did not have.
+ * request description, a coding agent's handoff, a wiki page. Each failure
+ * block links to the trace page the runner wrote for it in the test's
+ * directory under `results/`.
  */
 export const markdownReporter: Reporter = {
   name: 'markdown',
   async onRunFinished(run) {
     if (run.reportPath === undefined) return;
-    const reportDir = path.dirname(run.reportPath);
     const artifactsDir = toPosixPath(path.relative(run.projectRoot, run.artifactsRoot)) || '.';
-    const failuresDir = path.join(reportDir, 'failures');
-    rmSync(failuresDir, { recursive: true, force: true });
-    const serialGroups = new Map(run.report.run.serialGroups.map((group) => [group.id, group]));
-    const readArtifact = (reportPath: string): string | undefined => {
-      try {
-        return readFileSync(path.join(run.artifactsRoot, reportPath), 'utf8');
-      } catch {
-        return undefined;
-      }
-    };
-    const pages = new Map<string, string>();
-    for (const result of pagedResults(run.report)) {
-      const file = path.join(failuresDir, failurePageName(result));
-      const page = renderFailurePage(run.report, result, outcome(result, serialGroups), { artifactsDir, readArtifact });
-      await writeTextReport(file, page);
-      pages.set(result.id, toPosixPath(path.relative(run.projectRoot, file)));
-    }
-    const summary = path.join(reportDir, 'summary.md');
-    await writeTextReport(summary, renderMarkdownReport(run.report, { artifactsDir, failurePages: pages }));
-    const rows: ReporterSummary = [
-      { label: 'Markdown', text: path.relative(run.projectRoot, summary) || summary },
-      ...(pages.size === 0 ? [] : [{ label: 'Failures', text: `${path.relative(run.projectRoot, failuresDir) || failuresDir}/ (${plural(pages.size, 'page')})` }]),
-    ];
+    const summary = path.join(path.dirname(run.reportPath), 'summary.md');
+    await writeTextReport(summary, renderMarkdownReport(run.report, { artifactsDir, traces: run.traces }));
+    const rows: ReporterSummary = [{ label: 'Markdown', text: path.relative(run.projectRoot, summary) || summary }];
     return rows;
   },
 };

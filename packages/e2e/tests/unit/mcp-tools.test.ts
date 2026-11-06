@@ -50,6 +50,24 @@ describe('describeToolDetail and toolJsonSchema', () => {
 });
 
 describe('invokeTool', () => {
+  it('does not run a tool whose request was cancelled while queued', async () => {
+    const execute = vi.fn(async () => 'never');
+    const reason = new Error('cancelled before dispatch');
+    await expect(invokeTool('tap', { ...tap, execute }, { target: 'n4' }, { signal: AbortSignal.abort(reason) })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('does not run a tool cancelled while its async schema validates', async () => {
+    const controller = new AbortController();
+    const reason = new Error('cancelled during validation');
+    const execute = vi.fn(async () => 'never');
+    const inputSchema = z.object({ target: z.string() }).superRefine(async () => {
+      controller.abort(reason);
+    });
+    await expect(invokeTool('tap', { ...tap, inputSchema, execute }, { target: 'n4' }, { signal: controller.signal })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('validates the arguments against the tool schema and runs the tool', async () => {
     await expect(invokeTool('tap', tap, { target: 'n4' }, extra)).resolves.toEqual({ content: [{ type: 'text', text: 'Tapped #n4.' }] });
   });
@@ -83,14 +101,16 @@ describe('invokeTool', () => {
 
   it("refuses an argument the session catalog's observe and locate do not declare", async () => {
     const { context, dispatched } = fakeExecutorContext();
-    const resolveAll = vi.fn(async () => []);
+    const resolveNow = vi.fn(async () => []);
     const { tools } = createSessionCatalog({
       context,
       screen: new ScreenPresenter(),
-      locator: { resolveAll } as never,
+      locator: { resolveNow } as never,
       session: {} as never,
       tools: {},
       redaction: { redact: (text) => text, redactCut: (text) => text },
+      projectRoot: '/project',
+      attemptDir: '/project/.e2e/results/attempt',
       recorder: undefined,
       warn: () => undefined,
     });
@@ -103,7 +123,7 @@ describe('invokeTool', () => {
       message: 'call locate: Unrecognized key: "selector"; tools {tool: "locate"} shows its arguments',
     });
     expect(dispatched).toEqual([]);
-    expect(resolveAll).not.toHaveBeenCalled();
+    expect(resolveNow).not.toHaveBeenCalled();
   });
 
   it('lets a tool failure propagate with its code, for the host to render', async () => {

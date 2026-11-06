@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { fitColumns, visibleWidth } from '../../src/report/format.ts';
 import { ExploreView } from '../../src/report/list-explore.ts';
 import type { ShownEvent } from '../../src/report/list-model.ts';
-import { eventLine, stepLabel } from '../../src/report/list-steps.ts';
+import { eventLine, quotedLabel } from '../../src/report/list-steps.ts';
 import { LiveWindow } from '../../src/report/live-window.ts';
 
 // eslint-disable-next-line no-control-regex
@@ -52,6 +52,29 @@ function shown(payload: string): string {
 }
 
 describe('LiveWindow', () => {
+  it('keeps multiline titles on one physical row when repainting', () => {
+    const restore = withTerminalSize({ rows: 40, columns: 80 });
+    try {
+      const payloads: string[] = [];
+      const window = new LiveWindow((text) => payloads.push(text), () => ['first\nsecond']);
+      window.start();
+      window.redraw();
+      window.stop();
+      expect(shown(payloads[0]!)).toBe('first second');
+      expect(payloads[1]).toContain('\u001b[1A');
+      expect(payloads[1]!.split('\n')).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it('normalizes CRLF and CR without removing colors or exceeding the row width', () => {
+    expect(shown(paint(['first\r\nsecond\rthird'], 80))).toBe('first second third');
+    const painted = paint(['\u001b[31mfirst\nsecond\u001b[0m'], 10);
+    expect(painted).toContain('\u001b[31m');
+    expect(shown(painted)).toBe('first se…');
+  });
+
   it('never cuts a line inside a code point', () => {
     const payload = paint(['abc\u{1F600}def'], 6);
     // A lone surrogate is the one thing encodeURIComponent refuses.
@@ -148,19 +171,19 @@ describe('fitColumns', () => {
 
 const pc = picocolors.createColors(false);
 
-describe('stepLabel', () => {
+describe('quotedLabel', () => {
   it('spends its 72-column budget in columns, so a CJK label keeps half the glyphs an ASCII one does', () => {
-    expect(stepLabel('a'.repeat(72))).toBe(`"${'a'.repeat(72)}"`);
-    expect(stepLabel('日'.repeat(36))).toBe(`"${'日'.repeat(36)}"`);
-    const clipped = stepLabel('日'.repeat(40));
+    expect(quotedLabel('a'.repeat(72))).toBe(`"${'a'.repeat(72)}"`);
+    expect(quotedLabel('日'.repeat(36))).toBe(`"${'日'.repeat(36)}"`);
+    const clipped = quotedLabel('日'.repeat(40));
     expect(clipped).toBe(`"${'日'.repeat(35)}…"`);
     expect(visibleWidth(clipped)).toBe(73);
   });
 
   it('clips to a row budget by column, never under 24 columns', () => {
-    expect(stepLabel('日'.repeat(30), 40)).toBe(`"${'日'.repeat(19)}…"`);
-    expect(stepLabel('日'.repeat(30), 10)).toBe(`"${'日'.repeat(11)}…"`);
-    expect(visibleWidth(stepLabel('日'.repeat(30), 10))).toBe(25);
+    expect(quotedLabel('日'.repeat(30), 40)).toBe(`"${'日'.repeat(19)}…"`);
+    expect(quotedLabel('日'.repeat(30), 10)).toBe(`"${'日'.repeat(11)}…"`);
+    expect(visibleWidth(quotedLabel('日'.repeat(30), 10))).toBe(25);
   });
 });
 

@@ -1,7 +1,7 @@
 /** Shared error translation, filename, and swipe helpers for the Playwright engine. */
 
 import { setTimeout } from 'node:timers/promises';
-import type { ElementHandle, Locator as PwLocator, Mouse, Page } from 'playwright-core';
+import type { ElementHandle, FrameLocator, Locator as PwLocator, Mouse, Page } from 'playwright-core';
 import { EngineError, withinCleanupBudget, type EngineCleanupContext, type Momentum, type ScrollDirection, type ViewportPoint, type ViewportSize } from 'e2e/engine';
 import { ConfigurationError, InfrastructureError, TestError } from 'e2e/engine';
 
@@ -33,8 +33,9 @@ function withinViewport(point: Point, viewport: { width: number; height: number 
 
 /**
  * A resolved node is addressed either by a deterministic locator expression or
- * by a live element handle captured during one agent observation. Handles are
- * always elements: the in-page observation walk records `Element` nodes only.
+ * by an element handle made from one agent observation's element list.
+ * Handles are always elements: the in-page observation walk records `Element`
+ * nodes only.
  */
 export type ActionTarget =
   | { readonly kind: 'locator'; readonly locator: PwLocator }
@@ -71,7 +72,7 @@ export function asActionable(target: ActionTarget): Actionable {
 }
 
 /** Owning page of one action target. */
-async function targetPage(target: ActionTarget): Promise<Page> {
+export async function targetPage(target: ActionTarget): Promise<Page> {
   if (target.kind === 'locator') return target.locator.page();
   const frame = await target.element.ownerFrame();
   if (frame === null) throw invalidState('element is detached from every frame');
@@ -360,13 +361,49 @@ export function isNavigationRace(cause: unknown): boolean {
 }
 
 /**
+ * The failure of an operation whose in-page code the page's own scripts broke,
+ * as `EVALUATE_FAILED`, or undefined when something else failed. A page that
+ * deletes or replaces a JavaScript built-in (`Map`, `Object`) breaks every
+ * script Playwright runs in its main world, e2e's locate reads included. Told
+ * apart by asking the frame in both worlds: Playwright's utility world still
+ * reads the document before and after a main-world query that runs no e2e
+ * code fails, so the frame lives throughout and e2e's own code is not the
+ * cause.
+ */
+export async function pageScriptFailure(
+  scope: Page | FrameLocator,
+  cause: unknown,
+  operation: string,
+  timeoutMs: number,
+): Promise<TestError | undefined> {
+  if (isClassified(cause) || isPwTimeout(cause) || isNavigationRace(cause)) return undefined;
+  const root = scope.locator(':root');
+  /** Whether Playwright's utility world still reads the frame's document. */
+  const alive = (): Promise<boolean> => root.count().then(() => true, () => false);
+  if (!(await alive())) return undefined;
+  try {
+    await root.evaluate(() => 0, undefined, { timeout: Math.max(timeoutMs, 1) });
+    return undefined;
+  } catch (probe) {
+    if (isPwTimeout(probe) || isNavigationRace(probe)) return undefined;
+  }
+  // A crash or a closed target between the two probes fails this read too.
+  if (!(await alive())) return undefined;
+  return new TestError(
+    'EVALUATE_FAILED',
+    `${operation} failed: the page deleted or replaced a JavaScript built-in that in-page automation code needs: ${message(cause)}`,
+    { cause },
+  );
+}
+
+/**
  * Like translatePwError, but a read that lost its document to a navigation
  * becomes retryable NODE_STALE so the runner re-reads the new document instead
  * of failing the call. Timeouts keep their meaning: an observation that cannot
  * be captured in time is not a race.
  */
 export function navigationStaleOr(cause: unknown, operation: string): Error {
-  if (!isClassified(cause) && isNavigationRace(cause)) {
+  if (!isClassified(cause) && !isPwTimeout(cause) && isNavigationRace(cause)) {
     return new EngineError('NODE_STALE', `${operation}: ${message(cause)}`, {
       retryable: true,
       cause,
@@ -381,7 +418,7 @@ export function navigationStaleOr(cause: unknown, operation: string): Error {
  * waits, so a `TimeoutError` there is a budget that ran out, not a miss.
  */
 export function staleOr(cause: unknown, operation: string): Error {
-  if (isClassified(cause)) return cause;
+  if (isClassified(cause) || isPwTimeout(cause)) return translatePwError(cause, operation);
   const text = message(cause);
   if (STALE_PATTERN.test(text) || isNavigationRace(cause)) {
     return new EngineError('NODE_STALE', `${operation}: ${text}`, { retryable: true, cause });
@@ -400,7 +437,7 @@ export async function performViewportSwipe(
     momentum,
   );
   const [deltaX, deltaY] = wheelDelta(direction, distance);
-  return page.mouse.wheel(deltaX, deltaY);
+  await wheelRendered(page, deltaX, deltaY);
 }
 
 /**
@@ -453,10 +490,15 @@ export async function performElementSwipe(
   momentum: Momentum,
   timeout: number,
 ): Promise<void> {
-  // Hover first: it auto-waits for visibility on both target kinds, so the
-  // immediate box read below observes a settled element.
-  await asActionable(target).hover({ timeout });
-  const box = await targetBoundingBox(target, timeout);
+  // A node the pointer already hovers takes the wheel where it is; one hit at
+  // its centre takes it there, at the box that hit test read; otherwise hover
+  // waits for it to be actionable, scrolls it into view, and reports whatever
+  // intercepts the pointer.
+  const aimed = await (target.kind === 'locator'
+    ? target.locator.evaluate(wheelAim, undefined, { timeout })
+    : target.element.evaluate(wheelAim));
+  if (aimed.aim === 'blocked') await asActionable(target).hover({ timeout });
+  const box = aimed.aim === 'blocked' ? await targetBoundingBox(target, timeout) : aimed.box;
   if (box === null) {
     throw new EngineError('NOT_ACTIONABLE', 'element has no visible bounding box', {
       retryable: false,
@@ -468,7 +510,45 @@ export async function performElementSwipe(
   );
   const [deltaX, deltaY] = wheelDelta(direction, distance);
   const page = await targetPage(target);
+  if (aimed.aim === 'centre') await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await wheelRendered(page, deltaX, deltaY);
+}
+
+/**
+ * Wheels the page and resolves once a frame rendered the scroll it caused.
+ * The scroll lands on the compositor and reaches script on the next frame, so
+ * a read right after a bare `mouse.wheel` can see the document it left. A
+ * hidden document renders no frames, so it resolves at once.
+ */
+async function wheelRendered(page: Page, deltaX: number, deltaY: number): Promise<void> {
   await page.mouse.wheel(deltaX, deltaY);
+  await page.evaluate(nextRenderedFrame);
+}
+
+/** Page-side: resolves after the next rendered frame, or at once in a hidden document. */
+function nextRenderedFrame(): Promise<void> {
+  if (document.visibilityState === 'hidden') return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => window.setTimeout(resolve, 0)));
+}
+
+/** Where a wheel reaches a node, and the box it read when it was not blocked. */
+type WheelAim =
+  | { readonly aim: 'pointer' | 'centre'; readonly box: { x: number; y: number; width: number; height: number } }
+  | { readonly aim: 'blocked' };
+
+/**
+ * Page-side: where a wheel reaches `element` in a top-level document, whose
+ * box is the page's: at the pointer when it already hovers the element, at
+ * its centre when the hit target there is the element or inside it, or
+ * `blocked` when neither holds.
+ */
+function wheelAim(element: Element): WheelAim {
+  if (window !== window.top || element.getClientRects().length === 0) return { aim: 'blocked' };
+  const rect = element.getBoundingClientRect();
+  const box = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  if (element.matches(':hover')) return { aim: 'pointer', box };
+  const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  return hit !== null && element.contains(hit) ? { aim: 'centre', box } : { aim: 'blocked' };
 }
 
 function swipeDistance(extent: number, momentum: Momentum): number {

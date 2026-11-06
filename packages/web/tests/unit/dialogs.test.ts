@@ -102,11 +102,33 @@ describe('DialogRouter', () => {
     router.add(() => {
       throw new Error('handler exploded');
     });
-    await router.dispatch(fakeDialog().dialog);
+    const { dialog, dismiss } = fakeDialog();
+    await router.dispatch(dialog);
+    expect(dismiss).toHaveBeenCalledTimes(1);
     expect(() => router.throwPending()).toThrowError(
       expect.objectContaining({ code: 'ENGINE_FAILURE', message: expect.stringContaining('handler exploded') }),
     );
 
+    expect(() => router.throwPending()).not.toThrow();
+  });
+
+  it('dismisses a dialog when accepting rejects and leaves it unanswered', async () => {
+    const router = new DialogRouter();
+    const { dialog, accept, dismiss } = fakeDialog();
+    accept.mockRejectedValueOnce(new Error('accept failed'));
+    router.add((native) => native.accept());
+    await router.dispatch(dialog);
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(() => router.throwPending()).toThrowError(expect.objectContaining({ code: 'ENGINE_FAILURE' }));
+  });
+
+  it('accepts a void handler that starts an answer without awaiting it', async () => {
+    const router = new DialogRouter();
+    const { dialog, accept, dismiss } = fakeDialog();
+    router.add((native) => { void native.accept(); });
+    await router.dispatch(dialog);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(dismiss).not.toHaveBeenCalled();
     expect(() => router.throwPending()).not.toThrow();
   });
 
@@ -209,5 +231,19 @@ describe('ErrorLatch', () => {
     await expect(bare.settle({ timeoutMs: 20, signal: new AbortController().signal })).rejects.toThrowError(
       expect.objectContaining({ message: expect.stringContaining('a dialog and route handler was still running') }),
     );
+  });
+});
+
+describe('native dialog kind', () => {
+  it.each(['alert', 'confirm', 'prompt', 'beforeunload'] as const)('exposes %s independently of identical messages', async (kind) => {
+    const router = new DialogRouter();
+    const native = fakeDialog('same message');
+    native.dialog.type = () => kind;
+    const seen: string[] = [];
+    router.add(async dialog => { seen.push(dialog.type); await dialog.dismiss(); });
+    await router.dispatch(native.dialog);
+    expect(seen).toEqual([kind]);
+    expect(native.dismiss).toHaveBeenCalledOnce();
+    expect(() => router.throwPending()).not.toThrow();
   });
 });

@@ -12,6 +12,22 @@ export interface FixturePage {
 
 export const FIXTURE_PAGES: readonly FixturePage[] = [
   {
+    name: 'shadow section landmarks',
+    html: `
+      <article><div id="article-shadow"></div></article>
+      <div role="region" aria-label="News"><div id="region-shadow"></div></div>
+      <div id="page-shadow"></div>
+      <script>
+        for (const id of ['article-shadow', 'region-shadow', 'page-shadow']) {
+          const root = document.getElementById(id).attachShadow({ mode: 'open' });
+          root.innerHTML = '<div></div>';
+          root.firstElementChild.attachShadow({ mode: 'open' }).innerHTML =
+            '<header aria-label="' + id + ' header">Heading</header><footer aria-label="' + id + ' footer">Footer</footer>';
+        }
+      </script>
+    `,
+  },
+  {
     name: 'inferred table headers',
     html: `
       <table><tr><th>Item</th><td>Value</td></tr></table>
@@ -19,6 +35,39 @@ export const FIXTURE_PAGES: readonly FixturePage[] = [
       <table><tr><th>Column</th><th>Other column</th></tr></table>
       <table><tr><th scope="col">Explicit column</th><td>Value</td></tr></table>
       <table><tr><th scope="row">Explicit row</th><th>Column</th></tr></table>
+    `,
+  },
+  {
+    name: 'explicitly hidden select choices',
+    html: `
+      <select aria-label="Plan" size="8">
+        <option selected>Visible</option><option disabled>Disabled</option>
+        <option hidden>Hidden</option><option style="display:none">No display</option>
+        <optgroup hidden label="Hidden group"><option>Hidden group choice</option></optgroup>
+      </select>
+    `,
+  },
+  {
+    name: 'role fallback tokens',
+    html: `
+      <button role="unknown button">Save</button>
+      <button role="unknown widget">Submit</button>
+      <a href="/next" role="unknown button link">Continue</a>
+      <div role="unknown img" aria-label="Chart" style="width:10px;height:10px"></div>
+      <div role="unknown\u00a0button" aria-label="Not a role" style="width:10px;height:10px"></div>
+      <table role="unknown grid"><tr><td>Cell</td></tr></table>
+    `,
+  },
+  {
+    name: 'boolean attribute casing',
+    html: `
+      <div role="tablist"><button role="tab" aria-selected="TRUE">All</button><button role="tab" aria-selected="TrUe">Recent</button><button role="tab" aria-selected="FALSE">Archived</button></div>
+      <div aria-hidden="TRUE"><button aria-hidden="false">Hidden action</button></div>
+      <button>Save<span aria-hidden="TrUe"> decoration</span></button>
+      <button aria-hidden="FALSE">Shown</button>
+      <button aria-labelledby="upper-reference">Fallback</button>
+      <div aria-hidden="TRUE"><span id="upper-reference">Label <i style="display:none">whole</i></span></div>
+      <div role="button">Pick <div role="listbox"><div role="option" aria-selected="true">Chosen</div><div role="option" aria-selected="false">Other</div></div></div>
     `,
   },
   {
@@ -59,6 +108,11 @@ export const FIXTURE_PAGES: readonly FixturePage[] = [
       <div role="button" tabindex="0">Custom action</div>
       <button aria-pressed="true">Bold</button>
       <button aria-pressed="false">Italic</button>
+      <a href="/decor" role="presentation">Decorative link</a>
+      <button role="none">Still a button</button>
+      <button role="none" disabled>Disabled presentation</button>
+      <h2 role="none" tabindex="0junk">Junk tabindex</h2>
+      <img alt="" tabindex="0" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7">
     `,
   },
   {
@@ -157,6 +211,8 @@ export const FIXTURE_PAGES: readonly FixturePage[] = [
       <label>Wrapped <select><option>One</option></select></label>
       <img alt="Company logo" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7">
       <svg role="img" aria-label="Chart" width="10" height="10"></svg>
+      <svg role="presentation" aria-label="Painted chart" width="10" height="10"></svg>
+      <div role="presentation" aria-checked="true">Decorative state</div>
       <figure><img alt="Cat" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7"><figcaption>A cat</figcaption></figure>
     `,
   },
@@ -205,6 +261,20 @@ export const FIXTURE_PAGES: readonly FixturePage[] = [
       </script>
       <div role="button" tabindex="0"><span>Nested</span> <b>content</b></div>
       <div contenteditable="true" aria-label="Editor">Hello</div>
+      <div contenteditable="true" aria-label="Decorated editor"><h2 role="presentation">Editor title</h2><img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7"></div>
+    `,
+  },
+  {
+    name: 'list rebuilt every millisecond',
+    html: `
+      <div id="rebuilt-list"></div>
+      <script>
+        const rebuild = () => {
+          document.getElementById('rebuilt-list').innerHTML = '<button type="button">Tap me</button><button type="button">Decoy</button>';
+        };
+        rebuild();
+        setInterval(rebuild, 1);
+      </script>
     `,
   },
 ];

@@ -18,11 +18,15 @@ import {
   createProject,
   resultByTitle,
   runExisting,
+  webTarget,
   type FixtureProject,
   type RunOutcome,
 } from '../helpers/run-project.ts';
 import { readEntries } from '../helpers/trace-cache.ts';
+import { findNode } from '../helpers/executor-tree.ts';
 import type {
+  ExecutorNode,
+  PointTapResult,
   ReplayedPrefix,
   StepExecutor,
   StepExecutorContext,
@@ -142,11 +146,13 @@ describe('trace cache: divergence hands the step over mid-step', () => {
     expect(prefix!.totalActions).toBe(2);
     expect(prefix!.stopReason).toBe('target-not-found');
     const step = actStep(secondRun);
-    expect(step.cache).toEqual({
+    expect(step.cache).toMatchObject({
       mode: 'agent-concluded',
       reason: 'target-not-found',
       replayedActions: 1,
       totalActions: 2,
+      detail: expect.stringMatching(/^at action 2 of 2, /u),
+      write: 'saved',
     });
   });
 
@@ -543,8 +549,89 @@ describe('trace cache: modes', () => {
       const second = await runExisting(project, options(inCi, { ...process.env, APP_URL: app.url, CI: '1' }));
       expect(second.exitCode).toBe(0);
       expect(inCi.calls).toBe(0);
-      expect(actStep(second).cache).toEqual({ mode: 'self-finalized', replayedActions: 2, totalActions: 2 });
+      expect(actStep(second).cache).toEqual({ mode: 'self-finalized', replayedActions: 2, totalActions: 2, entry: expect.stringMatching(/^[0-9a-f]{64}$/u) });
       expect(entryFileState(project)).toEqual(legacy);
+    } finally {
+      project.cleanup();
+    }
+  }, 180_000);
+});
+
+const FAILS_FIRST_ATTEMPT_SUITE = `import { existsSync, rmSync } from 'node:fs';
+import { test, expect } from 'e2e';
+
+const failOnce = new URL('../fail-once', import.meta.url);
+
+test('cached step increments twice', async ({ app, agent, screen }) => {
+  await app.open();
+  await agent.act('increment the counter twice');
+  if (existsSync(failOnce)) {
+    rmSync(failOnce);
+    throw new Error('the first attempt fails before anything verified the step');
+  }
+  await expect(screen.getByRole('status')).toHaveText('2');
+});
+`;
+
+describe('trace cache: --strict-cache never writes the cache', () => {
+  let app: FixtureApp;
+
+  beforeAll(async () => {
+    app = await startFixtureApp();
+  }, 60_000);
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  const options = (record: ExecutorRecord, strictCache: boolean) => ({
+    appUrl: app.url,
+    config: {
+      tests: 'tests/**/*.e2e.ts',
+      agents: { default: { executor: twoTapExecutor(record) } },
+      cache: 'read-write' as const,
+      retries: 1,
+    },
+    runOptions: { strictCache },
+  });
+
+  it('replays on a retry and leaves the entry exactly as recorded when the first attempt fails', async () => {
+    const project = createProject({ 'tests/act.e2e.ts': FAILS_FIRST_ATTEMPT_SUITE });
+    try {
+      const recording = await runExisting(project, options({ calls: 0, prefixes: [] }, false));
+      expect(recording.exitCode).toBe(0);
+      const recorded = entryFileState(project);
+      const entry = path.basename(readOnlyEntry(project).file, '.json');
+
+      writeFileSync(path.join(project.dir, 'fail-once'), '', 'utf8');
+      const strict: ExecutorRecord = { calls: 0, prefixes: [] };
+      const outcome = await runExisting(project, options(strict, true));
+      expect(outcome.exitCode).toBe(0);
+      const attempts = resultByTitle(outcome, 'cached step increments twice').attempts;
+      expect(attempts.map((attempt) => attempt.status)).toEqual(['failed', 'passed']);
+      expect(strict.calls).toBe(0);
+      for (const attempt of attempts) {
+        expect(attempt.steps.find((step) => step.api === 'agent.act')?.cache).toEqual({
+          mode: 'self-finalized',
+          replayedActions: 2,
+          totalActions: 2,
+          entry,
+        });
+      }
+      expect(entryFileState(project)).toEqual(recorded);
+    } finally {
+      project.cleanup();
+    }
+  }, 180_000);
+
+  it('runs a never-recorded step live without recording it', async () => {
+    const project = createProject({ 'tests/act.e2e.ts': SUITE });
+    try {
+      const strict: ExecutorRecord = { calls: 0, prefixes: [] };
+      const outcome = await runExisting(project, options(strict, true));
+      expect(outcome.exitCode).toBe(0);
+      expect(strict.calls).toBe(1);
+      expect(existsSync(cacheDir(project))).toBe(false);
     } finally {
       project.cleanup();
     }
@@ -619,6 +706,83 @@ describe('trace cache: a bare-point tap replays like a coordinate-driven tool', 
     const step = resultByTitle(second, 'picks the red pin').attempts.at(-1)!.steps.find((s) => s.api === 'agent.act')!;
     expect(step.cache).toMatchObject({ mode: 'self-finalized', replayedActions: 1, totalActions: 1 });
     expect(step.events.filter((event) => event.kind === 'engine').map((event) => event.name)).toEqual(['tapAt']);
+  }, 240_000);
+});
+
+const OFFER_SUITE = `import { test, expect } from 'e2e';
+
+test('reserves offer A at a point', async ({ app, agent, screen }) => {
+  await app.open('/repeats?still=1');
+  await agent.act('reserve offer A');
+  await expect(screen.getByRole('status', { name: 'Picked' })).toHaveText('A');
+});
+`;
+
+/** Taps the center of the "Reserve now" button in the Offer A row, found in the tree, as a bare point. No model. */
+function offerPointExecutor(record: ExecutorRecord, results: PointTapResult[]): StepExecutor {
+  return {
+    name: 'offer-point-executor',
+    version: 'test',
+    async runStep(context: StepExecutorContext) {
+      record.calls += 1;
+      record.prefixes.push(context.replayedPrefix);
+      const { tree } = await context.observe({ tree: true });
+      const flat = (node: ExecutorNode): ExecutorNode[] => [node, ...(node.children ?? []).flatMap(flat)];
+      const nodes = flat(tree!);
+      const row = nodes.findIndex((node) => node.text === 'Offer A' || node.name === 'Offer A');
+      const { rect } = nodes.slice(row + 1).find((node) => node.role === 'button' && node.name === 'Reserve now')!;
+      const tapped = await context.actions.tapAt({ x: rect!.x + rect!.width / 2, y: rect!.y + rect!.height / 2 });
+      results.push(tapped);
+      return { status: 'passed', summary: tapped.summary };
+    },
+  };
+}
+
+describe('trace cache: a point tap on a repeated control replays in its row', () => {
+  let app: FixtureApp;
+  let project: FixtureProject;
+  const records: ExecutorRecord[] = [];
+  const results: PointTapResult[] = [];
+
+  const options = () => {
+    const record: ExecutorRecord = { calls: 0, prefixes: [] };
+    records.push(record);
+    return {
+      appUrl: app.url,
+      config: {
+        tests: 'tests/**/*.e2e.ts',
+        reporters: ['json'] as const,
+        agents: { default: { executor: offerPointExecutor(record, results) } },
+        cache: 'read-write' as const,
+      },
+    };
+  };
+
+  beforeAll(async () => {
+    app = await startFixtureApp();
+    project = createProject({ 'tests/offer.e2e.ts': OFFER_SUITE });
+  }, 60_000);
+
+  afterAll(async () => {
+    project?.cleanup();
+    await app?.close();
+  });
+
+  it('names the control it tapped, records its row, and replays into that row after the rows reverse', async () => {
+    const first = await runExisting(project, options());
+    expect(first.exitCode).toBe(0);
+    expect(results[0]?.target).toBeDefined();
+    const { entry } = readOnlyEntry(project);
+    expect(entry.payload.actions[0]).toMatchObject({ name: 'tapAt', within: { target: { role: 'button', name: 'Reserve now', within: 'Offer A' } } });
+
+    // The `b` variant lists the offers C, B, A: the recorded point now sits in Offer C's row.
+    app.setVariant('b');
+    const second = await runExisting(project, options());
+    app.setVariant(null);
+    expect(second.exitCode).toBe(0);
+    expect(records.at(-1)!.calls).toBe(0);
+    const step = resultByTitle(second, 'reserves offer A at a point').attempts.at(-1)!.steps.find((s) => s.api === 'agent.act')!;
+    expect(step.cache).toMatchObject({ mode: 'self-finalized', replayedActions: 1, totalActions: 1 });
   }, 240_000);
 });
 
@@ -702,7 +866,7 @@ describe('trace cache: a replayed typed value is the flow\'s data on an app that
       expect(outcome.exitCode).toBe(0);
       expect(records.at(-1)!.calls, `run ${String(run)}`).toBe(0);
       const step = cacheOf(outcome);
-      expect(step.cache, `run ${String(run)}`).toEqual({ mode: 'self-finalized', replayedActions: 2, totalActions: 2 });
+      expect(step.cache, `run ${String(run)}`).toMatchObject({ mode: 'self-finalized', replayedActions: 2, totalActions: 2 });
       expect(step.metrics!.modelCalls).toBe(0);
       const restaged = readOnlyEntry(project).entry.payload.actions;
       expect(restaged, `run ${String(run)}`).toEqual(recorded);
@@ -813,6 +977,78 @@ describe('trace cache: a composed word that appears on screen is not a run-time 
     expect(second.exitCode).toBe(0);
     expect(records.at(-1)!.calls).toBe(0);
     const step = resultByTitle(second, 'fills both row fields').attempts.at(-1)!.steps.find((s) => s.api === 'agent.act')!;
-    expect(step.cache).toEqual({ mode: 'self-finalized', replayedActions: 2, totalActions: 2 });
+    expect(step.cache).toMatchObject({ mode: 'self-finalized', replayedActions: 2, totalActions: 2 });
+  }, 240_000);
+});
+
+const ABOUT_SUITE = `import { test, expect } from 'e2e';
+
+test('opens the about page', async ({ app, agent, screen }) => {
+  await app.open();
+  await agent.act('open the About page');
+  await expect(screen.getByRole('heading', 'About')).toBeVisible();
+});
+`;
+
+/** Navigates to the About link's href from the node tree, an absolute URL on the app. */
+function aboutLinkExecutor(record: ExecutorRecord): StepExecutor {
+  return {
+    name: 'about-link-executor',
+    version: 'test',
+    async runStep(context: StepExecutorContext) {
+      record.calls += 1;
+      const { tree } = await context.observe({ tree: true });
+      const href = findNode(tree, (node) => node.role === 'link' && node.name === 'About')?.attributes?.['href'];
+      if (href === undefined) return { status: 'failed' as const, summary: 'no About link' };
+      await context.actions.navigate(href);
+      return { status: 'passed' as const, summary: `opened ${href}` };
+    },
+  };
+}
+
+describe('trace cache: a navigate on the app replays where the app runs now', () => {
+  let recordedOn: FixtureApp | undefined;
+  let replayedOn: FixtureApp;
+  let project: FixtureProject;
+
+  const options = (app: FixtureApp, record: ExecutorRecord, strictCache: boolean) => ({
+    config: {
+      tests: 'tests/**/*.e2e.ts',
+      targets: [{ ...webTarget('web', app.url), app: { url: app.url, identity: 'fixture-app' } }],
+      agents: { default: { executor: aboutLinkExecutor(record) } },
+      cache: 'read-write' as const,
+    },
+    runOptions: { strictCache },
+  });
+
+  beforeAll(async () => {
+    recordedOn = await startFixtureApp();
+    replayedOn = await startFixtureApp();
+    project = createProject({ 'tests/about.e2e.ts': ABOUT_SUITE });
+  }, 60_000);
+
+  afterAll(async () => {
+    project?.cleanup();
+    await recordedOn?.close();
+    await replayedOn?.close();
+  });
+
+  it('records an absolute URL on the app as its path and replays it on another origin of the app', async () => {
+    const recording: ExecutorRecord = { calls: 0, prefixes: [] };
+    const first = await runExisting(project, options(recordedOn!, recording, false));
+    expect(first.exitCode).toBe(0);
+    expect(recording.calls).toBe(1);
+    const { entry } = readOnlyEntry(project);
+    expect(entry.payload.actions).toEqual([{ name: 'navigate', summary: 'navigate to "/about"', url: '/about' }]);
+    expect(entry.payload).toMatchObject({ startPath: '/', endPath: '/about' });
+
+    await recordedOn!.close();
+    recordedOn = undefined;
+    const replay: ExecutorRecord = { calls: 0, prefixes: [] };
+    const second = await runExisting(project, options(replayedOn, replay, true));
+    expect(second.exitCode).toBe(0);
+    expect(replay.calls).toBe(0);
+    const step = resultByTitle(second, 'opens the about page').attempts.at(-1)!.steps.find((s) => s.api === 'agent.act')!;
+    expect(step.cache).toMatchObject({ mode: 'self-finalized', replayedActions: 1, totalActions: 1 });
   }, 240_000);
 });

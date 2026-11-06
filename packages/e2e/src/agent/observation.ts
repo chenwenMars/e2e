@@ -1,10 +1,13 @@
 /** Observation capture, redaction, and model serialization. */
 
+import { appNavigation } from '../cache/route.ts';
 import { OBSERVED_NAME_LIMIT, OBSERVED_TEXT_LIMIT } from '../engine/contract.ts';
 import type { Observation, SemanticNode, ViewportSize } from '../engine/surface.ts';
+import { sha256Hex } from '../internal/ids.ts';
 import type { SecretLedger } from '../internal/redact.ts';
 import { collapseText } from '../internal/text.ts';
 import { sleep } from '../internal/time.ts';
+import { pixelsProvenMasked } from '../run/secrecy.ts';
 import type { VisionDegradation } from '../run/steps.ts';
 import type { ExecutorNode, ExecutorObservation, ExecutorPixels } from './executor.ts';
 import { sizeForModel } from './pixels.ts';
@@ -27,6 +30,8 @@ export type AgentObservation = AgentObservationMetadata & (
       readonly parents: ReadonlyMap<string, string>;
       readonly tree: RedactedNode;
       readonly truncated: boolean;
+      /** The engine's measured keyboard state; `false` when it measured none, absent only when it did not measure. */
+      readonly keyboardVisible?: boolean | undefined;
       readonly pixels?: ExecutorPixels | undefined;
       readonly pixelsWithheld?: PixelsWithheld | undefined;
     }
@@ -146,6 +151,7 @@ export function prepareObservation(
     parents,
     tree,
     truncated,
+    ...(observation.keyboardVisible === undefined ? {} : { keyboardVisible: observation.keyboardVisible }),
     ...(pixels.cleared === undefined ? {} : { pixels: pixels.cleared }),
     ...(pixels.withheld === undefined ? {} : { pixelsWithheld: pixels.withheld }),
   };
@@ -204,6 +210,7 @@ const NODE_FIELDS: { readonly [Field in NodeField]-?: FieldRedaction<Field> } = 
   attributes: (attributes, _node, redaction) =>
     Object.fromEntries(Object.entries(attributes).map(([key, value]) => [redactText(key, redaction), redactText(value, redaction)])),
   rect: keep,
+  origin: keep,
   selector: (selector, _node, redaction) => redactText(selector, redaction),
   framePath: (framePath, _node, redaction) => framePath.map((selector) => redactText(selector, redaction)),
 };
@@ -222,6 +229,7 @@ export function redactNode(node: SemanticNode, redaction: NodeRedaction): Redact
     if (result !== undefined) redacted[field] = result;
   }
   if (node.children !== undefined) redacted['children'] = node.children.map((child) => redactNode(child, redaction));
+  // oxlint-disable-next-line e2e/no-chained-type-assertions -- mints the phantom REDACTED brand once every field passed NODE_FIELDS
   return redacted as unknown as RedactedNode;
 }
 
@@ -312,22 +320,18 @@ function clearPixels(observation: Observation): {
 } {
   const pixels = observation.pixels;
   if (pixels === undefined) return {};
-  const { secureNodeCount, maskedRegionCount } = observation.redaction;
-  if (maskedRegionCount < secureNodeCount) return { withheld: 'MASKING_UNPROVEN' };
-  return { cleared: { ...pixels, maskedRegionCount } };
+  if (!pixelsProvenMasked(observation.redaction)) return { withheld: 'MASKING_UNPROVEN' };
+  return { cleared: { ...pixels, maskedRegionCount: observation.redaction.maskedRegionCount } };
 }
 
 /**
  * Whether requested pixels become model input, decided once per observation
- * for every tier that asks: a tainted viewport (a secret filled this attempt)
- * is denied first, since the secret may be anywhere on screen; then the
- * capture's own reasons; then the pixels themselves.
+ * for every tier that asks: the capture's own reasons, then the pixels
+ * themselves.
  */
 export function pixelsForModel(
   observation: AgentObservation,
-  tainted: boolean,
 ): { readonly pixels: ExecutorPixels } | { readonly withheld: VisionDegradation } {
-  if (tainted) return { withheld: 'PIXEL_TAINTED' };
   if (observation.pixels === undefined) {
     return { withheld: observation.kind === 'semantic' ? observation.pixelsWithheld ?? 'UNSUPPORTED_CAPABILITY' : 'UNSUPPORTED_CAPABILITY' };
   }
@@ -419,7 +423,18 @@ const MAX_HREF_LENGTH = 256;
  * `appOrigin`, the app base URL's, renders as its path.
  */
 export function formatNode(node: RedactedNode, depth: number, appOrigin?: string): string {
-  const parts: string[] = [`#${node.ref.id}`];
+  const description = describeNode(node, appOrigin);
+  return `${' '.repeat(Math.min(depth, MAX_INDENT_DEPTH))}#${node.ref.id}${description === '' ? '' : ` ${description}`}`;
+}
+
+/**
+ * One node as a line names it, without its id or indent: role, name, text,
+ * the disambiguators, value, and the states that hold. `ignoreStates` leaves
+ * out states a reader comparing two screens does not count as a change
+ * (focus moves with every action).
+ */
+export function describeNode(node: RedactedNode, appOrigin?: string, ignoreStates: ReadonlySet<string> = new Set()): string {
+  const parts: string[] = [];
   if (node.role !== undefined && node.role !== '') parts.push(node.role);
   if (node.name !== undefined && node.name !== '') parts.push(JSON.stringify(node.name));
   const text = node.text === undefined ? '' : collapseText(node.text);
@@ -448,30 +463,27 @@ export function formatNode(node: RedactedNode, depth: number, appOrigin?: string
     parts.push(`purpose=${node.inputPurpose}`);
   }
   const states = Object.entries(node.states ?? {})
-    .filter(([, value]) => value === true)
+    .filter(([key, value]) => value === true && !ignoreStates.has(key))
     .map(([key]) => key);
   if (states.length > 0) parts.push(`[${states.join(' ')}]`);
-  return `${' '.repeat(Math.min(depth, MAX_INDENT_DEPTH))}${parts.join(' ')}`;
+  return parts.join(' ');
 }
 
 /**
  * A link target as a line shows it: a path when it is on the app's origin,
  * the one a navigation to a path resolves against, else the whole URL, since
- * a path on another site would send the model back to the app. Bounded by
+ * a path on another site would send the model back to the app. The path is
+ * the one a recorded navigation keeps (`appNavigation`). Bounded by
  * `boundHref`, after redaction.
  */
 function renderHref(href: string, appOrigin: string | undefined): string {
-  return boundHref(onOrigin(href, appOrigin) ? href.slice(appOrigin.length) : href);
+  return boundHref(appNavigation(href, appOrigin));
 }
 
 /** A link target as an executor tree carries it: absolute, and bounded exactly as `renderHref` bounds the line. */
 function treeHref(href: string, appOrigin: string | undefined): string {
-  return onOrigin(href, appOrigin) ? `${appOrigin}${renderHref(href, appOrigin)}` : boundHref(href);
-}
-
-/** Whether a link target is on `origin`. */
-function onOrigin(href: string, origin: string | undefined): origin is string {
-  return origin !== undefined && href.startsWith(`${origin}/`);
+  const path = appNavigation(href, appOrigin);
+  return appOrigin === undefined || path === href ? boundHref(href) : `${appOrigin}${boundHref(path)}`;
 }
 
 /**
@@ -517,16 +529,13 @@ export function observationShape(observation: AgentObservation): string | undefi
 }
 
 /**
- * FNV-1a over the image bytes: fast, and equal frames encode to equal bytes.
- * The screen presenter compares consecutive screenshots with it too.
+ * SHA-256 over the image bytes: equal frames encode to equal bytes. Hashed
+ * natively, which a per-byte loop in script cannot match on a megabyte-sized
+ * screenshot, and no 32-bit collision can read two screens as one. The screen
+ * presenter compares consecutive screenshots with it too.
  */
 export function pixelDigest(bytes: Uint8Array): string {
-  let hash = 0x811c9dc5;
-  for (const byte of bytes) {
-    hash ^= byte;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16);
+  return sha256Hex(bytes);
 }
 
 /** `12:05`, `0:59`, `23:59:59`: a value that changes on its own once a second or minute. */

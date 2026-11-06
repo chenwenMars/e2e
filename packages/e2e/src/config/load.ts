@@ -3,16 +3,14 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { ConfigurationError, InfrastructureError, isE2EError } from '../internal/errors.ts';
+import { withConfigSecretReferences } from '../secrets.ts';
 import type { E2EConfig } from '../types.ts';
 import { explainModuleError } from './diagnose.ts';
 import { freshModuleURL, registerLoader } from './esm-hooks.ts';
-
-const CONFIG_NAMES = ['e2e.config.ts', 'e2e.config.mts'] as const;
+import { CONFIG_NAMES, JS_CONFIG_NAMES, TS_CONFIG_NAMES } from './names.ts';
 
 /** Spellings a config author might reach for that the loader does not read. */
 const CONFIG_LOOKALIKES = [
-  'e2e.config.js',
-  'e2e.config.mjs',
   'e2e.config.cjs',
   'e2e.config.cts',
   'e2e.config.json',
@@ -36,14 +34,13 @@ export interface DiscoveredConfig {
 export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredConfig {
   if (explicitPath !== undefined) {
     const absolute = path.resolve(cwd, explicitPath);
-    if (!existsSync(absolute)) {
-      throw new ConfigurationError('CONFIG_NOT_FOUND', `config file not found: ${explicitPath}`);
-    }
+    if (!existsSync(absolute)) throw explicitConfigNotFound(cwd, explicitPath, absolute);
     return { configPath: absolute, projectRoot: path.dirname(absolute) };
   }
   let dir = path.resolve(cwd);
   for (;;) {
-    const present = CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
+    const typescript = TS_CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
+    const present = typescript.length > 0 ? typescript : JS_CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
     if (present.length > 1) {
       throw new ConfigurationError(
         'CONFIG_AMBIGUOUS',
@@ -63,6 +60,20 @@ export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredCo
 }
 
 /**
+ * The failure for an explicit config path with no file behind it. A relative
+ * path names the `cwd` it resolved against (the process's working directory
+ * for the CLI and MCP server), which may not be the one the caller meant.
+ */
+function explicitConfigNotFound(cwd: string, explicitPath: string, absolute: string): ConfigurationError {
+  if (path.isAbsolute(explicitPath)) return new ConfigurationError('CONFIG_NOT_FOUND', `config file not found: ${absolute}`);
+  const base = path.resolve(cwd);
+  return new ConfigurationError(
+    'CONFIG_NOT_FOUND',
+    `config file not found: ${absolute} (${explicitPath} resolved against the working directory ${base}); pass an absolute path, or a path relative to that directory`,
+  );
+}
+
+/**
  * The failure for a run that found no config file: where the search looked,
  * a lookalike in the working directory when one exists, and otherwise the
  * command that creates a config. Thrown when a config file is discovered,
@@ -71,11 +82,12 @@ export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredCo
 export function missingConfigError(cwd: string): ConfigurationError {
   const root = path.resolve(cwd);
   const lookalike = CONFIG_LOOKALIKES.find((name) => existsSync(path.join(root, name)));
-  const searched = `no ${CONFIG_NAMES.join(' or ')} found in ${root} or its parent directories`;
+  const names = `${CONFIG_NAMES.slice(0, -1).join(', ')}, or ${CONFIG_NAMES.at(-1)}`;
+  const searched = `no ${names} found in ${root} or its parent directories`;
   const remedy =
     lookalike === undefined
       ? 'run e2e init to create one, or pass --config <path>'
-      : `found ${lookalike}, but only ${CONFIG_NAMES.join(' and ')} are loaded: rename it and keep it an ES module`;
+      : `found ${lookalike}, but only ${names} is loaded: rename it and keep it an ES module`;
   return new ConfigurationError('CONFIG_NOT_FOUND', `${searched}; ${remedy}`);
 }
 
@@ -86,11 +98,13 @@ export interface ConfigLoadOptions {
    * that holds several instances of one config at once, each with its own
    * engines, and sees an edited base config on the next load. Opt-in: in a
    * run, a test file that imports a file the config imports gets the same
-   * instance, and a fresh graph would split them. Every graph load keeps
-   * its own copy of the project's modules for the life of the process, so
-   * it is for loads a person or an agent asks for, not a loop.
+   * instance, and a fresh graph would split them. Every graph keeps its
+   * own copy of the project's modules for the life of the process, so it
+   * is for loads a person or an agent asks for. A string names the graph:
+   * modules loaded under one name share their copies, which is how a
+   * `--watch` run pays one copy of the project per rerun, not one per file.
    */
-  readonly graph?: boolean | undefined;
+  readonly graph?: boolean | string | undefined;
 }
 
 /**
@@ -99,19 +113,21 @@ export interface ConfigLoadOptions {
  * the instance is for) plus a process-unique sequence, so a realm never
  * receives another realm's instance of it and a second `run()` in one
  * process sees the file as it is now. The files it imports keep one instance
- * per process; `loadConfigModule` with `graph` refreshes them too.
+ * per process, unless `graph` names a fresh graph to load them in, shared
+ * by every module loaded under that name.
  */
-export async function importModule(absolutePath: string, cacheKey = 'module'): Promise<unknown> {
-  return importFresh(absolutePath, cacheKey, false);
+export async function importModule(absolutePath: string, cacheKey = 'module', graph?: string): Promise<unknown> {
+  return importFresh(absolutePath, cacheKey, graph ?? false);
 }
 
 /** Process-unique sequence that keeps every fresh import's URL distinct. */
 let imports = 0;
 
-async function importFresh(absolutePath: string, cacheKey: string, graph: boolean): Promise<unknown> {
+async function importFresh(absolutePath: string, cacheKey: string, graph: boolean | string): Promise<unknown> {
   imports += 1;
   registerLoader();
-  return import(freshModuleURL(absolutePath, `${cacheKey}-${imports}`, graph));
+  const key = `${cacheKey}-${imports}`;
+  return import(freshModuleURL(absolutePath, key, graph === true ? key : graph === false ? undefined : graph));
 }
 
 /** Loads and returns the raw default export of a config module. */
@@ -120,7 +136,7 @@ export async function loadConfigModule(configPath: string, options: ConfigLoadOp
   registerLoader();
   let moduleValue: unknown;
   try {
-    moduleValue = await importFresh(configPath, 'module', options.graph === true);
+    moduleValue = await withConfigSecretReferences(() => importFresh(configPath, 'module', options.graph ?? false));
   } catch (cause) {
     // A factory the config calls (web(), mobile()) or
     // `secrets.get()` refusing its options at evaluation is a config error
@@ -147,7 +163,7 @@ export async function loadConfigModule(configPath: string, options: ConfigLoadOp
         : `default-exports ${typeof defaultExport === 'function' ? 'a function' : `a ${typeof defaultExport}`}`;
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `config ${configPath} ${found}; write export default { targets: [...] } satisfies E2EConfig`,
+      `config ${configPath} ${found}; write export default { targets: [...] }${/\.m?js$/u.test(configPath) ? '' : ' satisfies E2EConfig'}`,
     );
   }
   return defaultExport as E2EConfig;

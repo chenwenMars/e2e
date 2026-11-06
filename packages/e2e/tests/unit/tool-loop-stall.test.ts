@@ -110,7 +110,7 @@ function runtime(overrides: Partial<E2EConfig>) {
     budget: new AttemptBudget(signal, new Deadline(10_000)),
     runId: 'run',
     attemptId: 'attempt',
-    attempt: { testId: 'test', attemptId: 'attempt', index: 0, signal, memory: new Map() },
+    attempt: { testId: 'test', attemptId: 'attempt', titlePath: [], index: 0, signal, memory: new Map() },
     artifacts: { dir: '/tmp', register: () => 'artifact', link: () => 'artifact' },
     priorSteps: () => steps.completed(),
     agentContext: undefined,
@@ -204,6 +204,8 @@ describe('tool loop step timeout', () => {
 
     const outcome = steps.all()[0]!.turns![0]!.outcome;
     expect(outcome.length).toBeLessThanOrEqual(2048);
-    expect(outcome.endsWith('…[truncated]')).toBe(true);
+    // The tool's lookalike lines are clipped with its output; the loop's own
+    // note stopping the repeated calls comes after the clip, whole.
+    expect(outcome).toMatch(/…\[truncated\]\n\[loop\] the step was stopped before turn 2: [^\n]+$/u);
   });
 });

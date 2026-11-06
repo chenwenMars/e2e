@@ -1,7 +1,7 @@
 /** Shared helpers for the agent-device engine: error constructors, filenames, PNG headers, gestures, the screen location and size. */
 
 import type { CaptureScreenshotResult } from 'agent-device';
-import { EngineError, type Momentum, type ScrollDirection, type ViewportSize } from 'e2e/engine';
+import { EngineError, withTimeout, type Momentum, type ScrollDirection, type ViewportSize } from 'e2e/engine';
 
 export interface Point {
   readonly x: number;
@@ -17,6 +17,94 @@ export interface Rect {
 
 export function cancelled(text: string): EngineError {
   return new EngineError('CANCELLED', text, { retryable: false });
+}
+
+/**
+ * The least time an input gets to answer once sent, however little budget
+ * was left: a tap that lands is then not reported as cut off.
+ */
+const MIN_ANSWER_MS = 250;
+
+/**
+ * One operation's budget (its `timeoutMs`), which the harness signal does not
+ * enforce. Every device command the operation sends runs under it: the
+ * inputs through `send`, the snapshots and screenshots through `read`.
+ */
+export class InputBudget {
+  private readonly endsAt: number;
+  private sent = false;
+
+  /**
+   * `track` keeps the device command itself in flight, past a timeout that
+   * abandons it, until it settles. The callers' own tracking settles with the
+   * race, so this is the registration the next attempt waits on.
+   */
+  constructor(
+    private readonly label: string,
+    timeoutMs: number,
+    private readonly track: <T>(pending: Promise<T>) => Promise<T>,
+  ) {
+    this.endsAt = Date.now() + timeoutMs;
+  }
+
+  /**
+   * Sends one input with what is left of the budget. With none left it sends
+   * nothing: `OPERATION_TIMEOUT`, or `ACTION_MAY_HAVE_COMMITTED` once an
+   * earlier input of this operation went out. A gesture that holds (`holdMs`)
+   * at least as long as the budget left could only be cut off mid-gesture, so
+   * it is refused unsent. An input that does not answer in time may have
+   * landed, so it is `ACTION_MAY_HAVE_COMMITTED` and the runner never repeats it.
+   */
+  send<T>(dispatch: () => Promise<T>, holdMs = 0): Promise<T> {
+    const remaining = this.remainingMs();
+    if (remaining <= 0) return Promise.reject(this.spent());
+    if (holdMs >= remaining) {
+      return Promise.reject(
+        new EngineError(
+          'NOT_ACTIONABLE',
+          `${this.label} holds for ${holdMs} ms, but only ${Math.floor(remaining)} ms of its timeout are left; raise the timeout or shorten the hold`,
+          { retryable: false },
+        ),
+      );
+    }
+    const pending = this.track(dispatch());
+    this.sent = true;
+    return withTimeout(pending, Math.max(remaining, MIN_ANSWER_MS), () => this.maybeCommitted());
+  }
+
+  /**
+   * Runs one device read with what is left of the budget. With none left it
+   * reads nothing. A read that does not answer in time is `OPERATION_TIMEOUT`,
+   * or `ACTION_MAY_HAVE_COMMITTED` once an input of this operation went out,
+   * so the runner never repeats that input.
+   */
+  read<T>(dispatch: () => Promise<T>): Promise<T> {
+    const remaining = this.remainingMs();
+    if (remaining <= 0) return Promise.reject(this.spent());
+    return withTimeout(this.track(dispatch()), remaining, () =>
+      this.sent
+        ? this.maybeCommitted()
+        : new EngineError('OPERATION_TIMEOUT', `${this.label} timed out before the device answered`, { retryable: false }),
+    );
+  }
+
+  /** Milliseconds left of the budget; zero or less once it is spent. */
+  remainingMs(): number {
+    return this.endsAt - Date.now();
+  }
+
+  /** The failure of a command the spent budget did not send. */
+  private spent(): EngineError {
+    return this.sent
+      ? this.maybeCommitted()
+      : new EngineError('OPERATION_TIMEOUT', `${this.label} timed out before it was sent`, { retryable: false });
+  }
+
+  private maybeCommitted(): EngineError {
+    return new EngineError('ACTION_MAY_HAVE_COMMITTED', `${this.label} timed out before the device answered; its input may have been dispatched`, {
+      retryable: false,
+    });
+  }
 }
 
 export function invalidState(text: string): EngineError {

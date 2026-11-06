@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { Report1Document } from '../../src/report/build.ts';
 import { startFixtureApp } from '../helpers/fixture-app.ts';
 import { createProject } from '../helpers/run-project.ts';
 
@@ -28,7 +29,8 @@ const LOG_HELPER =
  * A fixture config around the file-logging fake engine; `app` is the
  * target's app source, empty by default.
  */
-function config(app = ''): string {
+function config(app = '', disposal = `log(context.reuseSignal === undefined || context.reuseSignal.aborted ? 'dispose.final' : 'dispose.reusable');
+      await new Promise((resolve) => setImmediate(resolve));`): string {
   return `import { appendFileSync } from 'node:fs';
 import type { E2EConfig } from 'e2e';
 import { defineEngine } from 'e2e/engine';
@@ -47,7 +49,8 @@ export default {
     async init() { log('init'); },
     async startAttempt() { log('startAttempt'); },
     async endAttempt() { log('endAttempt'); },
-    async dispose() { log('dispose'); },
+    async dispose(context) { log('dispose'); ${disposal}
+      log('dispose.end'); },
     async observe() { return { location: 'app://fake/Home', root: node, viewport: { width: 1280, height: 720 } }; },
     async locate() { return [node]; },
   }), ${app} }],
@@ -273,7 +276,7 @@ describe('interrupt signals against the CLI', () => {
         expect(code).toBe(130);
         // Well inside the 60 s test timeout: the interrupt, not the timeout, ended the body.
         expect(elapsed).toBeLessThan(20_000);
-        expect(run.events()).toEqual(['prepare', 'init', 'startAttempt', 'test.start', 'endAttempt', 'dispose', 'finish']);
+        expect(run.events()).toEqual(['prepare', 'init', 'startAttempt', 'test.start', 'endAttempt', 'dispose', 'dispose.final', 'dispose.end', 'finish']);
         expect(run.output()).toContain('interrupted: stopping the running test');
         expect(alive(run.workerPid)).toBe(false);
       }),
@@ -324,7 +327,7 @@ describe('interrupt signals against the CLI', () => {
         expect(existsSync(path.join(run.projectDir, '.e2e', 'report.json'))).toBe(true);
         const pid = run.workerPid;
         await waitFor(() => !alive(pid), CLEANUP_TIMEOUT_MS + 5_000, 'the worker to exit');
-        expect(run.events()).toContain('dispose');
+        expect(run.events().filter((event) => event.startsWith('dispose'))).toEqual(['dispose', 'dispose.final', 'dispose.end']);
         expect(run.events().filter((event) => event === 'finish')).toEqual(['finish']);
       }),
     60_000,
@@ -341,8 +344,36 @@ describe('interrupt signals against the CLI', () => {
         await run.exit;
 
         await waitFor(() => !alive(pid), CLEANUP_TIMEOUT_MS + 5_000, 'the orphaned worker to exit');
-        expect(run.events()).toContain('dispose');
+        expect(run.events().filter((event) => event.startsWith('dispose'))).toEqual(['dispose', 'dispose.final', 'dispose.end']);
       }),
+    60_000,
+  );
+
+  it(
+    'a parent disconnect revokes reuse during pending disposal without invoking it twice',
+    () => withRunningCli({
+      files: {
+        'e2e.config.ts': config('', `
+      if (context.reuseSignal === undefined || context.reuseSignal.aborted) throw new Error('reuse permission missing');
+      log('dispose.reusable');
+      await new Promise((resolve) => context.reuseSignal.addEventListener('abort', resolve, { once: true }));
+      log('dispose.revoked');`),
+        'tests/a.e2e.ts': `import { appendFileSync } from 'node:fs';
+import { test } from 'e2e';
+${LOG_HELPER}
+test('fails before replacement', () => { log('test.start'); throw new Error('replace worker'); });`,
+        'tests/b.e2e.ts': "import { test } from 'e2e'; test('queued', () => {});",
+      },
+      until: 'dispose.reusable',
+    }, async (run) => {
+      const pid = run.workerPid;
+      run.child.kill('SIGKILL');
+      await run.exit;
+      await waitFor(() => !alive(pid), CLEANUP_TIMEOUT_MS + 5_000, 'the retired worker to exit');
+      expect(run.events().filter((event) => event.startsWith('dispose'))).toEqual([
+        'dispose', 'dispose.reusable', 'dispose.revoked', 'dispose.end',
+      ]);
+    }),
     60_000,
   );
 
@@ -392,6 +423,52 @@ describe('interrupt signals against the CLI', () => {
               }
             }
           }
+        },
+      ),
+    60_000,
+  );
+
+  it(
+    'a serial member keeps its failed attempt time in Markdown and JUnit when Ctrl-C cuts the retry',
+    () =>
+      withRunningCli(
+        {
+          files: {
+            'e2e.config.ts': config().replace('workers: 1,', "workers: 1, reporters: ['markdown', 'junit'],"),
+            'tests/serial.e2e.ts': `import { appendFileSync, readFileSync } from 'node:fs';
+import { test, expect } from 'e2e';
+${LOG_HELPER}
+test.describe('flow', { serial: true, retries: 1 }, () => {
+  test.beforeEach(async () => {
+    if (readFileSync(process.env.SIGNAL_LOG!, 'utf8').includes(' verdict.done')) {
+      log('retry.start');
+      await expect.poll(() => false, { timeout: 600_000 }).toBe(true);
+    }
+  });
+  test('fails', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    log('verdict.done');
+    expect(true).toBe(false);
+  });
+});
+`,
+          },
+          until: 'retry.start',
+        },
+        async (run) => {
+          run.signalGroup('SIGINT');
+          expect(await run.exit).toBe(130);
+
+          const report = JSON.parse(readFileSync(path.join(run.projectDir, '.e2e', 'report.json'), 'utf8')) as Report1Document;
+          const [failed, interrupted] = report.run.serialGroups[0]!.attempts;
+          expect(interrupted?.status).toBe('interrupted');
+          expect(report.run.results[0]!.status).toBe('failed');
+          const durationMs = failed!.members[0]!.durationMs;
+          expect(durationMs).toBeGreaterThanOrEqual(190);
+          expect(readFileSync(path.join(run.projectDir, '.e2e', 'junit.xml'), 'utf8')).toContain(`time="${(durationMs / 1000).toFixed(3)}"`);
+          expect(readFileSync(path.join(run.projectDir, '.e2e', 'summary.md'), 'utf8')).toContain(
+            durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`,
+          );
         },
       ),
     60_000,

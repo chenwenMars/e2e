@@ -87,7 +87,7 @@ describe('defineEngine', () => {
     );
     expect(() =>
       defineEngine(observingEngine({ session: { navigate: async () => undefined } as never })),
-    ).toThrow(/session has unknown key "navigate"; expected one of open, back, restart, reset/);
+    ).toThrow(/session has unknown key "navigate"; expected one of open, back, resize, restart, reset/);
     expect(() =>
       defineEngine(observingEngine({ session: { open: 'https://example.test/' } as never })),
     ).toThrow(/session.open must be a function/);
@@ -135,6 +135,19 @@ describe('defineEngine', () => {
     expect(() =>
       defineEngine({ ...observingEngine(), tools: [] } as unknown as Engine),
     ).toThrow(/tools belong on the agent/);
+  });
+
+  it('accepts the trace hooks an engine published before their removal declares, and never offers them', () => {
+    const startTrace = async (): Promise<void> => {
+      throw new Error('never called');
+    };
+    const engine = defineEngine(
+      observingEngine({ artifacts: { screenshot: async () => 'x', startTrace, stopTrace: async () => 'trace.zip' } as never }),
+    );
+    expect(Object.keys(engine.artifacts!)).toEqual(['screenshot']);
+    expect(() => defineEngine(observingEngine({ artifacts: { screenshot: async () => 'x', startTrace: 'on' } as never }))).toThrow(
+      /artifacts\.startTrace must be a function/,
+    );
   });
 
   it('rejects unknown keys inside nested manifests: the grammar is closed', () => {
@@ -423,6 +436,7 @@ describe('createEngineSession', () => {
     // The point verbs need their own pointer kind; other pointer kinds alone offer nothing.
     expect(verbs({ performAt: async () => undefined, pointerActions: ['tap', 'hover'] })).toEqual(['hoverAt', 'tapAt']);
     expect(verbs({ performAt: async () => undefined, pointerActions: ['hover'] })).toEqual(['hoverAt']);
+    expect(verbs({ performAt: async () => undefined, pointerActions: ['dragTo'] })).toEqual(['dragAt']);
     expect(verbs({ performAt: async () => undefined, pointerActions: ['longPress', 'swipeTo'] })).toEqual([]);
     const keyboard = { type: async () => undefined, press: async () => undefined };
     expect(verbs({ keyboard })).toEqual(['pressKey', 'typeText']);
@@ -430,6 +444,7 @@ describe('createEngineSession', () => {
     expect(verbs({ session: { open: async () => undefined } })).toEqual(['navigate']);
     expect(verbs({ session: { back: async () => undefined, restart: async () => undefined } })).toEqual(['back']);
     expect(verbs({ session: { restart: async () => undefined } })).toEqual([]);
+    expect(verbs({ session: { resize: async () => undefined } })).toEqual(['resize']);
   });
 
   it('rejects a superseded located ref but lets observation refs through to the engine', async () => {
@@ -554,12 +569,11 @@ describe('engine targets in config', () => {
     ).toThrow(/defineEngine/);
   });
 
-  it('accepts a trace and a video mode on a target without an engine; the runner grades them later', () => {
+  it('accepts a video mode on a target without an engine; the runner grades it later', () => {
     const config = resolveConfig(
-      { targets: [{ name: 'ios', platform: 'ios', trace: 'off', video: 'on' }] },
+      { targets: [{ name: 'ios', platform: 'ios', video: 'on' }] },
       { projectRoot: ROOT, env: {} as NodeJS.ProcessEnv },
     );
-    expect(config.targets[0]!.trace).toEqual({ mode: 'off', source: 'target' });
     expect(config.targets[0]!.video).toEqual({ mode: 'on', source: 'target' });
   });
 

@@ -163,6 +163,29 @@ line2  </textarea>
   </script>
 </body>
 </html>`),
+  // A canvas whose nodes have only a random test id; `?seeded` starts with one.
+  '/graph': constant(`<!doctype html>
+<html>
+<head><title>Graph</title></head>
+<body>
+  <h1>Graph</h1>
+  <button id="add">Add node</button>
+  <p role="status" id="status">Empty canvas</p>
+  <div id="canvas"></div>
+  <script>
+    const status = document.getElementById('status');
+    function addNode() {
+      const node = document.createElement('div');
+      node.dataset.testid = 'rf__node-' + crypto.randomUUID();
+      node.style.cssText = 'display:inline-block;width:60px;height:40px;margin:8px;background:#8ad';
+      node.addEventListener('click', () => { status.textContent = 'Node selected'; });
+      document.getElementById('canvas').append(node);
+    }
+    document.getElementById('add').addEventListener('click', () => { addNode(); status.textContent = 'Node added'; });
+    if (new URLSearchParams(location.search).has('seeded')) { addNode(); status.textContent = 'One node'; }
+  </script>
+</body>
+</html>`),
   '/verbs': constant(`<!doctype html>
 <html>
 <head><title>Verbs playground</title></head>
@@ -250,6 +273,15 @@ line2  </textarea>
   <h1>Dialog</h1>
   <button onclick="document.getElementById('answer').textContent = confirm('Proceed?') ? 'accepted' : 'dismissed'">Ask</button>
   <output id="answer" aria-label="Answer"></output>
+</body>
+</html>`),
+  // The flags as a script the document waits for: a route on it is invoked
+  // before the page's load event, so before the navigation returns.
+  '/script-flags': constant(`<!doctype html>
+<html>
+<head><title>Flags</title><script src="/api/flags.js"></script></head>
+<body>
+  <h1>Flags</h1>
 </body>
 </html>`),
   '/flags': constant(`<!doctype html>

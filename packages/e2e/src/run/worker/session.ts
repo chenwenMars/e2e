@@ -68,6 +68,7 @@ export interface TargetWorkerHost {
 
 export class TargetWorker {
   private readonly interruptController = new AbortController();
+  private readonly reuseController = new AbortController();
   private deps: TargetWorkerDeps | undefined;
   private executor: TargetExecutor | undefined;
   private runErrorWatermark = 0;
@@ -129,7 +130,7 @@ export class TargetWorker {
           onAttempt: (pair, attempt) =>
             this.host.emit({ type: 'attempt', testId: pair.test.id, agent: pair.agent, repeat: pair.repeat, attempt }),
           onSerialMember: (groupId, attempt, member) => this.host.emit({ type: 'serial-member', groupId, attempt, member }),
-          onSerialAttempt: (groupId, run) => this.host.emit({ type: 'serial-attempt', groupId, run }),
+          onSerialAttempt: (groupId, attempt) => this.host.emit({ type: 'serial-attempt', groupId, attempt }),
           onPairStart: (pair) => {
             this.inFlight = { testId: pair.test.id, agent: pair.agent, repeat: pair.repeat };
             this.host.emit({
@@ -191,6 +192,7 @@ export class TargetWorker {
         this.enqueue(() => this.runUnit(message));
         return;
       case 'shutdown':
+        if (message.preserveResources !== true) this.reuseController.abort();
         this.enqueue(() => this.shutdown());
         return;
       case 'terminate':
@@ -227,6 +229,7 @@ export class TargetWorker {
    * no longer matters — nothing it reports from here on is kept.
    */
   private terminate(): void {
+    this.reuseController.abort();
     this.interruptController.abort();
     this.shutdown().catch((cause: unknown) => {
       this.host.fatal(cause);
@@ -297,7 +300,9 @@ export class TargetWorker {
     // disposal records run errors after the last unit drained, so they ship
     // on a final message of their own; dispose itself never throws.
     const executor = this.executor;
-    if (executor !== undefined) await executor.dispose();
+    if (executor !== undefined) {
+      await executor.dispose(this.reuseController.signal.aborted ? {} : { reuseSignal: this.reuseController.signal });
+    }
     this.host.emit({
       type: 'shutdown-done',
       runErrors: executor === undefined ? [] : this.drainRunErrors(executor),

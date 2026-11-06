@@ -1,5 +1,29 @@
 # @e2e-dev/github
 
+## 0.4.4
+
+### Patch Changes
+
+- [#1438](https://github.com/tester-army/e2e/pull/1438) [`d181e26`](https://github.com/tester-army/e2e/commit/d181e2645f24f9f433cd03bb5f7a2cd0cf722511) Thanks [@okwasniewski](https://github.com/okwasniewski)! - An `e2e explore` run posts its own pull request comment. Before, a job that ran `e2e run` and then `e2e explore` replaced the test results comment with the exploration's. Test run comments keep their marker, so the comments already on open pull requests are still updated. An exploration comment an earlier version posted keeps the test run's marker: the next `e2e explore` posts a new comment beside it, and a test run in the same job takes it back. A `--last-failed` rerun no longer folds in an exploration's report that shares its output directory.
+
+## 0.4.3
+
+### Patch Changes
+
+- [#1206](https://github.com/tester-army/e2e/pull/1206) [`da13624`](https://github.com/tester-army/e2e/commit/da13624d31fa6cf2204c7b99f1474d718ca1a02a) Thanks [@okwasniewski](https://github.com/okwasniewski)! - Add test filters: `filters: [decisionFilter({ model })]` from `@e2e-dev/decision` leaves out the tests a change can't affect. They run with `--changed-since <ref>`, such as `origin/main` on a pull request; without the flag every test runs. `e2e list --changed-since origin/main` previews the decision, and left-out tests show in the pull request comment, `junit.xml`, and the report. A run with nothing to run starts no engine or app, and after Ctrl-C, or a reporter that runs past its deadline, the CLI exits as soon as the output is written.
+
+## 0.4.2
+
+### Patch Changes
+
+- [#1038](https://github.com/tester-army/e2e/pull/1038) [`aa9699a`](https://github.com/tester-army/e2e/commit/aa9699a688a414769b543fcfeef4c32f46a49fac) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Distinguish GitHub primary and secondary API rate limits from read-only token failures in reporter diagnostics.
+
+## 0.4.1
+
+### Patch Changes
+
+- [#1161](https://github.com/tester-army/e2e/pull/1161) [`ce4dac3`](https://github.com/tester-army/e2e/commit/ce4dac373784f87fade6808119ba537a0b4965fc) Thanks [@okwasniewski](https://github.com/okwasniewski)! - The reporter now updates a pull request comment only when its token's user wrote it. With `GITHUB_TOKEN` or a GitHub App token, which can't look up their user, any bot account's comment matches.
+
 ## 0.4.0
 
 ### Minor Changes

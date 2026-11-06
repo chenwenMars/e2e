@@ -27,9 +27,16 @@ export type EngineSpiVersion = typeof ENGINE_SPI_VERSION;
 
 /** What every engine call carries: budget, ids, and who is acting. */
 export interface OperationContext {
-  /** Aborts with the attempt or when the operation budget is spent. */
+  /**
+   * Aborts when the attempt, or the hook running the call, ends. It does not
+   * abort at `timeoutMs`: bound each call by that budget yourself.
+   */
   readonly signal: AbortSignal;
-  /** Remaining operation budget when the call starts. */
+  /**
+   * Remaining operation budget when the call starts. A waiting call's last
+   * locate or read can get more than its deadline leaves: as long as the
+   * slowest one it has seen.
+   */
   readonly timeoutMs: number;
   /** The run id. */
   readonly runId: string;
@@ -79,7 +86,8 @@ export interface SemanticQuery {
 /**
  * The location capability's query language. `selector` is a platform-native
  * selector string (CSS or XPath on a document platform, a predicate on a
- * device platform); `frame` scopes a query inside one nested document.
+ * device platform); `frame` scopes a query inside one nested document;
+ * `union` matches either side, each node once, in document order.
  */
 export type LocatorExpression =
   | {
@@ -91,7 +99,9 @@ export type LocatorExpression =
       readonly kind: 'filter';
       readonly source: LocatorExpression;
       readonly hasText?: TextPattern;
+      readonly hasNotText?: TextPattern;
       readonly has?: LocatorExpression;
+      readonly hasNot?: LocatorExpression;
     }
   | {
       readonly kind: 'index';
@@ -106,6 +116,11 @@ export type LocatorExpression =
       readonly kind: 'frame';
       readonly selector: string;
       readonly source: LocatorExpression;
+    }
+  | {
+      readonly kind: 'union';
+      readonly left: LocatorExpression;
+      readonly right: LocatorExpression;
     };
 
 export interface NodeRef {
@@ -148,8 +163,9 @@ export interface SemanticNode {
    * The node's test id, when the platform gives it one: the value of the
    * project's test-id attribute on a document platform, an accessibility
    * identifier on iOS, a resource id on Android, an automation id on a
-   * desktop. The `testId` query resolves against exactly this field, so the
-   * harness never knows where a platform keeps it.
+   * desktop. The `testId` query resolves against this field, so the harness
+   * never knows where a platform keeps it. An engine may also match the id
+   * without its platform's namespacing.
    */
   readonly testId?: string;
   /** What a field takes, deciding which secrets may fill it. */
@@ -182,6 +198,13 @@ export interface SemanticNode {
     readonly width: number;
     readonly height: number;
   };
+  /**
+   * The point an offset into the node is measured from, in `rect`'s space,
+   * when it is not `rect`'s top-left corner: a document element's padding
+   * box, inside its border, or the corner of a box a frame clipped `rect`
+   * from. `tap({ position })` adds the offset to it.
+   */
+  readonly origin?: ViewportPoint;
   /**
    * Platform selector that addresses this node within its own document, when
    * the platform has one. It is structural, not semantic: it survives the

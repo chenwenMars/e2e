@@ -1,6 +1,6 @@
 /** Deadline and cancellation helpers. */
 
-import { asEngineError, E2EError } from './errors.ts';
+import { asEngineError, E2EError, isE2EError, TestError } from './errors.ts';
 
 export class Deadline {
   readonly endsAt: number;
@@ -24,11 +24,45 @@ export class Deadline {
   }
 }
 
+/**
+ * Refuses a per-call step timeout that is not a finite number of
+ * milliseconds, 0 or more. 0 means no step deadline: the step waits until
+ * the running phase's deadline (the test timeout in the body).
+ */
+export function checkStepTimeout(timeout: unknown, api: string): asserts timeout is number | undefined {
+  if (timeout === undefined || (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 0)) return;
+  throw new TestError('INVALID_ARGUMENT', `${api} timeout must be a finite number of milliseconds, 0 or more; got ${String(timeout)}`);
+}
+
+/**
+ * The budget of a call's own `timeout` option, checked by `checkStepTimeout`.
+ * 0 becomes an infinite budget, so `context.operation` caps it by the running
+ * phase's deadline alone; undefined stays undefined for the default.
+ */
+export function stepTimeout(timeout: unknown, api: string): number | undefined {
+  checkStepTimeout(timeout, api);
+  return timeout === 0 ? Number.POSITIVE_INFINITY : timeout;
+}
+
+/**
+ * The error an aborted signal stands for: the classified error it was aborted
+ * with, when its owner gave one (a session deadline aborts with its timeout),
+ * else what the caller builds. An owner's bare `abort()` is a cancellation.
+ */
+export function abortError(signal: AbortSignal, fallback: () => Error): Error {
+  return isE2EError(signal.reason) ? signal.reason : fallback();
+}
+
+/** The error a bare cancellation stands for. */
+export function cancelledError(): E2EError {
+  return new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
+}
+
 /** Sleeps for ms, rejecting early if the signal aborts. */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new E2EError('infrastructure', 'CANCELLED', 'operation cancelled'));
+      reject(abortError(signal, cancelledError));
       return;
     }
     const timer = setTimeout(() => {
@@ -37,7 +71,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       cleanup();
-      reject(new E2EError('infrastructure', 'CANCELLED', 'operation cancelled'));
+      reject(signal === undefined ? cancelledError() : abortError(signal, cancelledError));
     };
     const cleanup = () => {
       clearTimeout(timer);
@@ -47,19 +81,72 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Longest delay `setTimeout` honors; a longer one fires at once. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** A budget as a message names it, exactly, in the largest unit that divides it: `5m`, `30s`, `1500ms`. */
+export function budgetText(ms: number): string {
+  if (ms > 0 && ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms > 0 && ms % 1000 === 0) return `${ms / 1000}s`;
+  return `${ms}ms`;
+}
+
 /** Canonical polling cadence for locator and assertion loops. */
 export const POLL_INTERVAL_MS = 100;
 
 /**
- * Whether `cause` is a read a wait's deadline cut off: an operation timeout
- * of a read that started with less than one poll tick of the wait left, so
- * it timed out because the wait did, not because the app stopped answering.
- * A read that started with more and still timed out hung, and its timeout is
- * the failure. Reads the engine error a locator failure wraps as well as a
- * bare one.
+ * The reads of one wait. Each engine read runs until the wait's deadline
+ * plus the longest read the wait has finished, capped by `cap` (the running
+ * phase's deadline), so a slow last read still finishes. Reads past the
+ * deadline share that extra time instead of each getting it again. Without
+ * a cap, reads end at the deadline.
  */
-export function cutOffAtDeadline(cause: unknown, startedWithMs: number): boolean {
-  if (startedWithMs >= POLL_INTERVAL_MS) return false;
+export class ReadWindow {
+  readonly deadline: Deadline;
+  private readonly cap: Deadline;
+  private slowestMs = 0;
+  private lastStartedWithMs = Number.POSITIVE_INFINITY;
+
+  constructor(deadline: Deadline, cap: Deadline = deadline) {
+    this.deadline = deadline;
+    this.cap = cap;
+  }
+
+  /** The budget for an engine read starting now, never under 1 ms. */
+  timeoutMs(): number {
+    const now = Date.now();
+    return Math.max(1, Math.min(this.cap.remaining(now), this.deadline.endsAt + this.slowestMs - now));
+  }
+
+  /** Marks a read starting now: the one `cutOff` judges until the next starts. */
+  starting(now: number = Date.now()): void {
+    this.lastStartedWithMs = this.deadline.remaining(now);
+  }
+
+  /** Runs one engine read on `timeoutMs()`, timing it when it answers. */
+  async read<T>(call: (timeoutMs: number) => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    this.starting(startedAt);
+    const value = await call(this.timeoutMs());
+    this.slowestMs = Math.max(this.slowestMs, Date.now() - startedAt);
+    return value;
+  }
+
+  /**
+   * Whether `cause` is a read the deadline cut off: an operation timeout of
+   * this window's latest read when it started with less than one poll tick,
+   * or the longest read this wait finished, of the deadline left, so it timed out because the wait
+   * did, not because the app stopped answering. A read that started with
+   * more and still timed out hung, and its timeout is the failure. Reads the
+   * engine error a locator failure wraps as well as a bare one.
+   */
+  cutOff(cause: unknown): boolean {
+    return this.lastStartedWithMs < Math.max(POLL_INTERVAL_MS, this.slowestMs) && isOperationTimeout(cause);
+  }
+}
+
+/** Whether `cause` is the engine's `OPERATION_TIMEOUT`, bare or wrapped by the locator failure it was translated into. */
+export function isOperationTimeout(cause: unknown): boolean {
   const engineError = asEngineError(cause) ?? asEngineError(cause instanceof Error ? cause.cause : undefined);
   return engineError?.code === 'OPERATION_TIMEOUT';
 }
@@ -82,24 +169,42 @@ export interface PollConditionOptions {
   onTimeout(cause?: unknown): Error | Promise<Error>;
 }
 
+/** `pollCondition` options whose reads run in a `ReadWindow` over the deadline. */
+export interface PollReadsOptions extends Omit<PollConditionOptions, 'evaluate'> {
+  readonly reads: ReadWindow;
+  /** Evaluates the positive condition once, every read run through `reads`. */
+  evaluate(reads: ReadWindow): Promise<boolean | undefined>;
+}
+
 /**
  * Polls a condition until it holds (or, when negated, until its negation has
  * held continuously for the negation grace window), throwing the caller's
- * error at the deadline.
+ * error at the deadline. No sleep runs past the deadline, so the last read
+ * starts at it and never sees a state that arrived later.
  *
  * A negation holds from the moment the read that first saw it was issued, so
  * a slow read counts toward the window. A budget shorter than the window
  * still has to be satisfiable: the negation then only needs to hold for the
  * whole budget, and passes at the deadline on what it has seen, since a read
- * past the deadline has no budget left. A read the deadline cut off (see
- * `cutOffAtDeadline`) after an earlier one completed saw nothing: the poll
- * ends there. A negation then passes if it has held long enough by the
- * time the read is cut off: the read left less than one poll tick unseen, no
- * more than the gap between any two reads, so a short budget still passes at
- * its deadline on what it saw.
+ * past the deadline has no budget left. A read the deadline cut off (an
+ * `OPERATION_TIMEOUT` on a read that started with under one poll tick left)
+ * after an earlier one completed saw nothing: the poll ends there. A negation
+ * then passes if it has held long enough by the time the read is cut off: the
+ * read left less than one poll tick unseen, no more than the gap between any
+ * two reads, so a short budget still passes at its deadline on what it saw.
  */
-export async function pollCondition(options: PollConditionOptions): Promise<void> {
-  const { deadline, negated } = options;
+export function pollCondition(options: PollConditionOptions): Promise<void> {
+  return pollReads({ ...options, reads: new ReadWindow(options.deadline) });
+}
+
+/**
+ * `pollCondition` with its reads run through `options.reads`: a window with a
+ * cap lets the last read run past the deadline by the longest read the poll
+ * has finished, and a read cut off (see `ReadWindow.cutOff`) is one that
+ * started with under one poll tick, or that longest read, left.
+ */
+export async function pollReads(options: PollReadsOptions): Promise<void> {
+  const { deadline, negated, reads } = options;
   const startedAt = Date.now();
   const grace = Math.min(NEGATION_GRACE_MS, deadline.remaining(startedAt));
   let readAt = startedAt;
@@ -107,13 +212,13 @@ export async function pollCondition(options: PollConditionOptions): Promise<void
   const holds = (now: number): boolean => holdingSince !== undefined && now - holdingSince >= grace;
   let sampled = false;
   for (;;) {
-    const startedWithMs = deadline.remaining(readAt);
     let value: boolean | undefined;
+    reads.starting(readAt);
     try {
-      value = await options.evaluate();
+      value = await options.evaluate(reads);
       sampled = true;
     } catch (cause) {
-      if (!sampled || !cutOffAtDeadline(cause, startedWithMs)) throw cause;
+      if (!sampled || !reads.cutOff(cause)) throw cause;
       if (negated && holds(Math.min(Date.now(), deadline.endsAt))) return;
       throw await options.onTimeout(cause);
     }
@@ -123,9 +228,9 @@ export async function pollCondition(options: PollConditionOptions): Promise<void
       holdingSince = value === false ? (holdingSince ?? readAt) : undefined;
     }
     const now = Date.now();
-    if (holds(now)) return;
+    if (holds(Math.min(now, deadline.endsAt))) return;
     if (deadline.expired(now)) throw await options.onTimeout();
-    await sleep(negated ? Math.min(POLL_INTERVAL_MS, deadline.remaining(now)) : POLL_INTERVAL_MS, options.signal);
+    await sleep(Math.min(POLL_INTERVAL_MS, deadline.remaining(now)), options.signal);
     readAt = Date.now();
     if (negated && deadline.expired(readAt)) {
       if (holds(readAt)) return;
@@ -134,12 +239,16 @@ export async function pollCondition(options: PollConditionOptions): Promise<void
   }
 }
 
-/** Races a promise against a timeout; on timeout invokes onTimeout to build the error. */
+/**
+ * Races a promise against a timeout; on timeout invokes onTimeout to build the
+ * error. An infinite timeout, `stepTimeout`'s 0, sets no timer.
+ */
 export async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   onTimeout: () => Error,
 ): Promise<T> {
+  if (timeoutMs === Number.POSITIVE_INFINITY) return promise;
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
@@ -182,29 +291,30 @@ export async function withScopedBudget<T>(
 }
 
 /**
- * Races a promise against an abort signal; on abort invokes onAbort to build
- * the error. The promise is left running: the caller is abandoning it.
+ * Races a promise against an abort signal; on abort fails with the signal's
+ * own classified error, else the one `fallback` builds. The promise is left
+ * running: the caller is abandoning it.
  */
 export async function withAbort<T>(
   work: Promise<T> | (() => Promise<T>),
   signal: AbortSignal,
-  onAbort: () => Error,
+  fallback: () => Error,
 ): Promise<T> {
   if (signal.aborted) {
     if (typeof work !== 'function') void work.catch(() => undefined);
-    throw onAbort();
+    throw abortError(signal, fallback);
   }
   const promise = typeof work === 'function' ? work() : work;
   if (signal.aborted) {
     void promise.catch(() => undefined);
-    throw onAbort();
+    throw abortError(signal, fallback);
   }
   let listener: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        listener = () => reject(onAbort());
+        listener = () => reject(abortError(signal, fallback));
         signal.addEventListener('abort', listener, { once: true });
       }),
     ]);

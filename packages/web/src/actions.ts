@@ -1,7 +1,7 @@
 /** Locator action dispatch for the Playwright engine. */
 
 import type { ElementHandle, Page } from 'playwright-core';
-import { EngineError, type KeyModifier, type LocatorAction, type NodeRef, type PointerAction, type ViewportPoint } from 'e2e/engine';
+import { Deadline, EngineError, pollCondition, type KeyModifier, type LocatorAction, type NodeRef, type PointerAction, type ViewportPoint } from 'e2e/engine';
 import {
   asActionable,
   isClassified,
@@ -15,8 +15,10 @@ import {
   performViewportSwipe,
   POST_DISPATCH_PATTERN,
   translatePwError,
+  targetPage,
   type ActionTarget,
 } from './support.ts';
+import type { ConnectionBudget } from './operation-budget.ts';
 
 /** How long a long press holds the button when the action names no duration. */
 const DEFAULT_LONG_PRESS_MS = 500;
@@ -31,50 +33,121 @@ const DETACHED_PATTERN = /element (is |was )?(detached|not attached)/i;
 
 /**
  * Sets a checkbox, switch, or radio to `checked` with one click, as
- * Playwright's `check` does, apart from the read after the click: a control
- * that is gone by then (an app that swaps a picked radio for its selected
- * view, or navigates on change) took the click, so the action is done, where
- * Playwright reports it detached as if the click never happened. Whatever
- * took its place is not read: the next observation or assertion shows it,
- * as it does after a tap. The reads and the click share one element, so the state before and after the click
- * is one control's.
+ * Playwright's `check` does, apart from the reads after the click. Playwright
+ * reads the state once; here it is polled until the operation's deadline, so
+ * a control that commits its new state after an await or a timer passes, and
+ * one that never changes fails at the deadline. A control that is gone by
+ * the first read (an app that swaps a picked radio for its selected view, or
+ * navigates on change) took the click, so the action is done, where
+ * Playwright reports it detached as if the click never happened. One that
+ * goes later, still in its old state, may have been replaced for any reason,
+ * so it fails rather than passing on a click the app rejected. Whatever took
+ * its place is not read: the next observation or assertion shows it, as it
+ * does after a tap.
+ * The reads and the click share one element, so the state before and after
+ * the click is one control's.
  */
-async function setChecked(target: ActionTarget, checked: boolean, timeout: number): Promise<void> {
-  const deadline = Date.now() + timeout;
+async function setChecked(target: ActionTarget, checked: boolean, operation: ConnectionBudget): Promise<void> {
+  const deadline = new Deadline(operation.timeoutMs);
   // Playwright reads a timeout of 0 as no timeout at all.
-  const remaining = (): number => Math.max(1, deadline - Date.now());
-  const element = target.kind === 'element' ? target.element : await target.locator.elementHandle({ timeout });
+  const remaining = (): number => Math.max(1, deadline.remaining());
+  const element =
+    target.kind === 'element' ? target.element : await target.locator.elementHandle({ timeout: operation.timeoutMs });
   const verb = checked ? 'check' : 'uncheck';
   try {
     if ((await element.isChecked()) === checked) return;
-    if (!checked && (await isRadio(element))) {
+    const radio = checked ? undefined : await radioKind(element);
+    if (radio === 'native') {
       throw new EngineError('NOT_ACTIONABLE', 'uncheck cannot clear a radio button; select another radio in its group', {
         retryable: false,
       });
     }
     await element.click({ timeout: remaining() });
-    let after: boolean;
-    try {
-      after = await element.isChecked();
-    } catch (cause) {
-      if (DETACHED_PATTERN.test(message(cause)) || isNavigationRace(cause)) return;
-      throw cause;
-    }
-    if (after !== checked) {
-      throw new EngineError('NOT_ACTIONABLE', `${verb} clicked the control but its checked state did not change`, {
+    const hint = radio === 'aria' ? '; a radio usually clears only when another radio in its group is selected' : '';
+    const unchanged = (detail = ''): EngineError =>
+      new EngineError('NOT_ACTIONABLE', `${verb} clicked the control but its checked state did not change${detail}${hint}`, {
         retryable: false,
       });
-    }
+    let firstRead = true;
+    await pollCondition({
+      deadline,
+      signal: operation.signal,
+      negated: false,
+      evaluate: async () => {
+        const first = firstRead;
+        firstRead = false;
+        try {
+          return (await element.isChecked()) === checked;
+        } catch (cause) {
+          if (!DETACHED_PATTERN.test(message(cause)) && !isNavigationRace(cause)) throw cause;
+          if (first) return true;
+          throw unchanged(' before the control was replaced');
+        }
+      },
+      onTimeout: () => unchanged(),
+    });
   } finally {
     if (target.kind === 'locator') void element.dispose().catch(() => undefined);
   }
 }
 
-/** Whether a checkable element is a radio, which a click can select but never clear. */
-function isRadio(element: ElementHandle<Element>): Promise<boolean> {
-  return element.evaluate(
-    (node) => (node instanceof HTMLInputElement && node.type === 'radio') || node.getAttribute('role') === 'radio',
-  );
+/**
+ * Which kind of radio a checkable element is, if any. A native radio can be
+ * selected but never cleared by a click. An ARIA radio is clicked like any
+ * control, as Playwright does: its script decides what a click does.
+ */
+function radioKind(element: ElementHandle<Element>): Promise<'native' | 'aria' | undefined> {
+  return element.evaluate((node) => {
+    if (node instanceof HTMLInputElement && node.type === 'radio') return 'native';
+    return node.getAttribute('role') === 'radio' ? 'aria' : undefined;
+  });
+}
+
+/**
+ * Attaches files to a file input, or to a control that opens a native file
+ * chooser when clicked, such as a button over a hidden input. A file input,
+ * or a node inside a `<label>` for one, takes the files directly, as
+ * Playwright retargets a label to its control. Anything else is clicked
+ * with the chooser already awaited, and fails if no chooser opens. Every
+ * step shares the operation's deadline, and a cancelled operation sets no
+ * files, even when its chooser opens after the cancel.
+ */
+async function uploadFiles(target: ActionTarget, paths: readonly string[], operation: ConnectionBudget): Promise<void> {
+  const deadline = new Deadline(operation.timeoutMs);
+  const remaining = (): number => Math.max(1, deadline.remaining());
+  const element =
+    target.kind === 'element' ? target.element : await target.locator.elementHandle({ timeout: operation.timeoutMs });
+  try {
+    if (await isFileInput(element)) {
+      operation.signal.throwIfAborted();
+      await element.setInputFiles([...paths], { timeout: remaining() });
+      return;
+    }
+    const page = await targetPage(target);
+    operation.signal.throwIfAborted();
+    const opened = page.waitForEvent('filechooser', { timeout: remaining() });
+    opened.catch(() => undefined);
+    await element.click({ timeout: remaining() });
+    const chooser = await opened.catch((cause: unknown) => {
+      if (!isPwTimeout(cause)) throw cause;
+      throw new EngineError('NOT_ACTIONABLE', 'upload clicked the control but it opened no file chooser', {
+        retryable: false,
+        cause,
+      });
+    });
+    operation.signal.throwIfAborted();
+    await chooser.setFiles([...paths], { timeout: remaining() });
+  } finally {
+    if (target.kind === 'locator') void element.dispose().catch(() => undefined);
+  }
+}
+
+/** Whether an element is a file input, or labels one, so `setInputFiles` can take it directly. */
+function isFileInput(element: ElementHandle<Element>): Promise<boolean> {
+  return element.evaluate((node) => {
+    const control = node instanceof HTMLInputElement ? node : node.closest('label')?.control;
+    return control instanceof HTMLInputElement && control.type === 'file';
+  });
 }
 
 /**
@@ -85,9 +158,10 @@ function isRadio(element: ElementHandle<Element>): Promise<boolean> {
 export async function dispatchLocatorAction(
   target: ActionTarget,
   action: LocatorAction,
-  timeout: number,
-  lookup: (ref: NodeRef) => ActionTarget,
+  operation: ConnectionBudget,
+  lookup: (ref: NodeRef) => Promise<ActionTarget>,
 ): Promise<void> {
+  const timeout = operation.timeoutMs;
   const locator = asActionable(target);
   switch (action.kind) {
     case 'tap':
@@ -115,7 +189,7 @@ export async function dispatchLocatorAction(
       return;
     case 'check':
     case 'uncheck':
-      await setChecked(target, action.kind === 'check', timeout);
+      await setChecked(target, action.kind === 'check', operation);
       return;
     case 'focus':
       // ElementHandle.focus takes no timeout: the element is already resolved.
@@ -142,10 +216,11 @@ export async function dispatchLocatorAction(
       return;
     }
     case 'setInputFiles':
-      await locator.setInputFiles([...action.paths], { timeout });
+      await uploadFiles(target, action.paths, operation);
       return;
     case 'dragTo': {
-      const other = lookup(action.target);
+      const other = await lookup(action.target);
+      operation.signal.throwIfAborted();
       // Playwright's own drag when both sides are locators: it waits for
       // actionability on each and reports better failures than a pointer
       // sequence can. Anything else - an observed reference on either side -

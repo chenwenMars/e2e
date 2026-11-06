@@ -21,12 +21,6 @@ test.describe('browser fixture', { requires: ['browser'], tags: ['browser'] }, (
     await expect(browser).toHaveURL(/about$/);
   });
 
-  test('waitForURL waits out a delayed navigation', async ({ screen, browser }) => {
-    await screen.getByRole('button', 'Go to about, soon').tap();
-    await browser.waitForURL('/about');
-    await expect(screen.getByRole('heading', 'About')).toBeVisible();
-  });
-
   test('reload runs the page again', async ({ screen, browser }) => {
     await expect(screen.getByLabel('Loads')).toHaveText('loads: 1');
     await browser.reload();
@@ -56,4 +50,17 @@ test.describe('browser fixture', { requires: ['browser'], tags: ['browser'] }, (
     const theme = (await browser.cookies()).find((cookie) => cookie.name === 'theme');
     expect(theme?.value).toBe('dark');
   });
+});
+
+test('emulated media reaches the page\'s own @media rules, from the first paint on', { requires: ['browser'], tags: ['browser'] }, async ({ app, screen, browser }) => {
+  await browser.emulateMedia({ colorScheme: 'dark' });
+  await app.open('/browser');
+  await expect(screen.getByLabel('Media')).toHaveText('dark, full motion');
+  await browser.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(screen.getByLabel('Media')).toHaveText('dark, reduced motion');
+  await app.restart();
+  await app.open('/browser');
+  await expect(screen.getByLabel('Media')).toHaveText('dark, reduced motion');
+  await browser.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
+  await expect(screen.getByLabel('Media')).toHaveText('light, full motion');
 });

@@ -3,10 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { discoverConfig } from '../../src/config/load.ts';
-import { isCiMode, resolveConfig } from '../../src/config/resolve.ts';
+import { isCiMode, resolveConfig, type CliOverrides } from '../../src/config/resolve.ts';
 import { ConfigurationError, defineEngine } from '../../src/engine/index.ts';
+import { protocolEngine } from '../../src/engine/protocol/client.ts';
 import { secrets } from '../../src/secrets.ts';
-import type { CommandConfig, E2EConfig, Target, TargetApp } from '../../src/types.ts';
+import type { CommandConfig, E2EConfig, Target, TargetApp, TestFilter } from '../../src/types.ts';
 import { snapshot } from '../helpers/snapshot.ts';
 import { invalid } from '../helpers/invalid.ts';
 
@@ -63,6 +64,17 @@ describe('resolveConfig', () => {
     }
   });
 
+  it('validates maxDuration as milliseconds without invalidating recordings', () => {
+    expect(resolve({}).maxDuration).toBeUndefined();
+    expect(resolve({ maxDuration: 900_000 }).maxDuration).toBe(900_000);
+    expect(resolve({ maxDuration: 900_000 }).configDigest).toBe(resolve({}).configDigest);
+    for (const value of [0, -1, 2.5, '15m']) {
+      expect(() => resolve(invalid({ maxDuration: value }))).toThrow(/maxDuration must be a positive safe integer of milliseconds/);
+    }
+    expect(resolve({ maxDuration: 2 ** 31 - 1 }).maxDuration).toBe(2 ** 31 - 1);
+    expect(() => resolve(invalid({ maxDuration: 2 ** 31 }))).toThrow('maxDuration must be at most 2147483647 milliseconds, got 2147483648');
+  });
+
   it('applies specification defaults', () => {
     const config = resolve({});
     expect(config.timeout).toBe(120_000);
@@ -72,7 +84,7 @@ describe('resolveConfig', () => {
     expect(config.cleanupTimeout).toBe(30_000);
     expect(config.retries).toBe(0);
     expect(config.tests).toEqual(['tests/**/*.e2e.ts']);
-    expect(config.targets[0]!.trace).toEqual({ mode: 'on', source: 'default' });
+    expect(config.targets[0]!.trace).toEqual({ mode: 'retain-on-failure', source: 'default' });
     expect(config.targets[0]!.video).toEqual({ mode: 'off', source: 'default' });
     expect(config.reporters).toEqual(['list']);
   });
@@ -148,11 +160,42 @@ describe('resolveConfig', () => {
     ).toBe(3);
   });
 
-  it('uses CI defaults for retries, workers, trace, and video', () => {
+  it('replaces actionTimeout and assertionTimeout with the flags, bounded by what a timer can wait, the config value still checked', () => {
+    const resolveWith = (raw: Partial<E2EConfig>, cli: CliOverrides) =>
+      resolveConfig({ targets: TARGETS, ...raw }, { projectRoot: ROOT, env: BASE_ENV, cli });
+    expect(resolveWith({}, { actionTimeout: 3_000, assertionTimeout: 1_000 })).toMatchObject({ actionTimeout: 3_000, assertionTimeout: 1_000 });
+    expect(resolveWith({ actionTimeout: 20_000, assertionTimeout: 8_000 }, { actionTimeout: 3_000 })).toMatchObject({
+      actionTimeout: 3_000,
+      assertionTimeout: 8_000,
+    });
+    expect(resolveWith({ actionTimeout: 20_000, assertionTimeout: 8_000 }, { assertionTimeout: 500 })).toMatchObject({
+      actionTimeout: 20_000,
+      assertionTimeout: 500,
+    });
+    for (const value of [0, -1, 2.5, Number.NaN]) {
+      expect(() => resolveWith({}, { actionTimeout: value })).toThrow(
+        expect.objectContaining({ code: 'INVALID_CONFIG', message: `--action-timeout must be a positive safe integer of milliseconds, got ${value}` }),
+      );
+      expect(() => resolveWith({}, { assertionTimeout: value })).toThrow(
+        expect.objectContaining({ code: 'INVALID_CONFIG', message: `--assertion-timeout must be a positive safe integer of milliseconds, got ${value}` }),
+      );
+    }
+    expect(resolveWith({}, { actionTimeout: 2 ** 31 - 1 }).actionTimeout).toBe(2 ** 31 - 1);
+    expect(() => resolveWith({}, { actionTimeout: 2 ** 31 })).toThrow('--action-timeout must be at most 2147483647 milliseconds, got 2147483648');
+    expect(() => resolveWith({}, { assertionTimeout: 2 ** 31 })).toThrow('--assertion-timeout must be at most 2147483647 milliseconds, got 2147483648');
+    expect(() => resolveWith({ actionTimeout: '30s' as never }, { actionTimeout: 3_000 })).toThrow(
+      'actionTimeout must be a positive safe integer of milliseconds, got "30s"',
+    );
+    expect(() => resolveWith({ assertionTimeout: 0 }, { assertionTimeout: 1_000 })).toThrow(
+      'assertionTimeout must be a positive safe integer of milliseconds, got 0',
+    );
+  });
+
+  it('uses CI defaults for retries and workers, and the same trace and video as locally', () => {
     const config = resolve({}, { ...BASE_ENV, CI: '1' } as NodeJS.ProcessEnv);
     expect(config.retries).toBe(1);
     expect(config.workers).toBe(1);
-    expect(config.targets[0]!.trace).toEqual({ mode: 'on-first-retry', source: 'default' });
+    expect(config.targets[0]!.trace).toEqual({ mode: 'retain-on-failure', source: 'default' });
     expect(config.targets[0]!.video).toEqual({ mode: 'off', source: 'default' });
   });
 
@@ -241,6 +284,32 @@ describe('resolveConfig', () => {
     );
   });
 
+  it('takes inheritEnv names and trailing-* prefixes, refusing a bare * and a * anywhere else', () => {
+    const url = 'http://localhost:3000';
+    const inheritEnv = (patterns: unknown) => ({ url, command: { executable: 'node', inheritEnv: patterns } }) as never;
+    expect(commandOf(inheritEnv(['DATABASE_URL', 'STRIPE_*'])).command.inheritEnv).toEqual(['DATABASE_URL', 'STRIPE_*']);
+    expect(() => resolveApp(inheritEnv('DATABASE_URL'))).toThrow(
+      expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "web" app.command.inheritEnv must be an array of variable names' }),
+    );
+    expect(() => resolveApp(inheritEnv(['*']))).toThrow(
+      expect.objectContaining({
+        code: 'INVALID_CONFIG',
+        message: 'target "web" app.command.inheritEnv[0] cannot be "*": it would pass every variable to the app, model keys included; list the names or prefixes it needs',
+      }),
+    );
+    for (const [entry, shown] of [['', '""'], ['STR*PE', '"STR*PE"'], ['*_KEY', '"*_KEY"'], ['STRIPE_**', '"STRIPE_**"'], ['A=B', '"A=B"'], [' DATABASE_URL', '" DATABASE_URL"']]) {
+      expect(() => resolveApp(inheritEnv(['DATABASE_URL', entry]))).toThrow(
+        expect.objectContaining({
+          code: 'INVALID_CONFIG',
+          message: `target "web" app.command.inheritEnv[1] must be a variable name or a prefix ending in * (such as "STRIPE_*"), got ${shown}`,
+        }),
+      );
+    }
+    expect(() => resolveApp(inheritEnv([42]))).toThrow(
+      expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "web" app.command.inheritEnv[0] must be a string, got 42' }),
+    );
+  });
+
   it('rejects an app or command key the contract does not know, naming the nearest', () => {
     const url = 'http://localhost:3000';
     expect(() => resolveApp({ url, readyURL: url } as never)).toThrow(
@@ -250,13 +319,13 @@ describe('resolveConfig', () => {
       expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "web" app.command has unknown key "arg"; did you mean "args"?' }),
     );
     expect(() => resolveApp({ url, command: { executable: 'node', readyUrl: url } } as never)).toThrow(
-      /app\.command has unknown key "readyUrl"; expected one of executable, args, cwd, env, startupTimeout, shutdownTimeout, log, reuseExisting$/,
+      /app\.command has unknown key "readyUrl"; expected one of executable, args, cwd, env, inheritEnv, startupTimeout, shutdownTimeout, log, reuseExisting$/,
     );
   });
 
   it('defaults a target name to its platform', () => {
     const engine = fakeEngine();
-    expect(resolve({ targets: [{ platform: 'ios', engine }] }).targets[0]).toMatchObject({ name: 'ios', platform: 'ios', engine });
+    expect(resolve({ targets: [{ platform: 'ios', engine }] }).targets[0]).toMatchObject({ name: 'ios', platform: 'ios', engine: protocolEngine(engine) });
     expect(resolve({ targets: [{ platform: 'ios' }, { platform: 'android' }] }).targets.map((target) => target.name)).toEqual([
       'ios',
       'android',
@@ -507,6 +576,94 @@ describe('resolveConfig', () => {
     expect(resolve({ reporters: ['list', upload] }).configDigest).toBe(resolve({ reporters: ['list'] }).configDigest);
     const store = { client, put: async () => ({ ref: 'r' }) };
     expect(resolve({ artifacts: { store } }).configDigest).toBe(resolve({}).configDigest);
+  });
+
+  describe('filters', () => {
+    /** A filter body that leaves nothing out. */
+    const decide = () => ({ exclude: {} });
+
+    it('resolves the list in declaration order, empty when unset, and allows keys of their own', () => {
+      expect(resolve({}).filters).toEqual([]);
+      expect(resolve({ filters: [] }).filters).toEqual([]);
+      const areas = { name: 'areas', filter: decide };
+      const jev = { name: 'jev', filter: decide, model: 'typesafe-ai/jev' };
+      const odd = { name: 'v1.2_x-y', filter: decide };
+      const filters = resolve({ filters: [jev, areas, odd] }).filters;
+      expect(filters).toEqual([jev, areas, odd]);
+      expect(filters[0]).toBe(jev);
+      expect(resolve({ filters: [{ name: 'x'.repeat(256), filter: decide }] }).filters).toHaveLength(1);
+    });
+
+    it('refuses filters that are not a list', () => {
+      for (const value of [{ affected: { name: 'areas', filter: decide } }, { name: 'areas', filter: decide }, decide, {}, 'areas', null, 3]) {
+        expect(() => resolve({ filters: invalid<NonNullable<E2EConfig['filters']>>(value) }), JSON.stringify(value)).toThrow(
+          new ConfigurationError('INVALID_CONFIG', 'filters must be a list of test filters: filters: [{ name, filter(tests, context) }]'),
+        );
+      }
+    });
+
+    it('says to call a function in the list, naming it by its index and its name', () => {
+      /** A filter factory, such as `decisionFilter` from `@e2e-dev/decision`, written without its call. */
+      function decisionFilter(): TestFilter {
+        return { name: 'decision', filter: decide };
+      }
+      expect(() => resolve({ filters: [{ name: 'areas', filter: decide }, invalid<TestFilter>(decisionFilter)] })).toThrow(
+        new ConfigurationError('INVALID_CONFIG', 'filters[1] is the function decisionFilter; call it, such as filters: [decisionFilter({ model })]'),
+      );
+      expect(() => resolve({ filters: [invalid<TestFilter>(() => ({ exclude: {} }))] })).toThrow(
+        new ConfigurationError('INVALID_CONFIG', 'filters[0] is a function; call it, such as filters: [decisionFilter({ model })]'),
+      );
+    });
+
+    it('refuses an item without a string name or a filter function', () => {
+      const message = 'filters[0] must be a TestFilter: { name, filter(tests, context) }';
+      for (const value of [{ filter: decide }, { name: 3, filter: decide }, { name: 'areas' }, { name: 'areas', filter: 'git diff' }, 'areas', null, undefined]) {
+        expect(() => resolve({ filters: [invalid<TestFilter>(value)] }), JSON.stringify(value)).toThrow(new ConfigurationError('INVALID_CONFIG', message));
+      }
+    });
+
+    it('refuses a hole in the list as an item that is not a TestFilter', () => {
+      const gap: TestFilter[] = [];
+      gap[0] = { name: 'areas', filter: decide };
+      gap[2] = { name: 'jev', filter: decide };
+      expect(() => resolve({ filters: gap })).toThrow(
+        new ConfigurationError('INVALID_CONFIG', 'filters[1] must be a TestFilter: { name, filter(tests, context) }'),
+      );
+    });
+
+    it('refuses a name outside the target name rules', () => {
+      for (const name of ['..', '.', 'x y', 'areas!', '', 'é', `${'x'.repeat(257)}!`]) {
+        expect(() => resolve({ filters: [{ name, filter: decide }] }), name).toThrow(
+          new ConfigurationError(
+            'INVALID_CONFIG',
+            `invalid filter name ${JSON.stringify(name)}: names are ASCII letters, numbers, "_", "-", or ".", and cannot be only dots`,
+          ),
+        );
+      }
+    });
+
+    it('refuses a name over 256 characters, saying so', () => {
+      expect(() => resolve({ filters: [{ name: 'x'.repeat(257), filter: decide }] })).toThrow(
+        new ConfigurationError('INVALID_CONFIG', `filter name "${'x'.repeat(31)}…" is longer than 256 characters`),
+      );
+    });
+
+    it('refuses two filters with one name', () => {
+      const jev = { name: 'jev', filter: decide };
+      expect(() => resolve({ filters: [jev, { name: 'areas', filter: decide }, { name: 'jev', filter: () => ({ exclude: { a: 'b' } }) }] })).toThrow(
+        new ConfigurationError('INVALID_CONFIG', 'filters has two filters named "jev"; the report tells filters apart by name'),
+      );
+      expect(() => resolve({ filters: [jev, jev] })).toThrow('filters has two filters named "jev"');
+    });
+
+    it('leaves the config digest alone when a filter is added, changed, or removed, even one holding a cyclic client', () => {
+      const plain = resolve({}).configDigest;
+      const client: Record<string, unknown> = {};
+      client['self'] = client;
+      expect(resolve({ filters: [] }).configDigest).toBe(plain);
+      expect(resolve({ filters: [{ name: 'areas', filter: decide }, { name: 'jev', filter: decide }] }).configDigest).toBe(plain);
+      expect(resolve({ filters: [{ name: 'jev', filter: () => ({ exclude: { a: 'b' } }), client } as TestFilter] }).configDigest).toBe(plain);
+    });
   });
 
   it('reduces every model instance in an agent entry to its identity, judge and a custom executor\'s own included', () => {
@@ -934,7 +1091,7 @@ describe('resolveConfig', () => {
 
   describe.each(['trace', 'video'] as const)('%s', (kind) => {
     const web = (mode: string) => ({ ...WEB, [kind]: mode }) as unknown as Target;
-    const fallback = kind === 'trace' ? 'on' : 'off';
+    const fallback = kind === 'trace' ? 'retain-on-failure' : 'off';
 
     it('defaults, and a target inherits the config mode as a run-wide one', () => {
       expect(resolveConfig({ targets: TARGETS }, { projectRoot: ROOT, env: BASE_ENV }).targets[0]![kind]).toEqual({ mode: fallback, source: 'default' });
@@ -1010,7 +1167,7 @@ describe('resolveConfig', () => {
       expect(refusal({ output: '/tmp/e2e-results' })).toContain('is outside the project root');
       expect(refusal({ output: '.e2e/cache' })).toContain('is the cache directory .e2e/cache or inside it');
       expect(refusal({ output: 'store/results', cache: { dir: 'store' } })).toContain('is the cache directory store or inside it');
-      expect(refusal({ output: 'out', cache: { dir: 'out/artifacts/cache' } })).toContain('would hold cache.dir out/artifacts/cache under artifacts/');
+      expect(refusal({ output: 'out', cache: { dir: 'out/results/cache' } })).toContain('would hold cache.dir out/results/cache under results/');
       expect(refusal({ output: 'tests' })).toContain('holds tests, where the tests glob "tests/**/*.e2e.ts" finds test files');
       expect(refusal({ output: 'e2e', tests: ['e2e/smoke/**/*.e2e.ts'] })).toContain('holds e2e/smoke');
       expect(refusal({ output: 'e2e', tests: 'e2e/login.e2e.ts' })).toContain('holds e2e,');
@@ -1036,10 +1193,10 @@ describe('resolveConfig', () => {
         expect(resolveConfig({ targets: TARGETS }, { projectRoot: link, env: BASE_ENV, cli: { output: path.join(real, 'out') } }).output).toBe(
           path.join(real, 'out'),
         );
-        // A cache the run would clear with <output>/artifacts, however it is spelled.
+        // A cache the run would clear with <output>/results, however it is spelled.
         expect(() =>
-          resolveConfig({ targets: TARGETS, cache: { dir: path.join(link, '.e2e', 'artifacts', 'cache') } }, { projectRoot: real, env: BASE_ENV }),
-        ).toThrow('output ".e2e" (the default) would hold cache.dir .e2e/artifacts/cache under artifacts/');
+          resolveConfig({ targets: TARGETS, cache: { dir: path.join(link, '.e2e', 'results', 'cache') } }, { projectRoot: real, env: BASE_ENV }),
+        ).toThrow('output ".e2e" (the default) would hold cache.dir .e2e/results/cache under results/');
         expect(() =>
           resolveConfig({ targets: TARGETS }, { projectRoot: real, env: BASE_ENV, cli: { output: link } }),
         ).toThrow(`--output ${JSON.stringify(link)} is the project root`);
@@ -1123,15 +1280,39 @@ describe('discoverConfig', () => {
     });
   });
 
-  it('refuses both spellings side by side, and an explicit path that does not exist', () => {
+  it('discovers a JavaScript config', () => {
+    inTree(['.git/', 'e2e.config.js', 'web/e2e.config.mjs'], (root) => {
+      expect(discoverConfig(root).configPath).toBe(path.join(root, 'e2e.config.js'));
+      expect(discoverConfig(path.join(root, 'web')).configPath).toBe(path.join(root, 'web/e2e.config.mjs'));
+    });
+  });
+
+  it('prefers a TypeScript config over the JavaScript tsc emits beside it', () => {
+    inTree(['.git/', 'e2e.config.ts', 'e2e.config.js'], (root) => {
+      expect(discoverConfig(root).configPath).toBe(path.join(root, 'e2e.config.ts'));
+    });
+  });
+
+  it('refuses two spellings side by side, and an explicit path that does not exist', () => {
     inTree(['.git/', 'e2e.config.ts', 'e2e.config.mts', 'custom/my.config.ts'], (root) => {
       expect(() => discoverConfig(root)).toThrow(expect.objectContaining({ code: 'CONFIG_AMBIGUOUS' }));
+    });
+    inTree(['.git/', 'e2e.config.js', 'e2e.config.mjs', 'custom/my.config.ts'], (root) => {
+      expect(() => discoverConfig(root)).toThrow(
+        expect.objectContaining({ code: 'CONFIG_AMBIGUOUS', message: expect.stringContaining('e2e.config.js and e2e.config.mjs') }),
+      );
       expect(discoverConfig(root, 'custom/my.config.ts')).toEqual({
         configPath: path.join(root, 'custom/my.config.ts'),
         projectRoot: path.join(root, 'custom'),
       });
-      expect(() => discoverConfig(root, 'missing.config.ts')).toThrow(
-        expect.objectContaining({ code: 'CONFIG_NOT_FOUND', message: 'config file not found: missing.config.ts' }),
+      expect(() => discoverConfig(path.join(root, 'custom'), 'custom/my.config.ts')).toThrow(
+        expect.objectContaining({
+          code: 'CONFIG_NOT_FOUND',
+          message: `config file not found: ${path.join(root, 'custom/custom/my.config.ts')} (custom/my.config.ts resolved against the working directory ${path.join(root, 'custom')}); pass an absolute path, or a path relative to that directory`,
+        }),
+      );
+      expect(() => discoverConfig(root, path.join(root, 'missing.config.ts'))).toThrow(
+        expect.objectContaining({ code: 'CONFIG_NOT_FOUND', message: `config file not found: ${path.join(root, 'missing.config.ts')}` }),
       );
     });
   });

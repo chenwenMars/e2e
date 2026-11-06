@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { boxOf, failure } from './helpers.ts';
+import { failure } from './helpers.ts';
 
 test.describe('controls', { requires: ['browser'], tags: ['controls'] }, () => {
   test.beforeEach(async ({ app }) => {
@@ -75,6 +75,20 @@ test.describe('controls', { requires: ['browser'], tags: ['controls'] }, () => {
     await expect(screen.getByRole('radio', 'Small')).not.toBeChecked();
     await expect(screen.getByRole('radio', { checked: true })).toHaveCount(1);
     expect(await screen.getByRole('radio', 'Large').isChecked()).toBe(false);
+  });
+
+  test('check and uncheck wait for a controlled checkbox and switch that commit late', async ({ screen }) => {
+    const newsletter = screen.getByLabel('Subscribe to newsletter');
+    await newsletter.check();
+    expect(await newsletter.isChecked()).toBe(true);
+    await newsletter.uncheck();
+    expect(await newsletter.isChecked()).toBe(false);
+
+    const darkMode = screen.getByRole('switch', 'Dark mode');
+    await darkMode.check();
+    expect(await darkMode.isChecked()).toBe(true);
+    await darkMode.uncheck();
+    expect(await darkMode.isChecked()).toBe(false);
   });
 
   test('selecting an option moves selected state onto it', async ({ screen }) => {
@@ -188,13 +202,15 @@ test.describe('controls', { requires: ['browser'], tags: ['controls'] }, () => {
     await expect(screen.getByLabel('Attachments state')).toHaveText('attachment.txt, second.txt');
   });
 
-  test('scrollIntoView brings a node far below into the viewport', async ({ screen }) => {
-    const footnote = screen.getByText('Footnote', { exact: true });
-    await expect(screen.getByLabel('Footnote state')).toHaveText('out of view');
+  test('a button that opens a hidden file input takes the files', async ({ screen }) => {
+    await screen.getByRole('button', 'Choose avatar').setInputFiles('fixtures/attachment.txt');
+    await expect(screen.getByLabel('Avatar state')).toHaveText('attachment.txt');
+  });
 
-    await footnote.scrollIntoView();
-    await expect(screen.getByLabel('Footnote state')).toHaveText('in view');
-    expect((await boxOf(footnote)).y).toBeGreaterThanOrEqual(0);
+  test('a button that opens no file chooser fails as ACTION_FAILED', async ({ screen }) => {
+    const error = await failure(() => screen.getByRole('button', 'Close A').setInputFiles('fixtures/attachment.txt', { timeout: 500 }));
+    expect(error).toHaveProperty('code', 'ACTION_FAILED');
+    expect(error).toHaveProperty('message', expect.stringContaining('opened no file chooser'));
   });
 
   test('a missing locator fails as LOCATOR_NOT_FOUND after its timeout', async ({ screen }) => {

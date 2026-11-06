@@ -44,7 +44,7 @@ export type {
   ProviderRecordingStopContext,
   ProviderRecordingTarget,
 } from './recording.ts';
-export { Deadline, pollCondition, withTimeout, withinCleanupBudget, type PollConditionOptions } from '../internal/time.ts';
+export { Deadline, pollCondition, stepTimeout, withTimeout, withinCleanupBudget, type PollConditionOptions } from '../internal/time.ts';
 export { sameSite, siteOf, urlMatches } from '../internal/urls.ts';
 export { obj, type WithoutUndefined } from '../internal/objects.ts';
 import type { AppPermissionState, Expectable, Locator, Screen, Secret } from '../types.ts';
@@ -159,7 +159,7 @@ export interface EngineAppInfo {
   readonly appPath?: string;
   /** Arguments every fresh launch passes the app. */
   readonly launchArguments?: readonly string[];
-  /** Permissions the app holds on every fresh launch, by name. */
+  /** Permissions the app holds, by name; what each state means is the engine's (a device sets them before every fresh launch). */
   readonly permissions?: Readonly<Record<string, AppPermissionState>>;
 }
 
@@ -180,7 +180,7 @@ export type EngineAppDeclaration = EngineAppInfo & {
 export interface FixtureOperation<Args extends unknown[] = unknown[]> {
   readonly kind: 'resource' | 'assertion';
   readonly label?: (...args: Args) => string;
-  /** Action timeout by default; false when the method owns its assertion/navigation deadline. */
+  /** Action timeout by default, none of its own for 0; false when the method owns its assertion/navigation deadline. */
   readonly timeout?: number | false | ((...args: Args) => number | undefined);
   /** Assertions verify by default; waits may opt in as well. */
   readonly verifies?: boolean;
@@ -225,7 +225,7 @@ export interface EngineFixtureContext {
   operation(timeoutMs?: number): OperationContext;
   /** Registers a file the current step produced under the attempt artifact directory. */
   attachArtifact(
-    kind: 'screenshot' | 'trace' | 'video' | 'download' | 'log',
+    kind: 'screenshot' | 'video' | 'download' | 'log',
     relativePath: string,
   ): void;
   /** Records the viewport the current step established. */
@@ -297,19 +297,9 @@ export interface EngineStateCapability {
 export interface EngineArtifacts {
   /** Captures a redacted screenshot; secure fields are masked at the source. */
   screenshot(label: string | undefined, context: OperationContext): Promise<string>;
-  /** Starts recording an execution trace for the attempt. */
-  startTrace?(context: OperationContext): Promise<void>;
   /**
-   * Stops the trace and returns its relative path, or every archive written,
-   * in order, when the trace had to be cut: a trace bound to one context
-   * closes as a segment when a restart or a state reset replaces the
-   * context, and a new one records on from there. The harness registers and
-   * redacts each returned archive.
-   */
-  stopTrace?(context: OperationContext): Promise<string | readonly string[]>;
-  /**
-   * Starts recording the surface for the attempt. Declared together with
-   * `stopVideo`. A surface that has nothing to show yet (no page open) may
+   * Starts recording the surface. Declared together with `stopVideo`. An
+   * attempt may start and stop more than once, never overlapping. A surface that has nothing to show yet (no page open) may
    * defer the actual capture to the moment it does; the segments returned by
    * `stopVideo` say when each one began.
    */
@@ -368,6 +358,8 @@ export interface EngineSession {
   open?(url: string, context: OperationContext): Promise<void>;
   /** Navigates back once in the surface's history. */
   back?(context: OperationContext): Promise<void>;
+  /** Sets the viewport to `size` in CSS pixels, for this page and every page the attempt opens after it. */
+  resize?(size: ViewportSize, context: OperationContext): Promise<void>;
   /** Recreates the execution context, keeping persisted state. */
   restart?(context: OperationContext): Promise<void>;
   /** Clears persisted client state and recreates the execution context. */
@@ -409,8 +401,9 @@ export interface EnginePrepareInfo {
    * The worker slots the run will start for this target, `0` to `slots - 1`:
    * the run's worker cap, the engine's declared `workers`, and the work units
    * selected for the target, whichever is smallest; `0` when nothing runs on
-   * it. Provision for exactly these slots (boot that many devices of a pool);
-   * `init` then finds them ready.
+   * it while another target has work. A run with nothing to run prepares no
+   * target. Provision for exactly these slots (boot that many devices of a
+   * pool); `init` then finds them ready.
    */
   readonly slots: number;
   /**
@@ -447,6 +440,38 @@ export interface EngineFinishInfo extends EngineCleanupContext {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Reports one line of progress, streamed as a `notice` run event like `prepare`'s. */
   readonly log: (line: string) => void;
+}
+
+/** Facts handed to `doctor`, once per target in the process `e2e doctor` runs in. */
+export interface EngineDoctorInfo {
+  /** The target being checked. */
+  readonly targetName: string;
+  /** Directory relative paths in the config resolve against; see `EngineInitInfo.projectRoot`. */
+  readonly projectRoot: string;
+  /** The app the target declares, as `prepare` receives it. */
+  readonly app: EngineAppInfo;
+  /** The environment a run would start with. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Whether the run would show the surface (`--headed`), as `prepare` receives it. */
+  readonly headed: boolean;
+  /** Aborts 30 seconds in, when the checks fail as timed out, or when `e2e doctor` is interrupted; return within 5 seconds of it, when the connection closes. */
+  readonly signal: AbortSignal;
+  /** Reports one line of progress; `e2e doctor` prints it to stderr. */
+  readonly log: (line: string) => void;
+}
+
+/** One finding of `doctor`. */
+export interface EngineDoctorCheck {
+  /** What was checked, in kebab case: `browser`, `toolchain`. */
+  readonly id: string;
+  /**
+   * `pass`; `warn` for something a run handles on its own, slower (a
+   * first-run download); `fail` for something that stops a run; `skip` for
+   * a check that does not apply to this target.
+   */
+  readonly status: 'pass' | 'warn' | 'fail' | 'skip';
+  /** One line: what was found and, unless it passed, what to do. */
+  readonly message?: string;
 }
 
 /** Run identity and harness-resolved facts handed to `init`, once per worker before the first step. */
@@ -513,8 +538,9 @@ export interface EngineAttemptContext {
    * provider runs again on every call. The value, and every value
    * `options.derived` computes from it, join the attempt's redaction before
    * this resolves, so reports, logs, and every observation redact them, and
-   * the attempt's trace and text downloads are rewritten. The protection is
-   * text only: unlike a fill, it withholds no screenshot or model pixels.
+   * the attempt's text downloads are rewritten. The protection is
+   * text only: a page that shows the value outside a secure field is not
+   * masked in screenshots.
    * A secret the engine did not declare is `SECRET_UNAVAILABLE`.
    */
   readonly resolveSecret: (secret: Secret, options?: ResolveSecretOptions) => Promise<string>;
@@ -524,6 +550,56 @@ export interface EngineAttemptContext {
    * harness ends the attempt's isolation right behind it and may retry.
    */
   readonly signal: AbortSignal;
+  /**
+   * Reports something the app did on its own while the attempt ran: a
+   * console line, an uncaught exception, a request that failed. The harness
+   * redacts the text, keeps it with the step that was running (from an event
+   * callback outside any step, the step that started last; before the first
+   * step, with none), and shows it on the trace page. Call it from the moment `startAttempt` begins until
+   * `endAttempt`; entries past a per-attempt cap are dropped.
+   */
+  readonly appLog: (entry: AppLogEntry) => void;
+  /**
+   * Reports where the app went on its own, as one line (`navigated to
+   * /login`, `the app opened a new tab at /help`, `frame "pay" loaded
+   * /embed`): a navigation the engine did not start, a tab, a frame. The
+   * harness redacts it and shows it under the step that was running.
+   */
+  readonly navigation: (line: string) => void;
+  /**
+   * Hands the harness a screen for the trace: the capture a `locate`
+   * matched against, or one read right after an action. The harness redacts
+   * it and keeps, for each step, how the screen changed since the step
+   * before, which the trace page shows. It never becomes an observation:
+   * refs it holds are not valid for `perform`. An engine that reads one after
+   * an action does so on the action's path, so it bounds the read (the web
+   * engine allows one second and gives up silently) and skips it where a
+   * read is expensive; an action never fails because of it. Absent when the
+   * attempt keeps no trace; the engine then reads nothing for it.
+   */
+  readonly screen?: (snapshot: EngineSnapshot) => void;
+  /**
+   * What the attempt runs on, such as `{ browser: 'chromium 141.0.7390.37' }`
+   * or `{ device: 'iPhone 16', os: 'iOS 26.0' }`, for the trace page. A
+   * later call adds to and overwrites earlier facts; the harness redacts and
+   * clips them and keeps a handful.
+   */
+  readonly environment: (facts: Readonly<Record<string, string>>) => void;
+}
+
+/** Where an app log entry came from. */
+export type AppLogSource = 'console' | 'error' | 'network' | 'system';
+
+/** One line of what the app did during an attempt, as `EngineAttemptContext.appLog` takes it. */
+export interface AppLogEntry {
+  /**
+   * Where it came from: the app's `console`, an `error` nothing caught, the
+   * `network`, or the `system` the app runs on (a crash, an OS log).
+   */
+  readonly source: AppLogSource;
+  readonly level: 'error' | 'warning' | 'info';
+  /** One line, such as `GET /api/todos 500` or `TypeError: x is undefined`; the harness clips it. */
+  readonly text: string;
 }
 
 /** How `EngineAttemptContext.resolveSecret` treats what the engine makes of the value. */
@@ -534,7 +610,7 @@ export interface ResolveSecretOptions {
    * `Authorization: Basic` header carries, which a page echoing its request
    * headers would otherwise show.
    */
-  readonly derived?: (plaintext: string) => readonly string[];
+  readonly derived?: (plaintext: string) => readonly string[] | Promise<readonly string[]>;
 }
 
 /**
@@ -549,11 +625,28 @@ export interface EngineCleanupContext {
   readonly timeoutMs: number;
 }
 
+/** Cleanup of one worker, with optional permission to leave run-owned resources for a replacement. */
+export interface EngineDisposeContext extends EngineCleanupContext {
+  /**
+   * A live signal permits reusable resources owned by `prepare` and `finish`
+   * to survive this worker. Missing or aborted permission requires final
+   * cleanup. Observe revocation until disposal settles. This signal does
+   * not cancel cleanup, which remains bounded by `signal` and `timeoutMs`.
+   */
+  readonly reuseSignal?: AbortSignal;
+}
+
 export interface EngineObserveOptions {
   /** Requests masked viewport pixels for the same revision as the tree. */
   readonly pixels?: boolean;
-  /** Allows independently masked pixels to replace a failed semantic capture. Never granted after a secret fill. */
+  /** Allows independently masked pixels to replace a failed semantic capture. */
   readonly pixelFallback?: boolean;
+  /**
+   * The pixels are compared against a stored screenshot (`toHaveScreenshot`).
+   * Where the platform can, render what changes on its own outside the app
+   * in a fixed state: a status bar's clock, battery, and signal.
+   */
+  readonly comparable?: boolean;
 }
 
 /**
@@ -591,6 +684,13 @@ export interface EngineSnapshot {
    * read whole.
    */
   readonly truncated?: boolean;
+  /**
+   * Whether an on-screen keyboard is showing, as the engine measured it apart
+   * from `root`: a platform can raise a keyboard the tree lists only in part,
+   * or not at all. Set `false` when it measured none, and omit it only when
+   * the engine did not measure it; consumers then fall back to the tree.
+   */
+  readonly keyboardVisible?: boolean;
   /**
    * Semantic capture timed out. Return only the stable root reference, with no other fields,
    * and fresh pixels whose masking was proven independently of the failed
@@ -681,9 +781,9 @@ export interface Engine {
   /**
    * capability: pointer - requires observation. Performs one pointer action
    * at a viewport point, in the CSS pixels of `SemanticNode.rect`, with no
-   * node behind it: the agent's `tap_at` verb lands here when the point the
-   * model named in a screenshot sits on nothing the tree lists (a shape on a
-   * canvas, a pin on a map, a control in a system sheet), and so do a test's
+   * node behind it: the agent's `tap_at`, `hover_at`, and `drag_at` verbs land
+   * here with the point the model named in a screenshot (a shape on a canvas, a pin on
+   * a map, a control in a system sheet or one the tree lists), and so do a test's
    * `screen.tapAt`, `screen.swipe({ from, to })`, and `tap({ position })`.
    * Dispatch the pointer at the point as given; the harness has clamped an
    * agent's point to the viewport and validated a test's. Throw
@@ -716,7 +816,7 @@ export interface Engine {
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
   /** capability: state - opaque snapshot capture/restore for session reuse. */
   readonly state?: EngineStateCapability;
-  /** capability: artifacts - screenshots and traces under the attempt directory. */
+  /** capability: artifacts - screenshots under the attempt directory, and videos there or at a provider. */
   readonly artifacts?: EngineArtifacts;
   /**
    * Checks the app a target declares against what this engine can drive, at
@@ -736,10 +836,12 @@ export interface Engine {
    * through `info.log`. It runs after collection and before the run's clock
    * starts: `plan` is emitted, the report's `startedAt` taken, and the app
    * started only once every target is prepared, so a download is never part
-   * of a run's duration. Failure is infrastructure and ends the run before
-   * any test executes. The result may lower the target's worker cap for this
-   * run, for an engine that only learns its capacity here (a device pool
-   * discovered from the booted devices).
+   * of a run's duration. A run with nothing to run (the test filters left
+   * nothing, or `--pass-with-no-tests` on an empty selection) prepares no
+   * target, and so calls no `finish`. Failure is infrastructure and ends the
+   * run before any test executes. The result may lower the target's worker
+   * cap for this run, for an engine that only learns its capacity here (a
+   * device pool discovered from the booted devices).
    */
   prepare?(info: EnginePrepareInfo): Promise<void | EnginePrepareResult>;
   /**
@@ -754,6 +856,14 @@ export interface Engine {
    * cleanup-phase run error, never a crash.
    */
   finish?(info: EngineFinishInfo): Promise<void>;
+  /**
+   * Checks this machine for what a run on the target needs, for
+   * `e2e doctor`. Read-only and quick: never install, launch, lease, or
+   * start anything a check could instead look up, and never call `prepare`.
+   * A check that cannot tell reports nothing rather than guess. A throw is
+   * reported as one failed check of the target.
+   */
+  doctor?(info: EngineDoctorInfo): Promise<readonly EngineDoctorCheck[]>;
   /**
    * Once per worker, before the first step; boot devices here, not in a step
    * budget. The same handle can be booted again after `dispose`: a config-held
@@ -779,9 +889,12 @@ export interface Engine {
   endAttempt?(context: EngineCleanupContext): Promise<void>;
   /**
    * Worker shutdown, within the cleanup budget; failure is a run error. Runs
-   * whether or not `init` ran, so it MUST tolerate a cold engine.
+   * once `init` was called, even when it failed, so it MUST tolerate a
+   * partly initialized engine. A live
+   * `reuseSignal` permits preserving run-owned resources for a replacement,
+   * until that permission is revoked or this hook settles.
    */
-  dispose?(context: EngineCleanupContext): Promise<void>;
+  dispose?(context: EngineDisposeContext): Promise<void>;
 }
 
 /** A validated engine: branded, frozen, capabilities computed. */
@@ -791,3 +904,19 @@ export interface EngineHandle extends Engine {
 }
 
 export { defineEngine, isEngineHandle } from './manifest.ts';
+
+export { connectEngine, type ConnectEngineOptions } from './protocol/client.ts';
+export { describeEngine } from './protocol/manifest.ts';
+export { serveEngine } from './protocol/server.ts';
+export {
+  loopbackTransport,
+  socketTransport,
+  spawnTransport,
+  type EngineTransport,
+  type SocketTransportOptions,
+  type SpawnTransportOptions,
+  type TransportConnection,
+  type TransportContext,
+} from './protocol/transport.ts';
+export { ENGINE_METHODS, ENGINE_PROTOCOL_VERSION, type EngineManifest, type EngineMethod } from './protocol/protocol.ts';
+export type { MessageStreams } from './protocol/connection.ts';

@@ -3,11 +3,12 @@
 import nodePath from 'node:path';
 import { describeValue } from '../config/validate.ts';
 import { isKeyModifier, KEY_MODIFIERS, type KeyModifier } from '../engine/contract.ts';
-import type { LocatorAction, LocatorExpression, SemanticNode } from '../engine/surface.ts';
+import type { LocatorAction, LocatorExpression, Observation, SemanticNode } from '../engine/surface.ts';
 import { locatorBrand } from '../internal/brands.ts';
 import { isSecret } from '../secrets.ts';
-import { asEngineError, TestError } from '../internal/errors.ts';
+import { TestError } from '../internal/errors.ts';
 import { requireFinitePoint } from '../internal/geometry.ts';
+import { isCheckable, isValueControl } from '../internal/roles.ts';
 import { isPlainObject, rejectUnknownOptions } from '../internal/options.ts';
 import { realmSlot } from '../internal/realm-slot.ts';
 import { obj } from '../internal/objects.ts';
@@ -43,7 +44,9 @@ import {
   testIdQuery,
   textQuery,
 } from './expression.ts';
-import { cutOffAtDeadline, type Deadline, POLL_INTERVAL_MS, pollCondition, sleep } from '../internal/time.ts';
+import { type Deadline, isOperationTimeout, POLL_INTERVAL_MS, pollReads } from '../internal/time.ts';
+import { SampleHistory } from '../expect/samples.ts';
+import type { ScreenshotContext } from '../run/screenshots.ts';
 
 export interface SecretResolver {
   /**
@@ -59,6 +62,10 @@ export interface ScreenContext {
   readonly secrets: SecretResolver;
   /** Base directory for resolving relative file paths, e.g. uploads. */
   readonly projectRoot?: string;
+  /** Where `toHaveScreenshot` keeps screenshots; absent outside a test. */
+  readonly screenshots?: ScreenshotContext;
+  /** Renders an observation as `screen.tree()` returns it: redacted, one node per line. */
+  readonly renderTree: (observation: Observation) => string;
 }
 
 /** Internal accessor used by expect() to reach a locator's expression/engine. */
@@ -72,6 +79,20 @@ export interface LocatorInternals {
  * an expect() imported in an isolated test-module realm can still reach them.
  */
 const internalsSlot = realmSlot<LocatorInternals>('e2e.locatorInternals.v1');
+
+/** What `expect(screen)` reads off a screen object: its context, and whether it is scoped to part of the screen (a frame). */
+interface ScreenInternals {
+  readonly context: ScreenContext;
+  readonly scoped: boolean;
+}
+
+/** A screen's internals, for `expect(screen)`, under the same kind of slot as a locator's. */
+const screenSlot = realmSlot<ScreenInternals>('e2e.screenInternals.v1');
+
+/** The internals behind a screen object; undefined for anything else. */
+export function screenInternals(screen: unknown): ScreenInternals | undefined {
+  return screenSlot.get(screen);
+}
 
 export function locatorInternals(locator: unknown): LocatorInternals | undefined {
   if (typeof locator !== 'object' || locator === null) return undefined;
@@ -100,15 +121,6 @@ export function createLocator(context: ScreenContext, expression: LocatorExpress
   return new LocatorImpl(context, expression);
 }
 
-/**
- * Whether a swipe failed because the operation budget it was given ran out:
- * the engine's `OPERATION_TIMEOUT` as a viewport swipe raises it, or wrapped
- * as the `ACTION_FAILED` the locator engine translates it into.
- */
-function timedOut(cause: unknown): boolean {
-  const engineError = asEngineError(cause) ?? asEngineError(cause instanceof Error ? cause.cause : undefined);
-  return engineError?.code === 'OPERATION_TIMEOUT';
-}
 
 /** The keys of `TextMatchOptions`, what every text-family query takes. */
 const TEXT_OPTION_KEYS = ['exact', 'visible'] as const;
@@ -151,7 +163,9 @@ class ScreenImpl implements Screen {
     protected readonly scope: LocatorExpression | undefined,
     /** When set, every query expression is passed through it before use. */
     protected readonly wrap: ((expression: LocatorExpression) => LocatorExpression) | undefined = undefined,
-  ) {}
+  ) {
+    screenSlot.set(this, { context, scoped: wrap !== undefined });
+  }
 
   private build(expression: LocatorExpression): LocatorExpression {
     return this.wrap === undefined ? expression : this.wrap(expression);
@@ -262,14 +276,14 @@ class ScreenImpl implements Screen {
           details: locatorDetails(internals.expression, Date.now() - startedMs),
           ...(cause === undefined ? {} : { cause }),
         });
+      const reads = engine.reads(deadline);
       let sampled = false;
       for (;;) {
-        const startedWithMs = deadline.remaining();
         let node: SemanticNode | null;
         try {
-          ({ node } = await engine.tryRead(internals.expression, deadline));
+          ({ node } = await engine.tryRead(internals.expression, reads));
         } catch (cause) {
-          if (sampled && cutOffAtDeadline(cause, startedWithMs)) throw notVisible(cause);
+          if (sampled && reads.cutOff(cause)) throw notVisible(cause);
           throw cause;
         }
         sampled = true;
@@ -282,13 +296,32 @@ class ScreenImpl implements Screen {
           // engine's timer can wake a millisecond before this clock reads the
           // deadline, so a swipe that ran out of its budget within a poll
           // interval of the deadline is the deadline too, whichever timer fired first.
-          if (deadline.expired() || (timedOut(cause) && deadline.remaining() < POLL_INTERVAL_MS)) {
+          if (deadline.expired() || (isOperationTimeout(cause) && deadline.remaining() < POLL_INTERVAL_MS)) {
             throw notVisible(cause);
           }
           throw cause;
         }
-        await sleep(Math.min(POLL_INTERVAL_MS, deadline.remaining()), engine.signal);
       }
+    });
+  }
+
+  tree(options?: ActionOptions): Promise<string> {
+    return this.readTree('screen.tree', options);
+  }
+
+  async debug(options?: ActionOptions): Promise<void> {
+    console.log(await this.readTree('screen.debug', options));
+  }
+
+  /** One observation of the whole screen, rendered; a locator or a frame refuses, since the tree is not scoped. */
+  private async readTree(api: string, options: ActionOptions | undefined): Promise<string> {
+    rejectUnknownOptions(api, options, ['timeout']);
+    if (this.scope !== undefined || this.wrap !== undefined) {
+      throw new TestError('INVALID_ARGUMENT', `${api} reads the whole screen; call it on screen`);
+    }
+    return await this.context.steps.run('screen', api, 'whole screen', async () => {
+      const { engine } = this.context;
+      return this.context.renderTree(await engine.session.observe(engine.operationWithin(engine.deadline(options?.timeout))));
     });
   }
 
@@ -376,17 +409,25 @@ class LocatorImpl extends ScreenImpl implements Locator {
   }
 
   doubleTap(options?: ClickOptions): Promise<void> {
-    return this.clickWith('doubleTap', options);
+    return this.clickWith('doubleTap', 'doubleTap', options);
+  }
+
+  dblclick(options?: ClickOptions): Promise<void> {
+    return this.clickWith('dblclick', 'doubleTap', options);
   }
 
   secondaryTap(options?: ClickOptions): Promise<void> {
-    return this.clickWith('secondaryTap', options);
+    return this.clickWith('secondaryTap', 'secondaryTap', options);
   }
 
   /** A double or secondary tap, with the keys `modifiers` holds for it. */
-  private clickWith(verb: 'doubleTap' | 'secondaryTap', options: ClickOptions | undefined): Promise<void> {
-    rejectUnknownOptions(verb, options, ['timeout', 'modifiers']);
-    return this.dispatchTap(verb, verb, requireModifiers(options?.modifiers, verb), options?.timeout);
+  private clickWith(
+    api: 'doubleTap' | 'dblclick' | 'secondaryTap',
+    kind: 'doubleTap' | 'secondaryTap',
+    options: ClickOptions | undefined,
+  ): Promise<void> {
+    rejectUnknownOptions(api, options, ['timeout', 'modifiers']);
+    return this.dispatchTap(api, kind, requireModifiers(options?.modifiers, api), options?.timeout);
   }
 
   /** One tap kind with the keys it holds, named after the node in the step label. */
@@ -476,8 +517,8 @@ class LocatorImpl extends ScreenImpl implements Locator {
 
   setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promise<void> {
     const list = typeof paths === 'string' ? [paths] : [...paths];
-    if (list.length === 0 || list.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
-      throw new TestError('INVALID_ARGUMENT', 'setInputFiles requires one or more non-empty paths');
+    if (list.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+      throw new TestError('INVALID_ARGUMENT', 'setInputFiles paths must be non-empty strings');
     }
     const base = this.context.projectRoot;
     const resolved = list.map((entry) => (base === undefined ? entry : nodePath.resolve(base, entry)));
@@ -521,7 +562,9 @@ class LocatorImpl extends ScreenImpl implements Locator {
 
   async inputValue(): Promise<string> {
     const node = await this.readGuarded();
-    return node.value ?? '';
+    if (node.value !== undefined) return node.value;
+    if (isValueControl(node)) return '';
+    throw new TestError('ACTION_FAILED', `Node is not an <input>, <textarea> or <select> element: ${this.label}`);
   }
 
   async getAttribute(name: string): Promise<string | null> {
@@ -548,6 +591,7 @@ class LocatorImpl extends ScreenImpl implements Locator {
 
   async isChecked(): Promise<boolean> {
     const node = await this.readGuarded(false);
+    if (!isCheckable(node)) throw new TestError('ACTION_FAILED', `Not a checkbox or radio button: ${this.label}`);
     return node.states?.checked === true;
   }
 
@@ -585,34 +629,48 @@ class LocatorImpl extends ScreenImpl implements Locator {
       const { engine } = this.context;
       const deadline = engine.deadline(options?.timeout);
       const startedMs = Date.now();
-      await pollCondition({
-        deadline,
-        signal: engine.signal,
-        negated: false,
-        evaluate: async () => {
-          const { node } = await engine.tryRead(this.expression, deadline, ABSENCE_STATES.has(state) ? 'empty' : 'wait');
-          return inWaitForState(node, state);
-        },
-        onTimeout: (cause) =>
-          new TestError('LOCATOR_NOT_FOUND', `locator did not become ${state}: ${this.label}`, {
-            details: locatorDetails(this.expression, Date.now() - startedMs),
-            ...(cause === undefined ? {} : { cause }),
-          }),
-      });
+      const samples = new SampleHistory('waitFor', (text) => engine.redact(text));
+      await samples.record(engine, () =>
+        pollReads({
+          deadline,
+          reads: engine.reads(deadline),
+          signal: engine.signal,
+          negated: false,
+          evaluate: async (reads) => {
+            const { node } = await engine.tryRead(this.expression, reads, ABSENCE_STATES.has(state) ? 'empty' : 'wait');
+            samples.add(node === null ? 'absent' : isNodeVisible(node) ? 'visible' : 'hidden');
+            return inWaitForState(node, state);
+          },
+          onTimeout: (cause) =>
+            new TestError('LOCATOR_NOT_FOUND', `locator did not become ${state}: ${this.label}`, {
+              details: locatorDetails(this.expression, Date.now() - startedMs),
+              ...(cause === undefined ? {} : { cause }),
+            }),
+        }),
+      );
     }, { verifies: true });
   }
 
-  filter(options: { hasText?: TextMatch; has?: Locator }): Locator {
-    rejectUnknownOptions('filter', options, ['hasText', 'has'], 'INVALID_LOCATOR');
-    const { hasText, has } = options ?? {};
+  filter(options: { hasText?: TextMatch; hasNotText?: TextMatch; has?: Locator; hasNot?: Locator }): Locator {
+    rejectUnknownOptions('filter', options, ['hasText', 'hasNotText', 'has', 'hasNot'], 'INVALID_LOCATOR');
+    const { hasText, hasNotText, has, hasNot } = options ?? {};
     const hasExpression = has === undefined ? undefined : this.ownLocator(has, 'filter({ has })').expression;
+    const hasNotExpression =
+      hasNot === undefined ? undefined : this.ownLocator(hasNot, 'filter({ hasNot })').expression;
     return new LocatorImpl(
       this.context,
       filterExpression(this.expression, {
         ...(hasText !== undefined ? { hasText } : {}),
+        ...(hasNotText !== undefined ? { hasNotText } : {}),
         ...(hasExpression !== undefined ? { has: hasExpression } : {}),
+        ...(hasNotExpression !== undefined ? { hasNot: hasNotExpression } : {}),
       }),
     );
+  }
+
+  or(other: Locator): Locator {
+    const right = this.ownLocator(other, 'or').expression;
+    return new LocatorImpl(this.context, { kind: 'union', left: this.expression, right });
   }
 
   first(): Locator {

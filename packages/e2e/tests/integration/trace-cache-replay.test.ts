@@ -6,6 +6,7 @@
  * an entry may hold is checked against the report and the entry files.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -233,7 +234,7 @@ describe('trace cache: a changed screen hands the step to the agent, which re-re
 
   it('replays the typing, hands off at the renamed button, and tells the model what already ran', () => {
     const step = onlyActStep(replayed, 'creates a company');
-    expect(step.cache).toEqual({ mode: 'agent-concluded', reason: 'target-not-found', replayedActions: 1, totalActions: 2 });
+    expect(step.cache).toMatchObject({ mode: 'agent-concluded', reason: 'target-not-found', replayedActions: 1, totalActions: 2 });
     expect(step.metrics?.modelCalls).toBeGreaterThan(0);
     const notice = handedOffNotice(loopCalls);
     expect(notice).toMatch(/target-not-found/u);
@@ -282,6 +283,8 @@ describe('trace cache: --strict-cache fails a step whose key changed under its r
     const { file, entry } = entries[0]!;
     const recordedFor = entry.payload.recordedFor!;
     expect(recordedFor).toMatchObject({ paramsDigest: expect.stringMatching(/^[a-f0-9]{64}$/u), callIndex: 0, agent: 'default' });
+    // The test's title reaches the prompt, not the context, so the key's context digest stays empty.
+    expect(entry.payload.keyedBy?.agentContextDigest).toBe(createHash('sha256').update('').digest('hex'));
     // An entry from before the occurrence fields: a read-write replay completes it.
     const { testId, targetId, instructionDigest } = recordedFor;
     writeFileSync(file, JSON.stringify({ ...entry, payload: { ...entry.payload, recordedFor: { testId, targetId, instructionDigest } } }), 'utf8');
@@ -304,6 +307,8 @@ describe('trace cache: --strict-cache fails a step whose key changed under its r
     const step = onlyActStep(outcome, 'increments the counter');
     expect(step.error?.code).toBe('REPLAY_STALE');
     expect(step.error?.message).toContain(`the store holds it under another cache key (${oldEntry})`);
+    // The entry recorded its key's context, so the message names what changed.
+    expect(step.error?.message).toContain("since the agent's context (its context, or the test's agentContext) changed after it was recorded");
     expect(step.error?.message).toMatch(/commit the changed entry under \.e2e\/cache$/u);
     expect(step.cache?.reason).toBe('no-entry');
   }, 120_000);

@@ -4,6 +4,7 @@
  * without spawning processes or browsers.
  */
 
+import { protocolEngine } from '../../src/engine/protocol/client.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CollectedFile, CollectedTest, Collection } from '../../src/collect/collect.ts';
 import type {
@@ -15,10 +16,10 @@ import type {
 import type { ResolvedTarget } from '../../src/config/resolve.ts';
 import { defineEngine, type EngineHandle } from '../../src/engine/index.ts';
 import { classifyError, serializeError } from '../../src/internal/errors.ts';
-import type { AttemptRecord, ResultRecord, RunError, SerialGroupRecord, SerialMemberRecord } from '../../src/run/records.ts';
+import type { AttemptRecord, ResultRecord, RunError, SerialAttemptRecord, SerialGroupRecord, SerialMemberRecord } from '../../src/run/records.ts';
 import { runUnits } from '../../src/run/scheduler.ts';
-import { serialGroupId, type SerialAttemptRun } from '../../src/run/serial.ts';
-import { buildWorkPlans, type TargetWorkPlan } from '../../src/run/units.ts';
+import { serialGroupId } from '../../src/run/serial.ts';
+import { buildWorkPlans, type TargetWorkPlan, type TimeLimit } from '../../src/run/units.ts';
 import type { SpawnUnitRunner, UnitRunner, UnitRunnerEvents } from '../../src/run/unit-runner.ts';
 import type { MainToWorker, RunUnitMessage } from '../../src/run/worker/protocol.ts';
 
@@ -31,6 +32,7 @@ const defaultOptions: ResolvedTestOptions = {
   agents: ['default'],
   agentContext: undefined,
   skipReason: undefined,
+  expectedFailure: undefined,
   serial: false,
   trace: undefined,
   video: undefined,
@@ -65,7 +67,7 @@ function makeTarget(name: string, index: number, engine?: EngineHandle): Resolve
     name,
     index,
     platform: 'web',
-    engine,
+    engine: engine === undefined ? undefined : protocolEngine(engine),
     app: EMPTY_APP,
     declaredApp: EMPTY_DECLARED,
     trace: { mode: 'off', source: 'default' },
@@ -131,6 +133,9 @@ function makeSelection(perTarget: readonly { target: ResolvedTarget; pairs: Test
 }
 
 interface FakeBehaviour {
+  readonly shutdownUntil?: 'final' | 'terminate';
+  readonly disposal?: { readonly delayMs: number; readonly runErrors?: readonly RunError[] };
+  readonly onControl?: (message: MainToWorker) => void;
   /** Statuses to report per test id; defaults to passed. */
   readonly status?: Record<string, ResultRecord['status']>;
   /** Unit ids whose worker exits mid-unit instead of finishing. */
@@ -149,8 +154,10 @@ interface FakeBehaviour {
   readonly attemptsBeforeHang?: readonly AttemptRecord[];
   /** The hung pair starts its next attempt after `attemptsBeforeHang`, and the worker exits on its own once interrupted. */
   readonly exitDuringNextAttemptOnInterrupt?: boolean;
+  /** The hung pair starts its next attempt after `attemptsBeforeHang` and keeps running through an interrupt. */
+  readonly startAttemptBeforeHang?: boolean;
   /** Serial group attempts the unit's pairs (one group) finish before the worker hangs. */
-  readonly serialRunsBeforeHang?: readonly SerialAttemptRun[];
+  readonly serialRunsBeforeHang?: readonly SerialAttemptRecord[];
   /** Members the group's next attempt finishes before the worker hangs. */
   readonly serialMembersBeforeHang?: readonly SerialMemberRecord[];
   /** Instead of hanging, the worker exits on its own once it sent what came before. */
@@ -206,9 +213,12 @@ const SLOW_TEARDOWN_MS = 12_000;
 
 class FakeFleet {
   readonly spawned: { targetName: string; workerSlot: number }[] = [];
+  readonly killed: number[] = [];
+  readonly completedDisposals: number[] = [];
   readonly unitsByWorker: RunUnitMessage[][] = [];
   /** Control messages every worker received, in order. */
   readonly controlMessages: MainToWorker['type'][] = [];
+  readonly controls: { worker: number; message: MainToWorker }[] = [];
   /** The skip each interrupt carried for unstarted pairs, `undefined` for a plain interrupt. */
   readonly interruptSkips: (SkipInfo | undefined)[] = [];
   live = 0;
@@ -242,6 +252,7 @@ class FakeRunner implements UnitRunner {
   private finish!: () => void;
   private exited = false;
   private blocked = false;
+  private disposing = false;
 
   constructor(
     private readonly index: number,
@@ -272,13 +283,31 @@ class FakeRunner implements UnitRunner {
 
   send(message: MainToWorker): void {
     if (this.exited) return;
-    if (message.type !== 'run-unit') this.fleet.controlMessages.push(message.type);
+    if (message.type !== 'run-unit') {
+      this.fleet.controlMessages.push(message.type);
+      this.fleet.controls.push({ worker: this.index, message });
+      this.behaviour.onControl?.(message);
+    }
     if (message.type === 'interrupt') this.fleet.interruptSkips.push(message.skip);
     if (message.type === 'interrupt' && this.behaviour.exitDuringNextAttemptOnInterrupt === true) {
       setTimeout(() => this.end('code 7, signal null'), 0);
       return;
     }
     if (message.type === 'shutdown') {
+      if (this.behaviour.shutdownUntil === 'terminate') return;
+      if (this.behaviour.shutdownUntil === 'final' && 'preserveResources' in message) return;
+      const disposal = this.behaviour.disposal;
+      if (disposal !== undefined) {
+        if (this.disposing) return;
+        this.disposing = true;
+        setTimeout(() => {
+          if (this.exited) return;
+          this.fleet.completedDisposals.push(this.index);
+          this.events.onMessage({ type: 'shutdown-done', runErrors: disposal.runErrors ?? [] });
+          this.end('shut down');
+        }, disposal.delayMs);
+        return;
+      }
       setTimeout(() => this.end('shut down'), 0);
       return;
     }
@@ -296,12 +325,12 @@ class FakeRunner implements UnitRunner {
       const first = message.pairs[0];
       for (const finishedRun of this.behaviour.serialRunsBeforeHang ?? []) {
         const groupId = serialGroupId(first!.test.serialId!, this.targetName, first!.agent, first!.repeat);
-        for (const [index, member] of finishedRun.record.members.entries()) {
+        for (const [index, member] of finishedRun.members.entries()) {
           const pair = message.pairs[index]!;
           this.events.onMessage({ type: 'pair-start', testId: pair.test.id, agent: pair.agent, repeat: pair.repeat, title: pair.test.id, file: pair.test.file, serialId: pair.test.serialId });
-          this.events.onMessage({ type: 'serial-member', groupId, attempt: finishedRun.record, member });
+          this.events.onMessage({ type: 'serial-member', groupId, attempt: finishedRun, member });
         }
-        this.events.onMessage({ type: 'serial-attempt', groupId, run: finishedRun });
+        this.events.onMessage({ type: 'serial-attempt', groupId, attempt: finishedRun });
       }
       const partial = this.behaviour.serialMembersBeforeHang ?? [];
       if (partial.length > 0) {
@@ -314,7 +343,7 @@ class FakeRunner implements UnitRunner {
         }
       }
       const attempts = this.behaviour.attemptsBeforeHang ?? [];
-      const nextAttempt = this.behaviour.exitDuringNextAttemptOnInterrupt === true;
+      const nextAttempt = this.behaviour.exitDuringNextAttemptOnInterrupt === true || this.behaviour.startAttemptBeforeHang === true;
       if ((attempts.length > 0 || nextAttempt) && first !== undefined) {
         const pair = { testId: first.test.id, agent: first.agent, repeat: first.repeat };
         this.events.onMessage({ type: 'pair-start', ...pair, title: first.test.id, file: first.test.file, serialId: undefined });
@@ -331,6 +360,7 @@ class FakeRunner implements UnitRunner {
   }
 
   kill(): void {
+    this.fleet.killed.push(this.index);
     this.end('killed');
   }
 
@@ -397,6 +427,8 @@ interface Collected {
   readonly runErrors: RunError[];
   /** `onFailureLimit` calls, as `[failures, limit]`. */
   readonly failureLimits: [number, number][];
+  /** `onTimeLimit` calls. */
+  timeLimits: number;
 }
 
 async function run(
@@ -412,11 +444,13 @@ async function run(
     interruptGraceMs?: number;
     forceGraceMs?: number;
     maxFailures?: number;
+    timeLimit?: TimeLimit;
   } = {},
 ): Promise<Collected> {
-  const collected: Collected = { results: [], serialGroups: [], runErrors: [], failureLimits: [] };
+  const collected: Collected = { results: [], serialGroups: [], runErrors: [], failureLimits: [], timeLimits: 0 };
   await runUnits({
     ...(overrides.maxFailures === undefined ? {} : { maxFailures: overrides.maxFailures }),
+    ...(overrides.timeLimit === undefined ? {} : { timeLimit: overrides.timeLimit }),
     plans: buildWorkPlans(selection, collection, '/project').map((plan): TargetWorkPlan => {
       const workers = overrides.preparedWorkers?.[plan.target.name];
       return workers === undefined ? plan : { ...plan, workers };
@@ -433,6 +467,9 @@ async function run(
       onRunError: (error) => collected.runErrors.push(error),
       onRunAbort: (error) => collected.runErrors.push(error),
       onFailureLimit: (failures, limit) => collected.failureLimits.push([failures, limit]),
+      onTimeLimit: () => {
+        collected.timeLimits += 1;
+      },
     },
   });
   return collected;
@@ -497,6 +534,142 @@ describe('failure limit', () => {
   });
 });
 
+describe('time limit', () => {
+  const skip = { cause: 'time-limit', reason: 'run stopped at its time limit of 30 ms (--max-duration)' };
+
+  it('stops dispatching once the time is spent, interrupts the worker running a test, skips every queued pair, and records RUN_TIMEOUT', async () => {
+    const target = makeTarget('web', 0);
+    const pairs = ['hangs', 'b', 'c'].map((name) => makePair(makeTest(`tests/${name}.e2e.ts`, name), target));
+    const fleet = new FakeFleet({ hangOn: ['file::web::tests/hangs.e2e.ts'], startAttemptBeforeHang: true });
+    const collected = await run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 1,
+      timeLimit: { ms: 30, source: '--max-duration' },
+      interruptGraceMs: 10,
+    });
+    expect(collected.results.map((result) => [result.test.title, result.status, result.skip])).toEqual([
+      ['b', 'skipped', skip],
+      ['c', 'skipped', skip],
+      ['hangs', 'skipped', skip],
+    ]);
+    expect(fleet.controlMessages).toEqual(['interrupt']);
+    expect(collected.timeLimits).toBe(1);
+    expect(collected.failureLimits).toEqual([]);
+    expect(fleet.interruptSkips).toEqual([skip]);
+    expect(fleet.unitsByWorker.flat()).toHaveLength(1);
+    expect(collected.runErrors.map((runError) => [runError.error.code, runError.error.message])).toEqual([
+      ['RUN_TIMEOUT', 'run stopped at its time limit of 30 ms (--max-duration): the running tests end as interrupted, the rest are skipped'],
+    ]);
+  });
+
+  it('lets a run that ends within the time finish whole', async () => {
+    const target = makeTarget('web', 0);
+    const pairs = ['a', 'b'].map((name) => makePair(makeTest(`tests/${name}.e2e.ts`, name), target));
+    const fleet = new FakeFleet();
+    const collected = await run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 1,
+      timeLimit: { ms: 60_000, source: 'maxDuration' },
+    });
+    expect(collected.results.map((result) => result.status)).toEqual(['passed', 'passed']);
+    expect(collected.timeLimits).toBe(0);
+    expect(fleet.interruptSkips).toEqual([]);
+    expect(collected.runErrors).toEqual([]);
+  });
+
+  it('leaves a run the failure limit already stopped to that limit', async () => {
+    const target = makeTarget('web', 0);
+    const pairs = ['fails', 'hangs'].map((name) => makePair(makeTest(`tests/${name}.e2e.ts`, name), target));
+    const fleet = new FakeFleet({ status: { [pairs[0]!.test.id]: 'failed' }, hangOn: ['file::web::tests/hangs.e2e.ts'] });
+    const collected = await run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 2,
+      maxFailures: 1,
+      timeLimit: { ms: 200, source: 'maxDuration' },
+      interruptGraceMs: 1_000,
+    });
+    expect(collected.failureLimits).toEqual([[1, 1]]);
+    expect(collected.timeLimits).toBe(0);
+    expect(collected.runErrors).toEqual([]);
+    expect(collected.results.map((result) => [result.test.title, result.skip?.cause])).toEqual([
+      ['fails', undefined],
+      ['hangs', 'failure-limit'],
+    ]);
+  });
+});
+
+describe('scheduler disposal', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(['retirement', 'final drain'] as const)('lets a worker finish a 12 s disposal within its configured budget during %s', async (path) => {
+    const target = makeTarget('web', 0);
+    const pairs = (path === 'retirement' ? ['first', 'next'] : ['first']).map((name) =>
+      makePair(makeTest(`tests/${name}.e2e.ts`, name), target),
+    );
+    const fleet = new FakeFleet({
+      disposal: { delayMs: 12_000 },
+      ...(path === 'retirement' ? { status: { [pairs[0]!.test.id]: 'failed' as const } } : {}),
+    });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 1, forceGraceMs: 31_000,
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual([]);
+    expect(fleet.live).toBe(1);
+    expect(fleet.spawned).toHaveLength(1);
+
+    await vi.runAllTimersAsync();
+    const collected = await running;
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual(path === 'retirement' ? [0, 1] : [0]);
+    expect(fleet.live).toBe(0);
+    expect(collected.results.map((result) => result.status)).toEqual(path === 'retirement' ? ['failed', 'passed'] : ['passed']);
+    expect(collected.runErrors).toEqual([]);
+  });
+
+  it('reports cleanup errors from a worker that finishes disposal after 12 s', async () => {
+    const target = makeTarget('web', 0);
+    const pair = makePair(makeTest('tests/a.e2e.ts', 'a'), target);
+    const cleanupError = { error: serializeError(classifyError(new Error('engine disposal failed'))) };
+    const fleet = new FakeFleet({ disposal: { delayMs: 12_000, runErrors: [cleanupError] } });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs: [pair] }]), makeCollection([pair.test.file], [pair]), fleet, {
+      workers: 1, forceGraceMs: 31_000,
+    });
+    await vi.runAllTimersAsync();
+    const collected = await running;
+
+    expect(collected.runErrors).toEqual([cleanupError]);
+    expect(collected.results.map((result) => result.status)).toEqual(['passed']);
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual([0]);
+  });
+
+  it('kills a worker whose disposal outlasts its configured shutdown budget', async () => {
+    const target = makeTarget('web', 0);
+    const pair = makePair(makeTest('tests/a.e2e.ts', 'a'), target);
+    const fleet = new FakeFleet({ disposal: { delayMs: 12_000 } });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs: [pair] }]), makeCollection([pair.test.file], [pair]), fleet, {
+      workers: 1, forceGraceMs: 7_000,
+    });
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(fleet.live).toBe(1);
+    expect(fleet.killed).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fleet.killed).toEqual([0]);
+    expect(fleet.live).toBe(0);
+    expect(fleet.completedDisposals).toEqual([]);
+    await running;
+  });
+});
+
 describe('scheduler capacity', () => {
   it('never exceeds the worker cap, counting discarded workers until they exit', async () => {
     const target = makeTarget('web', 0);
@@ -541,6 +714,46 @@ describe('scheduler capacity', () => {
     expect(fleet.spawned.length).toBeGreaterThan(2);
     expect(new Set(slots)).toEqual(new Set([0, 1]));
     expect(slots[0]).toBe(0);
+  });
+
+  it('grants reuse to a replacement and revokes it from a live retired worker at final drain', async () => {
+    const target = makeTarget('ios', 0);
+    const pair = makePair(makeTest('tests/a.e2e.ts', 'a'), target);
+    const fleet = new FakeFleet({ status: { [pair.test.id]: 'failed' }, shutdownUntil: 'final' });
+    const collected = await run(makeSelection([{ target, pairs: [pair] }]), makeCollection([pair.test.file], [pair]), fleet, { workers: 1 });
+    expect(collected.results.map((result) => result.status)).toEqual(['failed']);
+    expect(fleet.controls).toEqual([
+      { worker: 0, message: { type: 'shutdown', preserveResources: true } },
+      { worker: 0, message: { type: 'shutdown' } },
+    ]);
+  });
+
+  it('forces a live retired worker whose reusable disposal is still pending', async () => {
+    const target = makeTarget('ios', 0);
+    const pairs = ['a', 'b'].map((name) => makePair(makeTest(`tests/${name}.e2e.ts`, name), target));
+    const interrupt = new AbortController();
+    const force = new AbortController();
+    const fleet = new FakeFleet({
+      status: { [pairs[0]!.test.id]: 'failed' },
+      shutdownUntil: 'terminate',
+      onControl: (message) => {
+        if (message.type === 'shutdown') {
+          interrupt.abort();
+          force.abort();
+        }
+      },
+    });
+    const collected = await run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 1, interruptSignal: interrupt.signal, forceSignal: force.signal,
+    });
+    expect(collected.results.map((result) => result.status)).toEqual(['failed', 'skipped']);
+    expect(fleet.controls).toEqual([
+      { worker: 0, message: { type: 'shutdown', preserveResources: true } },
+      { worker: 0, message: { type: 'interrupt' } },
+      { worker: 0, message: { type: 'shutdown' } },
+      { worker: 0, message: { type: 'terminate' } },
+      { worker: 0, message: { type: 'shutdown' } },
+    ]);
   });
 
   it('caps a target at the workers its engine declares and hands the rest of the run cap to other targets', async () => {
@@ -723,22 +936,20 @@ function memberRecord(pairs: readonly TestTargetPair[], attemptIndex: number, me
 }
 
 /** A finished group attempt whose members ended with `statuses`. */
-function groupRun(pairs: readonly TestTargetPair[], index: number, statuses: readonly ('passed' | 'failed')[]): SerialAttemptRun {
+function groupRun(pairs: readonly TestTargetPair[], index: number, statuses: readonly ('passed' | 'failed')[]): SerialAttemptRecord {
   const failed = statuses.includes('failed');
   return {
-    reachedMembers: true,
-    record: {
-      id: `group-attempt-${index}`,
-      index,
-      status: failed ? 'failed' : 'passed',
-      startedAt: '2026-01-01T00:00:00.000Z',
-      durationMs: 5,
-      members: statuses.map((status, memberIndex) => memberRecord(pairs, index, memberIndex, status)),
-      artifacts: [],
-      ...(failed ? { error: FAILED_ATTEMPT.error! } : {}),
-      secondaryErrors: [],
-      cleanup: 'complete',
-    },
+    id: `group-attempt-${index}`,
+    cutRetry: false,
+    index,
+    status: failed ? 'failed' : 'passed',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    durationMs: 5,
+    members: statuses.map((status, memberIndex) => memberRecord(pairs, index, memberIndex, status)),
+    artifacts: [],
+    ...(failed ? { error: FAILED_ATTEMPT.error! } : {}),
+    secondaryErrors: [],
+    cleanup: 'complete',
   };
 }
 
@@ -1072,7 +1283,7 @@ describe('scheduler fault handling', () => {
 
     expect(collected.serialGroups).toHaveLength(1);
     expect(collected.serialGroups[0]!.status).toBe(verdict);
-    expect(collected.serialGroups[0]!.attempts).toEqual(runs.map((entry) => entry.record));
+    expect(collected.serialGroups[0]!.attempts).toEqual(runs);
     expect(collected.results.map((result) => result.status)).toEqual(results);
   });
 

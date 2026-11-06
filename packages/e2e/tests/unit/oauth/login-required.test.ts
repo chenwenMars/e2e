@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { chatgpt } from '../../../src/oauth/chatgpt.ts';
 import { grok } from '../../../src/oauth/grok.ts';
 import { opencodeConsole } from '../../../src/oauth/opencode-console.ts';
-import { json, useServers, useVendor } from './helpers/server.ts';
+import { json, useServers } from '../../helpers/recording-server.ts';
+import { useVendor } from './helpers/vendor.ts';
 import { onFakeTimeouts } from './helpers/time.ts';
 
 const serve = useServers(afterEach);
@@ -38,7 +39,7 @@ describe.each([
     model: () => opencodeConsole('deepseek-v4.1-flash'),
     id: 'opencode-console',
     tokenPath: '/console/auth/device/token',
-    message: 'OpenCode Console token request failed (401: invalid_grant); run `npx e2e login opencode-console`',
+    message: 'OpenCode Console token request failed (401: invalid_grant); run `npx e2e login opencode-console` or set OPENCODE_API_KEY',
   },
 ])('$constructor()', ({ model, id, tokenPath, message }) => {
   it('fails with LOGIN_REQUIRED naming the login command when the token endpoint rejects the refresh', async () => {

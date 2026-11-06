@@ -1,7 +1,7 @@
 /** Anchors: the step's delta as relocatable descriptors, both what appeared and what vanished. */
 
 import { describe, expect, it } from 'vitest';
-import { deltaEvidenced, deltaHolds, describeDelta } from '../../src/cache/anchors.ts';
+import { deltaEvidenced, deltaMismatch, describeDelta } from '../../src/cache/anchors.ts';
 import { MAX_TRACE_ANCHORS } from '../../src/cache/trace.ts';
 import type { RedactedNode } from '../../src/agent/observation.ts';
 import type { SemanticNode } from '../../src/engine/surface.ts';
@@ -24,6 +24,10 @@ const emptyMarker = node('m0', { role: 'status', name: 'Marker', text: 'empty' }
 const savedMarker = node('m1', { role: 'status', name: 'Marker', text: 'saved' });
 const row = node('r', { role: 'link', name: 'PB-Twin-Alpha', selector: 'a[href="/pb/1"]' });
 const toast = node('t', { text: 'Playbook saved' });
+// A flow editor's node: a box only a test id minted per node identifies.
+const mintedA = 'rf__node-3f9c2a1b-7d4e-4c1a-9b2e-0a1b2c3d4e5f';
+const mintedB = 'rf__node-8e21d0c4-5b6a-4f3e-8d2c-1a0b9c8d7e6f';
+const canvasNode = (id: string, testId: string) => node(id, { role: 'box', testId });
 
 describe('describeDelta', () => {
   it('keeps what appeared and what vanished, compared by descriptor rather than by id', () => {
@@ -144,6 +148,37 @@ describe('describeDelta', () => {
     expect(appeared(none, nodes([idOnly]))).toEqual([{ role: 'generic', testId: 'spinner' }]);
   });
 
+  describe('a node only a minted test id identifies', () => {
+    const added = node('s', { role: 'status', name: 'Node added' });
+
+    it('is skipped while a stable anchor remains, whatever minted the id', () => {
+      for (const testId of [mintedA, 'rf__node-cjld2cjxh0000qzrmn831i7rn', 'rf__node-652f1c3e9b1e8a0012345678', 'rf__node-1697040000000']) {
+        expect(appeared(nodes([heading]), nodes([heading, canvasNode('n', testId), added]))).toEqual([{ role: 'status', name: 'Node added' }]);
+      }
+    });
+
+    it('is kept when nothing stable appeared, for the replay to check by its shape', () => {
+      expect(appeared(nodes([heading]), nodes([heading, canvasNode('n', mintedA)]))).toEqual([{ role: 'box', testId: mintedA }]);
+    });
+
+    it('is no change when it re-rendered under a new id, or joined others of its shape', () => {
+      expect(describeDelta(nodes([heading, canvasNode('a', mintedA)]), nodes([heading, canvasNode('b', mintedB), added]), false)).toEqual({
+        appeared: [{ role: 'status', name: 'Node added' }],
+        gone: [],
+      });
+      expect(describeDelta(nodes([heading, canvasNode('a', mintedA)]), nodes([heading, canvasNode('a', mintedA), canvasNode('b', mintedB)]), false)).toEqual({
+        appeared: [],
+        gone: [],
+      });
+    });
+
+    it('leaves a test id that only numbers its node, and a named node, as they were', () => {
+      const numbered = ['todo-item-12', 'rf__node-dndnode_0', 'product-trail-mix-1000', 'otp-input-5'].map((testId, index) => canvasNode(`i${String(index)}`, testId));
+      const named = node('d', { role: 'button', name: 'Delete', testId: mintedA });
+      expect(appeared(nodes([heading]), nodes([heading, ...numbered, named, added]))).toHaveLength(6);
+    });
+  });
+
   it('skips text that cannot read the same twice while a stable anchor remains', () => {
     const end = nodes([
       heading,
@@ -213,7 +248,7 @@ describe('describeDelta', () => {
     const recorded = { endAnchors: delta.appeared, goneAnchors: delta.gone };
 
     it('holds on the screen it was recorded on, so a faithful replay passes', () => {
-      expect(deltaHolds(recorded, end, start)).toBe(true);
+      expect(deltaMismatch(recorded, end, start)).toBeUndefined();
     });
 
     it('records no vanished label that a node left on screen still reads as', () => {
@@ -224,8 +259,8 @@ describe('describeDelta', () => {
     });
 
     it('still fails a replay whose pick left the radios on screen', () => {
-      expect(deltaHolds(recorded, start, start)).toBe(false);
-      expect(deltaHolds(recorded, nodes([heading, ...picker, ...summary, deliveryState('Express')]), start)).toBe(false);
+      expect(deltaMismatch(recorded, start, start)).toBeDefined();
+      expect(deltaMismatch(recorded, nodes([heading, ...picker, ...summary, deliveryState('Express')]), start)).toBeDefined();
     });
   });
 
@@ -234,10 +269,10 @@ describe('describeDelta', () => {
   });
 });
 
-describe('deltaHolds', () => {
+describe('deltaMismatch', () => {
   const savedAnchor = { role: 'status', name: 'Marker', text: 'saved' };
   const holds = (endAnchors: object[], live: SemanticNode[], start: SemanticNode[] = [], goneAnchors: object[] = []) =>
-    deltaHolds({ endAnchors, goneAnchors }, nodes(live), nodes(start));
+    deltaMismatch({ endAnchors, goneAnchors }, nodes(live), nodes(start)) === undefined;
 
   it('requires every recorded field, text included, unlike target relocation', () => {
     // Same named node, different text: the effect is missing, so the anchor is.
@@ -284,11 +319,66 @@ describe('deltaHolds', () => {
     expect(holds([{ role: 'alert', text: 'Session expires at 17:42' }], [node('x', { role: 'alert', text: 'Session expired' })])).toBe(false);
   });
 
+  it('reads an ISO 8601 instant in an alert as one placeholder, whatever precision or offset it has', () => {
+    const saved = (id: string, at: string) => node(id, { role: 'alert', text: `Saved at ${at}` });
+    const recorded = [{ role: 'alert', text: 'Saved at 2026-10-24T15:41:27.955Z' }];
+    expect(holds(recorded, [saved('a', '2026-10-24T15:45:03.120Z')])).toBe(true);
+    expect(holds(recorded, [saved('a', '2026-10-24T15:30:00Z')])).toBe(true);
+    expect(holds(recorded, [saved('a', '2026-10-24T15:30+02:00')])).toBe(true);
+    expect(holds([{ role: 'alert', text: 'Saved at 2026-10-24T15:30:00Z' }], [saved('a', '2026-10-24T15:30:00.250Z')])).toBe(true);
+    expect(holds(recorded, [node('x', { role: 'alert', text: 'Save failed' })])).toBe(false);
+  });
+
+  it('reads a date with an ordinal suffix in an alert as a placeholder, in either order', () => {
+    const due = (id: string, text: string) => node(id, { role: 'alert', text });
+    expect(holds([{ role: 'alert', text: 'Due October 26th' }], [due('a', 'Due October 3rd')])).toBe(true);
+    expect(holds([{ role: 'alert', text: 'Due October 3rd, 2026' }], [due('a', 'Due October 4th, 2027')])).toBe(true);
+    expect(holds([{ role: 'alert', text: 'Due 3rd October' }], [due('a', 'Due 22nd October')])).toBe(true);
+    expect(holds([{ role: 'alert', text: 'Due October 26th' }], [due('a', 'Overdue')])).toBe(false);
+  });
+
+  it('skips a date with an ordinal suffix as volatile when the step has a stable result', () => {
+    const before = nodes([heading]);
+    const after = nodes([heading, node('s', { role: 'status', text: 'Task created' }), node('d', { text: 'Due October 26th' })]);
+    expect(describeDelta(before, after, false)).toEqual({ appeared: [{ role: 'status', text: 'Task created' }], gone: [] });
+  });
+
   it('forgives a churned test id when the other fields still identify the node', () => {
     const anchor = { role: 'link', name: 'PB-Twin-Alpha', testId: 'row-1a2b' };
     const rerendered = node('r2', { role: 'link', name: 'PB-Twin-Alpha', testId: 'row-9f8e' });
     expect(holds([anchor], [rerendered])).toBe(true);
     expect(holds([{ role: 'listitem', testId: 'row-1a2b' }], [rerendered])).toBe(false);
+  });
+
+  it('reads a minted test id by its shape when nothing else identifies the node', () => {
+    const anchor = { role: 'box', testId: mintedA };
+    expect(holds([anchor], [canvasNode('b', mintedB)])).toBe(true);
+    expect(holds([anchor], [canvasNode('b', 'rf__edge-8e21d0c4-5b6a-4f3e-8d2c-1a0b9c8d7e6f')])).toBe(false);
+    expect(holds([anchor], [node('b', { role: 'button', name: 'Delete', testId: mintedB })])).toBe(false);
+    // A vanished one stays exact: an older entry recorded it beside siblings of its shape.
+    expect(holds([], [heading, canvasNode('b', mintedB)], [heading, canvasNode('a', mintedA)], [anchor])).toBe(true);
+    expect(holds([], [heading, canvasNode('a', mintedA)], [heading, canvasNode('a', mintedA)], [anchor])).toBe(false);
+  });
+});
+
+describe('deltaMismatch failures', () => {
+  const savedAnchor = { role: 'status', name: 'Marker', text: 'saved' };
+  const itemA = node('a', { role: 'listitem', name: 'Item A' });
+
+  it('names each anchor that failed, by the way it failed', () => {
+    const rowAnchor = { role: 'link', name: 'PB-Twin-Alpha' };
+    const declined = node('d', { role: 'alert', text: 'Card declined' });
+    expect(
+      deltaMismatch(
+        { endAnchors: [savedAnchor, rowAnchor], goneAnchors: [{ role: 'listitem', name: 'Item A' }] },
+        nodes([heading, row, itemA, declined]),
+        nodes([heading, itemA]),
+      ),
+    ).toEqual({
+      missing: [savedAnchor],
+      present: [{ role: 'listitem', name: 'Item A' }],
+      unrecordedAlerts: [{ role: 'alert', text: 'Card declined' }],
+    });
   });
 });
 
@@ -304,6 +394,12 @@ describe('deltaEvidenced', () => {
 
   it('fails when the outcome already showed before the first action, a submit that did nothing', () => {
     expect(deltaEvidenced(delta, nodes([heading, submitted]), [])).toBe(false);
+  });
+
+  it('counts a node read by the shape of its minted test id only when no node of that shape was there before', () => {
+    const added = { endAnchors: [{ role: 'box', testId: mintedA }] };
+    expect(deltaEvidenced(added, nodes([heading]), [])).toBe(true);
+    expect(deltaEvidenced(added, nodes([heading, canvasNode('b', mintedB)]), [])).toBe(false);
   });
 
   it('fails for a recording with no delta unless the last action moved the route, leaving no baseline on the end route', () => {

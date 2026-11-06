@@ -23,10 +23,13 @@ import { asBrowserProvider } from './provider.ts';
 import { PlaywrightSurface, type WebOptions } from './surface.ts';
 import { createBrowserFixture } from './browser.ts';
 import { validateInitScripts } from './init-scripts.ts';
+import { MEDIA_KEYS, mediaProblem } from './media.ts';
 import { FIELD_VALUE_CONTROL, headerProblem } from './protected-app.ts';
+import { validatePermissions } from './permissions.ts';
+import type { BrowserName } from './browser-connection.ts';
 
 /** App fields only a device target reads. */
-const NATIVE_APP_KEYS = ['bundleId', 'appPath', 'launchArguments', 'permissions'] as const;
+const NATIVE_APP_KEYS = ['bundleId', 'appPath', 'launchArguments'] as const;
 
 /** Creates one Playwright engine: one browser per worker, one context per attempt. */
 const surfaces = new WeakMap<EngineHandle, PlaywrightSurface>();
@@ -72,7 +75,7 @@ export function web(options: WebOptions = {}): EngineHandle {
       `web({ browser, connect }) names two browser sources; browser provider "${provider.name}" leases its own browsers, so remove connect`,
     );
   }
-  if (isRecord(options.connect)) rejectUnknownKeys('web({ connect })', options.connect, ['cdpEndpoint', 'reconnectEndpoint']);
+  if (options.connect !== undefined) validateConnect(options.connect);
   if (options.connect !== undefined && typeof options.browser === 'string' && options.browser !== 'chromium') {
     throw new ConfigurationError(
       'INVALID_CONFIG',
@@ -85,12 +88,10 @@ export function web(options: WebOptions = {}): EngineHandle {
   if (options.userAgent !== undefined) validateUserAgent(options.userAgent, options.headers);
   if (options.locale !== undefined) validateLocale(options.locale, options.headers);
   if (options.timezoneId !== undefined) validateTimezoneId(options.timezoneId);
+  validateMedia(options);
   if (options.initScripts !== undefined) validateInitScripts(options.initScripts);
   if (options.screencast !== undefined) validateScreencast(options.screencast);
   const reconnecting = options.connect?.reconnectEndpoint !== undefined;
-  if (reconnecting && typeof options.connect?.reconnectEndpoint !== 'function') {
-    throw new ConfigurationError('INVALID_CONFIG', 'connect.reconnectEndpoint must be a function');
-  }
   // A per-attempt lease rides the same persistent context as `reconnectEndpoint`, with the same limits.
   const recoverable = reconnecting || provider?.scope === 'attempt';
   const mode = provider === undefined ? 'connect.reconnectEndpoint' : `browser provider "${provider.name}" with scope "attempt"`;
@@ -109,6 +110,7 @@ export function web(options: WebOptions = {}): EngineHandle {
     platform: 'web',
     prepare: (info) => surface.prepare(info),
     finish: (info) => surface.finish(info),
+    doctor: (info) => surface.doctor(info),
     init: (info) => surface.init(info),
     startAttempt: (context) => surface.startAttempt(context),
     settleAttempt: (context) => surface.settleAttempt(context),
@@ -128,18 +130,18 @@ export function web(options: WebOptions = {}): EngineHandle {
       type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
       press: (key, operation) => surface.pressKey(key, operation),
     },
-    validateApp,
+    // A provider or a CDP attach speaks CDP, so it takes Chromium's names.
+    validateApp: (app, info) => validateApp(app, info, typeof options.browser === 'string' ? options.browser : 'chromium'),
     ...(isSecret(options.basicAuth?.password) ? { secrets: [options.basicAuth.password] } : {}),
     session: {
       open: (url, operation) => surface.open(url, operation),
       back: (operation) => surface.back(operation),
+      resize: (size, operation) => surface.resize(size, operation),
       restart: (operation) => surface.restart(operation),
       reset: recoverable ? () => Promise.reject(persistentContextLimit('app.clearState()', mode, provider !== undefined)) : (operation) => surface.reset(operation),
     },
     artifacts: {
       screenshot: (label, operation) => surface.screenshot(label, operation),
-      startTrace: (operation) => surface.startTrace(operation),
-      stopTrace: (operation) => surface.stopTrace(operation),
       startVideo: (operation) => surface.startVideo(operation),
       stopVideo: (operation) => surface.stopVideo(operation),
     },
@@ -171,6 +173,8 @@ const WEB_OPTION_KEYS: readonly string[] = Object.keys({
   userAgent: true,
   locale: true,
   timezoneId: true,
+  colorScheme: true,
+  reducedMotion: true,
   initScripts: true,
 } satisfies Record<keyof WebOptions, true>);
 
@@ -193,6 +197,43 @@ function persistentContextLimit(what: string, mode: string, leased: boolean): Co
 /** True for a plain object; the shape both options take. Config runs as JavaScript, so the types alone are no guard. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Names a value's kind for a config error without echoing it: a CDP URL can carry a session token. */
+function kindOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const type = typeof value;
+  return type === 'object' ? 'an object' : `a ${type}`;
+}
+
+/**
+ * `cdpEndpoint` is the one resolver every connect mode needs: the shared
+ * browser's source at init, and the fresh browser each persistent attempt
+ * provisions. Without it the attach would call an undefined resolver, so a
+ * config missing it fails here, at load, instead of at worker init or on
+ * every attempt with `ENGINE_FAILURE: ... resolve is not a function`.
+ */
+function validateConnect(connect: unknown): void {
+  if (!isRecord(connect)) {
+    throw new ConfigurationError('INVALID_CONFIG', `web({ connect }) must be a plain object: { cdpEndpoint, reconnectEndpoint? }, got ${kindOf(connect)}`);
+  }
+  rejectUnknownKeys('web({ connect })', connect, ['cdpEndpoint', 'reconnectEndpoint']);
+  const { cdpEndpoint, reconnectEndpoint } = connect;
+  if (cdpEndpoint === undefined) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `web({ connect }) requires cdpEndpoint, the resolver that provisions the browser: (signal) => url${
+        reconnectEndpoint === undefined ? '' : '; reconnectEndpoint only reconnects to the browser cdpEndpoint provisioned'
+      }`,
+    );
+  }
+  if (typeof cdpEndpoint !== 'function') {
+    throw new ConfigurationError('INVALID_CONFIG', `web({ connect: { cdpEndpoint } }) must be a resolver function (signal) => url, got ${kindOf(cdpEndpoint)}`);
+  }
+  if (reconnectEndpoint !== undefined && typeof reconnectEndpoint !== 'function') {
+    throw new ConfigurationError('INVALID_CONFIG', `web({ connect: { reconnectEndpoint } }) must be a resolver function (signal) => url, got ${kindOf(reconnectEndpoint)}`);
+  }
 }
 
 /**
@@ -287,6 +328,18 @@ function validateTimezoneId(timezoneId: unknown): void {
 }
 
 /**
+ * Refuses a media feature value the browser does not emulate, at config load
+ * rather than at the first page. A persistent context takes these too: they
+ * are set on each page, not only on a context the engine creates.
+ */
+function validateMedia(options: WebOptions): void {
+  for (const key of MEDIA_KEYS) {
+    const problem = mediaProblem((name) => `web({ ${name} })`, key, options[key]);
+    if (problem !== undefined) throw new ConfigurationError('INVALID_CONFIG', problem);
+  }
+}
+
+/**
  * True when `timeZone` is an IANA name `Intl` resolves, spelled with its own
  * case. Node also takes an offset (`+01:00`) and any casing (`europe/berlin`),
  * both of which Chromium refuses; an alias resolving to another name
@@ -356,9 +409,9 @@ function validateTestIdAttribute(attribute: unknown): void {
 /**
  * A browser target opens a URL: without `app.url` there is nothing for
  * `app.open()` to open, and the fields that describe an installed device app
- * have nothing to act on here.
+ * have nothing to act on here. `permissions` must be ones `browser` grants.
  */
-function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckInfo): void {
+function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckInfo, browser: BrowserName): void {
   for (const key of NATIVE_APP_KEYS) {
     if (app[key] !== undefined) {
       throw new ConfigurationError(
@@ -373,6 +426,7 @@ function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckIn
       `target "${targetName}" needs app.url: a web() target opens the app at a URL, targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }]`,
     );
   }
+  if (app.permissions !== undefined) validatePermissions(targetName, browser, app.permissions);
 }
 
 /** This package's published version, read through require resolution. */

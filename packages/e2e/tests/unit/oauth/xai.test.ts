@@ -4,7 +4,8 @@ import { createOAuthFetch } from '../../../src/oauth/fetch.ts';
 import { createXaiProvider } from '../../../src/oauth/providers/xai.ts';
 import { MemoryCredentialStore } from './helpers/store.ts';
 import { grok } from '../../../src/oauth/grok.ts';
-import { fakeJwt, json, useServers, useVendor, type Received } from './helpers/server.ts';
+import { json, useServers, type Received } from '../../helpers/recording-server.ts';
+import { fakeJwt, useVendor } from './helpers/vendor.ts';
 import { onFakeTimeouts } from './helpers/time.ts';
 
 const serve = useServers(afterEach);
@@ -104,5 +105,12 @@ describe('SpaceXAI login', () => {
       { id: 'grok-4', detail: 'vision; also grok-4-latest' },
       { id: 'grok-4-fast' },
     ]);
+  });
+
+  it('lists past an entry it cannot read, and fails on a list that is not one', async () => {
+    const list = (body: string) => createXaiProvider().models!(async () => new Response(body));
+    expect(await list(JSON.stringify({ models: [null, { id: 'grok-4', aliases: 'grok', input_modalities: ['image'] }] }))).toEqual([{ id: 'grok-4', detail: 'vision' }]);
+    await expect(list(JSON.stringify({ models: 'grok-4' }))).rejects.toMatchObject({ code: 'FLOW_FAILED', message: 'the SpaceXAI model list is malformed' });
+    await expect(list('<html>')).rejects.toMatchObject({ code: 'FLOW_FAILED', message: 'the SpaceXAI model list is not JSON' });
   });
 });

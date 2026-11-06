@@ -4,6 +4,8 @@
  * each at its own indent, so nothing here knows where the line lands.
  */
 
+import type { StepRecord } from '../run/steps.ts';
+import { modelLabel } from '../config/agent.ts';
 import { sanitizeText, truncateUtf8 } from '../internal/errors.ts';
 import { collapseText } from '../internal/text.ts';
 import {
@@ -16,10 +18,12 @@ import {
   visibleWidth,
   type Colors,
 } from './format.ts';
-import type { FinishedStep, ShownEvent } from './list-model.ts';
+import type { ConfiguredModel, FinishedStep, ReplayNotice, ShownEvent } from './list-model.ts';
 
 /** Step labels stay one glanceable line; the report holds the full text. */
 const MAX_STEP_LABEL_COLUMNS = 72;
+/** Recording model labels stay on one bounded terminal line. */
+const MAX_RECORDED_MODEL_COLUMNS = 120;
 /** A clipped step line keeps at least this much of its label, however narrow the terminal. */
 const MIN_STEP_LABEL_COLUMNS = 24;
 /** Columns a step line spends around its label: the quotes and the space before the tail. */
@@ -36,7 +40,7 @@ const REASONING_SEPARATOR_WIDTH = 3;
 const MIN_REASONING_COLUMNS = 24;
 
 /** One-line, quoted step label; `maxColumns` clips it further to fit a row. */
-export function stepLabel(label: string, maxColumns = MAX_STEP_LABEL_COLUMNS): string {
+export function quotedLabel(label: string, maxColumns = MAX_STEP_LABEL_COLUMNS): string {
   const max = Math.min(MAX_STEP_LABEL_COLUMNS, Math.max(MIN_STEP_LABEL_COLUMNS, maxColumns));
   return `"${fitColumns(collapseText(label), max)}"`;
 }
@@ -63,7 +67,31 @@ export function stepLine(pc: Colors, step: FinishedStep, options: StepLineOption
     options.maxWidth === undefined
       ? undefined
       : options.maxWidth - visibleWidth(head) - visibleWidth(tail) - LABEL_CHROME;
-  return `${head}${stepLabel(step.label, room)} ${tail}`;
+  return `${head}${quotedLabel(step.label, room)} ${tail}`;
+}
+
+/** Recording mismatches under one test, deduplicated across its attempts. */
+export function replayNotices(attempts: readonly (readonly StepRecord[])[], configured: ConfiguredModel | undefined): ReplayNotice[] {
+  if (configured === undefined) return [];
+  const notices = new Map<string, ReplayNotice>();
+  for (const steps of attempts) {
+    for (const step of steps) {
+      if (step.agent !== undefined && step.agent !== configured.agent) continue;
+      const source = step.cache?.recordedBy;
+      if (source === undefined || step.cache?.replayedActions === 0) continue;
+      const label = modelLabel({ provider: source.provider, id: source.model });
+      if (label === configured.label) continue;
+      const key = JSON.stringify([step.cache?.entry ?? [step.index, step.api, step.label], source.provider, source.model]);
+      notices.set(key, { api: step.api, label: step.label, source });
+    }
+  }
+  return [...notices.values()];
+}
+
+/** A recording mismatch under its test in the file block. */
+export function replayLine(pc: Colors, notice: ReplayNotice): string {
+  const label = modelLabel({ provider: notice.source.provider, id: notice.source.model });
+  return `${pc.dim(notice.api)} ${quotedLabel(notice.label)} ${pc.dim(`replayed · recorded with ${fitColumns(collapseText(label), MAX_RECORDED_MODEL_COLUMNS)}`)}`;
 }
 
 /**

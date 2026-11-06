@@ -20,15 +20,14 @@
  * (`deltaEvidenced`), so a status that already read "Submitted" before a
  * submit that did nothing is no proof. An alert the replay raised that the
  * recording never saw is an outcome the recording did not have, whatever
- * else matched (`deltaHolds`).
+ * else matched (`deltaMismatch`).
  */
 
 import type { RedactedNode } from '../agent/observation.ts';
 import { describeTarget } from '../agent/actions.ts';
-import { collapseText } from '../internal/text.ts';
-import { descriptorTiers, fieldsEqual, type DescriptorField } from './relocate.ts';
+import { bound, collapseText } from '../internal/text.ts';
+import { descriptorTiers, fieldsEqual, tierView, type DescriptorField, type DescriptorTier } from './relocate.ts';
 import {
-  bound,
   MAX_TRACE_ANCHORS,
   MAX_TRACE_DESCRIPTOR_CHARS,
   TRACE_ANCHOR_STATES,
@@ -87,7 +86,7 @@ const ALERT_ROLES: ReadonlySet<string> = new Set(['alert', 'alertdialog']);
  * that screen's data rather than the step's result (`COUNT_TEXT`).
  *
  * A node counts as gone only when no end node matches its anchor the way
- * `deltaHolds` checks one, on the recorded fields alone: a radio label
+ * `deltaMismatch` checks one, on the recorded fields alone: a radio label
  * "Express" the pick replaced with a status reading "Express" vanished, but
  * an anchor of that text would still match the status, and the recording
  * would fail its own check on every replay.
@@ -140,7 +139,7 @@ function deltaSide(
 
 /**
  * Text that cannot read the same on the next run: a minted key prefix or id,
- * a countdown or age, a date, a clock time, a timing in milliseconds. An
+ * a countdown or age, a date, an ISO 8601 instant, a clock time, a timing in milliseconds. An
  * anchor made of it hands every replay off, so it is skipped while some
  * stable anchor exists; with nothing else, the volatile ones stay, because a
  * replay that always hands off is still safer than one that passes on
@@ -148,10 +147,11 @@ function deltaSide(
  * as placeholders (`alertShape`).
  */
 const VOLATILE_TEXT: readonly RegExp[] = [
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?/,
   /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{12,}\b/,
   /\b\d+\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?|weeks?|months?|years?)\b/i,
-  /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/i,
-  /\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s+\d{4})?\b/i,
+  /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b/i,
+  /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s+\d{4})?\b/i,
   /\b\d{4}-\d{2}-\d{2}\b/,
   /\b\d{1,2}:\d{2}(?::\d{2})?\b/,
 ];
@@ -182,10 +182,11 @@ function isBareNumber(anchor: TraceTargetDescriptor): boolean {
   return label !== undefined && /^\d+$/.test(label) && anchor.testId === undefined && (anchor.name === undefined || anchor.text === undefined || anchor.name === anchor.text);
 }
 
-/** Whether an anchor's text cannot read the same on the next run; `countIsData` decides an anchor holding a count. */
+/** Whether an anchor's text, or a minted test id that is all it has, cannot read the same on the next run; `countIsData` decides an anchor holding a count. */
 function isVolatileAnchor(anchor: TraceTargetDescriptor, countIsData: (anchor: TraceTargetDescriptor) => boolean): boolean {
   const texts = [anchor.text, anchor.name, anchor.value].filter((value): value is string => value !== undefined);
-  if (isBareNumber(anchor) || texts.some((value) => VOLATILE_TEXT.some((pattern) => pattern.test(value)))) return true;
+  if (isBareNumber(anchor) || descriptorTiers(anchor).some((tier) => tier.kind === 'shape')) return true;
+  if (texts.some((value) => VOLATILE_TEXT.some((pattern) => pattern.test(value)))) return true;
   return texts.some((value) => COUNT_TEXT.some((pattern) => pattern.test(value))) && countIsData(anchor);
 }
 
@@ -218,38 +219,54 @@ function alertShape(anchor: TraceTargetDescriptor): TraceTargetDescriptor {
   };
 }
 
+/** What kept a recorded end state from holding on a fresh observation (`deltaMismatch`), anchor by anchor. */
+export interface DeltaMismatch {
+  /** Appeared anchors no node matches. */
+  readonly missing: readonly TraceTargetDescriptor[];
+  /** Gone anchors some node still matches. */
+  readonly present: readonly TraceTargetDescriptor[];
+  /** Alerts on screen that were not there before and the recording never saw appear. */
+  readonly unrecordedAlerts: readonly TraceTargetDescriptor[];
+}
+
 /**
- * Whether the recorded end state holds on a fresh observation: every
- * appeared anchor present (some tier of it, `descriptorTiers`, so a test id
+ * The anchors that keep the recorded end state from holding on a fresh
+ * observation, or undefined when it holds. It holds with every appeared
+ * anchor present (some tier of it, `descriptorTiers`, so a test id
  * that churned per render is forgiven when the remaining fields still
  * identify the node, equal on every anchor field and state), no gone anchor
  * present, and no alert on screen that was not on `beforeNodes` and is not
  * one the recording saw appear. Two nodes matching one anchor are the effect
- * twice over, not an ambiguity.
+ * twice over, not an ambiguity. The report names the anchors that failed,
+ * not the first ones recorded, so it says which part of the outcome did not
+ * happen again.
  */
-export function deltaHolds(
+export function deltaMismatch(
   delta: RecordedDelta,
   nodes: ReadonlyMap<string, RedactedNode>,
   beforeNodes: ReadonlyMap<string, RedactedNode>,
-): boolean {
+): DeltaMismatch | undefined {
   const live = projectAnchors(nodes);
   const appeared = delta.endAnchors ?? [];
-  if (!appeared.every((anchor) => anchorIn(anchor, live))) return false;
-  if ((delta.goneAnchors ?? []).some((anchor) => anchorIn(anchor, live))) return false;
+  const missing = appeared.filter((anchor) => !appearedIn(anchor, live));
+  const present = (delta.goneAnchors ?? []).filter((anchor) => anchorIn(anchor, live));
   const before = projectAnchors(beforeNodes).filter((anchor) => isAlert(anchor.descriptor));
-  return live.every(
-    (anchor) =>
-      !isAlert(anchor.descriptor) ||
-      before.some((earlier) => anchorIn(anchor.descriptor, [earlier])) ||
-      appeared.some((recorded) => anchorIn(recorded, [anchor])),
-  );
+  const unrecordedAlerts = live
+    .filter(
+      (anchor) =>
+        isAlert(anchor.descriptor) &&
+        !before.some((earlier) => anchorIn(anchor.descriptor, [earlier])) &&
+        !appeared.some((recorded) => appearedIn(recorded, [anchor])),
+    )
+    .map((anchor) => anchor.descriptor);
+  return missing.length === 0 && present.length === 0 && unrecordedAlerts.length === 0 ? undefined : { missing, present, unrecordedAlerts };
 }
 
 /**
  * Whether the replay itself produced some of the recorded delta, measured
  * from `baselineNodes`, the first screen the replay saw on the route it
  * ended on: an anchor that appeared was absent there, or a gone one was
- * there. Without that, every check `deltaHolds` makes could have held before
+ * there. Without that, every check `deltaMismatch` makes could have held before
  * the actions that should have produced it: the screen already read the
  * outcome, and nothing the replay did is proven to have done anything. A
  * recording with no delta at all is never evidence. Undefined `baselineNodes`
@@ -279,7 +296,7 @@ export function deltaEvidenced(
   const counted = (anchor: TraceTargetDescriptor) => !outcome || !echoes(anchor);
   const baseline = projectAnchors(baselineNodes);
   return (
-    appeared.some((anchor) => counted(anchor) && !anchorIn(anchor, baseline)) ||
+    appeared.some((anchor) => counted(anchor) && !appearedIn(anchor, baseline)) ||
     gone.some((anchor) => counted(anchor) && anchorIn(anchor, baseline))
   );
 }
@@ -291,21 +308,44 @@ function identityKey(descriptor: TraceTargetDescriptor): string {
 }
 
 /**
- * Whether some tier of a recorded anchor equals some projected node on every
- * anchor field, and on its value and states exactly: an empty field is not
- * the field filled in, nor an unchecked switch the switch turned on. An
- * alert is compared by its shape (`alertShape`).
+ * Whether a recorded anchor is on screen, on every tier but a test id shape
+ * (`descriptorTiers`): a vanished anchor stays exact, as entries recorded
+ * beside siblings of its shape expect.
  */
 function anchorIn(anchor: TraceTargetDescriptor, nodes: readonly AnchorNode[]): boolean {
+  return anchorOnTiers(anchor, nodes, (tier) => tier.kind !== 'shape');
+}
+
+/** Whether an anchor that appeared is on screen, on any tier: a minted test id matches any node of its shape. */
+function appearedIn(anchor: TraceTargetDescriptor, nodes: readonly AnchorNode[]): boolean {
+  return anchorOnTiers(anchor, nodes, () => true);
+}
+
+/**
+ * Whether some tier of a recorded anchor that `tried` admits equals some
+ * projected node on every anchor field, and on its value and states exactly:
+ * an empty field is not the field filled in, nor an unchecked switch the
+ * switch turned on. An alert is compared by its shape (`alertShape`).
+ */
+function anchorOnTiers(
+  anchor: TraceTargetDescriptor,
+  nodes: readonly AnchorNode[],
+  tried: (tier: DescriptorTier) => boolean,
+): boolean {
   const states = statesKey(anchor.states);
   const shape = isAlert(anchor) ? alertShape : (descriptor: TraceTargetDescriptor) => descriptor;
-  return descriptorTiers(anchor).some((tier) =>
-    nodes.some(
-      (node) =>
-        node.descriptor.value === anchor.value &&
-        statesKey(node.descriptor.states) === states &&
-        fieldsEqual(shape(tier), shape(node.descriptor), ANCHOR_FIELDS),
-    ),
+  return descriptorTiers(anchor).some(
+    (tier) =>
+      tried(tier) &&
+      nodes.some((node) => {
+        const view = tierView(tier, node.descriptor);
+        return (
+          view !== undefined &&
+          node.descriptor.value === anchor.value &&
+          statesKey(node.descriptor.states) === states &&
+          fieldsEqual(shape(tier.descriptor), shape(view), ANCHOR_FIELDS)
+        );
+      }),
   );
 }
 
@@ -357,12 +397,13 @@ function statesKey(states: readonly TraceAnchorState[] | undefined): string {
  * whenever it identifies the node means an app that mints test ids per
  * render cannot make every unchanged control look new after a re-render and
  * crowd the real effect out of the capped list; a node only a test id
- * identifies keeps it. The states make a control that changed state a node
- * of the delta on both sides: the switch as it was, gone, and as it is,
- * appeared; the value does the same for a field typed into.
+ * identifies keeps it, as its shape when minted. The states make a control
+ * that changed state a node of the delta on both sides: the switch as it
+ * was, gone, and as it is, appeared; the value does the same for a field
+ * typed into.
  */
 function anchorKey(descriptor: TraceTargetDescriptor): string {
   const tiers = descriptorTiers(descriptor);
-  const loosest = tiers[tiers.length - 1] ?? descriptor;
+  const loosest = tiers[tiers.length - 1]?.descriptor ?? descriptor;
   return JSON.stringify([...ANCHOR_FIELDS.map((field) => loosest[field]), descriptor.value, statesKey(descriptor.states)]);
 }

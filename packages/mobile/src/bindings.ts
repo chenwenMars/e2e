@@ -47,18 +47,10 @@ export interface SlotBinding {
   /** App a provider already installed from `appPath`, so the worker installs nothing and opens this. */
   readonly installedApp?: string | undefined;
   /**
-   * The id of the provider lease the slot rides, set only for a provider's
-   * lease: with it the worker hands the lease to the provider's `record`.
+   * The slot's provider lease id. The engine uses it to retain healthy
+   * sessions across worker replacement and to find the lease for `record`.
    */
   readonly leaseId?: string | undefined;
-  /**
-   * App the warm-up in `prepare` opened in the slot's session, which the
-   * worker resumes: a permission command there already acts on it. Absent
-   * when nothing was opened, or the open failed. Every worker of the slot
-   * reads it, but only a worker that finds the session still open keeps it:
-   * one retired after a failing test closed it.
-   */
-  readonly sessionApp?: string | undefined;
 }
 
 /**
@@ -119,7 +111,6 @@ export function encodeBindings(bindings: readonly SlotBinding[]): string {
         client: binding.client,
         installedApp: binding.installedApp,
         leaseId: binding.leaseId,
-        sessionApp: binding.sessionApp,
       }),
     ),
   );
@@ -153,13 +144,12 @@ function isOptionalString(value: unknown): value is string | undefined {
 /** A binding as JSON parses it back, or as a provider returned it: nothing the engine did not write is trusted. */
 export function isSlotBinding(value: unknown): value is SlotBinding {
   if (typeof value !== 'object' || value === null) return false;
-  const { device, deviceId, daemon, client, installedApp, leaseId, sessionApp } = value as Record<keyof SlotBinding, unknown>;
+  const { device, deviceId, daemon, client, installedApp, leaseId } = value as Record<keyof SlotBinding, unknown>;
   return (
     isOptionalString(device) &&
     isOptionalString(deviceId) &&
     isOptionalString(installedApp) &&
     isOptionalString(leaseId) &&
-    isOptionalString(sessionApp) &&
     (daemon === undefined || isDaemon(daemon)) &&
     (client === undefined || isClientConfig(client))
   );

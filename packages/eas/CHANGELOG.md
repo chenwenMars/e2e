@@ -1,5 +1,27 @@
 # @e2e-dev/eas
 
+## 0.3.3
+
+### Patch Changes
+
+- [#1518](https://github.com/tester-army/e2e/pull/1518) [`1293b78`](https://github.com/tester-army/e2e/commit/1293b7807f17db1901814bc245d658bdd92a2096) Thanks [@kacperkapusciak](https://github.com/kacperkapusciak)! - Errors and logs now name Expo instead of EAS, following Expo's [service names](https://docs.expo.dev/eas-to-expo/): an error from Expo's API starts with `Expo:` instead of `EAS:`, and a queued session logs `still queued at Expo after two minutes`.
+
+- [#1517](https://github.com/tester-army/e2e/pull/1517) [`c59156e`](https://github.com/tester-army/e2e/commit/c59156e458a1e9aa8640a4c0879208b8c674ac78) Thanks [@kacperkapusciak](https://github.com/kacperkapusciak)! - `easSimulators()` is now `expoSimulators()`, matching the service's name, Expo Simulators. `easSimulators()` and `EasSimulatorsOptions` still work as deprecated aliases of `expoSimulators()` and `ExpoSimulatorsOptions`. The provider now logs as `expo-simulators` instead of `eas-simulators`, and its config errors start with `expoSimulators`.
+
+## 0.3.2
+
+### Patch Changes
+
+- [#1190](https://github.com/tester-army/e2e/pull/1190) [`e4d16ec`](https://github.com/tester-army/e2e/commit/e4d16eceebc18911ca04542393c1581dc451208c) Thanks [@okwasniewski](https://github.com/okwasniewski)! - EAS Simulators fails with `EAS: unexpected response to <operation>` when Expo's API answers without the fields a session needs, instead of a `TypeError`, and a daemon address answered as `null` reads as not ready yet. Limrun names the installed agent-device `package.json` when it declares no version or no `agent-device` bin, instead of reporting version `undefined` or not finding the CLI.
+
+- [#897](https://github.com/tester-army/e2e/pull/897) [`2219744`](https://github.com/tester-army/e2e/commit/221974495299e64d52afd8887a5033712b6e159a) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Reject invalid minute limits before starting EAS sessions, preserving zero and valid integer settings.
+
+## 0.3.1
+
+### Patch Changes
+
+- [#906](https://github.com/tester-army/e2e/pull/906) [`9236bea`](https://github.com/tester-army/e2e/commit/9236bea370579ee149981ec6f938f151df35a434) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Avoid creating billed simulator sessions for acquisition requests cancelled before creation starts.
+
 ## 0.3.0
 
 ### Minor Changes

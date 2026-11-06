@@ -7,14 +7,23 @@
  * Anthropic caches only up to an explicit breakpoint, so the system prompt
  * carries one (it covers the tool definitions ahead of it) and the newest
  * message carries the other: the next turn's request then matches everything
- * up to it. OpenAI-shaped providers (OpenAI, Azure OpenAI) cache prefixes on
- * their own and take a routing key, one per system prompt, so every call of
- * a run addresses the same cache. Their requests also carry `store: false`:
+ * up to it. OpenAI Responses models (OpenAI, Azure OpenAI, and OpenAI through
+ * the gateway) cache prefixes on their own and take a routing key, one per
+ * system prompt, so every call of a run addresses the same cache. Their
+ * requests also carry `store: false`:
  * the runner never reads a response back, and with storage on the AI SDK
  * replays a reasoning model's earlier turns by item id, which an organization
  * with zero data retention has never stored. Without storage the reasoning
  * travels inline as encrypted content and the cache still hits. Other
  * providers get nothing extra, and the request is exactly what it was.
+ *
+ * Anthropic also binds every thinking block to the prefix that produced it
+ * (the system prompt and every message before the block; a changed tool
+ * list passed the check when tried) and rejects a replayed block whose
+ * prefix changed. The loop keeps the system prompt of a step fixed; when it
+ * rewrites an earlier message (a superseded screen or screenshot elided, a
+ * history shrunk), the reasoning from that message on is left out of the
+ * next request.
  */
 
 import { createHash } from 'node:crypto';
@@ -42,6 +51,16 @@ export interface ProviderHints {
    * turns never accumulates more than the provider allows.
    */
   markLatest(messages: ModelMessage[]): ModelMessage[];
+  /**
+   * The history to send once the message at `index` was rewritten since the
+   * last request. Where the provider binds reasoning to the prefix, the
+   * reasoning parts from that message on are left out: text and tool calls
+   * stay, and a reply that was only reasoning goes. Dropping thinking from
+   * the end of a history is allowed, dropping it from the middle is not,
+   * which is why everything after the edit goes. Returns the input array
+   * when nothing is dropped.
+   */
+  afterEdit(messages: ModelMessage[], index: number): ModelMessage[];
 }
 
 const ANTHROPIC_BREAKPOINT = { cacheControl: { type: 'ephemeral' } } as const;
@@ -58,26 +77,39 @@ export function providerHints(model: ProviderModelRef | undefined): ProviderHint
         ? base
         : { ...base, [openai]: { promptCacheKey: promptCacheKey(system), store: false, ...base?.[openai] } },
     markLatest: (messages) => (anthropic ? moveBreakpoint(messages) : messages),
+    afterEdit: (messages, index) => (anthropic ? withoutReasoningFrom(messages, index) : messages),
   };
 }
 
 /**
- * A gateway model names its upstream in the model id (`anthropic/claude-…`);
- * a direct provider names it in the provider (`anthropic.messages`).
+ * A gateway or OpenRouter model names its upstream in the model id
+ * (`anthropic/claude-…`), a direct provider in the provider
+ * (`anthropic.messages`), Vertex AI in the provider too
+ * (`vertex.anthropic.messages`), and Bedrock in the model id behind an
+ * optional region prefix (`eu.anthropic.claude-…`). A Bedrock application
+ * inference profile ARN names no model and is not recognized.
  */
 function speaksAnthropic(model: ProviderModelRef | undefined): boolean {
-  return idPrefix(model, 'anthropic/') || providerPrefix(model, 'anthropic');
+  if (idPrefix(model, 'anthropic/') || providerPrefix(model, 'anthropic')) return true;
+  const provider = (model?.provider ?? '').toLowerCase();
+  const id = (model?.modelId ?? '').toLowerCase();
+  return provider.includes('.anthropic') || /(?:^|\.)anthropic\.claude/.test(id);
 }
 
 /**
- * The provider-options key of an OpenAI-shaped model, which is how the AI
+ * The provider-options key of an OpenAI Responses model, which is how the AI
  * SDK keys them too: `openai` for OpenAI itself (`openai.responses`, or
- * `openai/gpt-…` through a gateway), `azure` for Azure OpenAI.
+ * `openai/gpt-…` through the gateway), `azure` for Azure OpenAI. Chat models
+ * get none: an OpenAI-compatible provider named `openai` reports `openai.chat`
+ * like OpenAI's own chat model, but copies the options into the request body
+ * as they are, which the endpoint rejects.
  */
 function openaiOptionsKey(model: ProviderModelRef | undefined): 'openai' | 'azure' | undefined {
-  if (idPrefix(model, 'openai/') || providerPrefix(model, 'openai')) return 'openai';
-  if (providerPrefix(model, 'azure')) return 'azure';
-  return undefined;
+  const provider = (model?.provider ?? '').toLowerCase();
+  if (provider === 'gateway') return idPrefix(model, 'openai/') ? 'openai' : undefined;
+  if (!provider.endsWith('.responses')) return undefined;
+  if (provider.includes('azure')) return 'azure';
+  return provider.startsWith('openai') ? 'openai' : undefined;
 }
 
 function idPrefix(model: ProviderModelRef | undefined, prefix: string): boolean {
@@ -118,4 +150,17 @@ function withoutBreakpoint(message: ModelMessage): ModelMessage {
     return bare as ModelMessage;
   }
   return { ...message, providerOptions };
+}
+
+/** The history without the reasoning parts of the assistant messages at or after `index`. */
+function withoutReasoningFrom(messages: ModelMessage[], index: number): ModelMessage[] {
+  let changed = false;
+  const next = messages.flatMap((message, position) => {
+    if (position < index || message.role !== 'assistant' || typeof message.content === 'string') return [message];
+    const content = message.content.filter((part) => part.type !== 'reasoning');
+    if (content.length === message.content.length) return [message];
+    changed = true;
+    return content.length === 0 ? [] : [{ ...message, content }];
+  });
+  return changed ? next : messages;
 }

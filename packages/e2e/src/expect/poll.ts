@@ -1,7 +1,7 @@
 /** expect.poll: re-reads a value until a synchronous matcher passes. */
 
-import { ConfigurationError, E2EError, isE2EError, TestError } from '../internal/errors.ts';
-import { Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
+import { ConfigurationError, isE2EError, TestError } from '../internal/errors.ts';
+import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
 import type { PollExpectation, PollOptions, ValueExpectation, ValueMatcherName } from '../types.ts';
 import { currentAttempt } from './attempt.ts';
 import { currentPollScope } from './poll-scope.ts';
@@ -51,8 +51,8 @@ function isNotYet(error: unknown): boolean {
   return isE2EError(error) && error.code === 'ASSERTION_FAILED';
 }
 
-function cancelled(): E2EError {
-  return new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
+function cancelled(signal: AbortSignal | undefined): Error {
+  return signal === undefined ? cancelledError() : abortError(signal, cancelledError);
 }
 
 /** One read, cut at the deadline and at the attempt signal; a hung read's outcome is dropped. */
@@ -80,6 +80,20 @@ function matcherLabel(negated: boolean, name: ValueMatcherName): string {
   return `expect.poll(...).${negated ? 'not.' : ''}${name}(...)`;
 }
 
+/**
+ * The poll's own deadline capped by its phase's. A poll without one of its
+ * own (`timeout: 0`) waits for the phase's, so it needs a phase to bound it.
+ */
+function pollDeadline(own: Deadline | undefined, phase: Deadline | undefined): Deadline {
+  if (own === undefined) {
+    if (phase === undefined) {
+      throw new ConfigurationError('INVALID_CONFIG', 'expect.poll timeout 0 waits for the test deadline, so it runs only inside a test; pass a positive timeout');
+    }
+    return phase;
+  }
+  return phase === undefined ? own : Deadline.min(own, phase);
+}
+
 async function pollMatcher(
   read: () => unknown,
   options: PollOptions,
@@ -92,25 +106,25 @@ async function pollMatcher(
   const timeout = options.timeout ?? attempt?.assertionTimeout ?? DEFAULT_TIMEOUT_MS;
   const interval = options.interval ?? POLL_INTERVAL_MS;
   const startedAt = Date.now();
-  const own = new Deadline(timeout, startedAt);
+  const own = timeout === 0 ? undefined : new Deadline(timeout, startedAt);
   // Inside an attempt the poll ends with the phase it runs in (the test
   // deadline in the body, the hook's cleanup budget in afterEach) and stops
   // the moment the attempt is cancelled, so a timed-out test never keeps
-  // reading through teardown.
-  const deadline = attempt === undefined ? own : Deadline.min(own, attempt.budget.deadline);
+  // reading through teardown. A timeout of 0 sets no deadline of its own.
+  const deadline = pollDeadline(own, attempt?.budget.deadline);
   // The phase that started the poll cancels it when it returns without
   // awaiting it, so the poll can never fail whatever runs after.
   const signals = [attempt?.budget.signal, scopeSignal].filter((signal) => signal !== undefined);
   const signal = signals.length === 0 ? undefined : AbortSignal.any(signals);
   let last: string | undefined;
   while (!deadline.expired()) {
-    if (signal?.aborted === true) throw cancelled();
+    if (signal?.aborted === true) throw cancelled(signal);
     let value: unknown;
     try {
       value = await sample(read, deadline, signal);
     } catch (error) {
       if (error instanceof ReadHung) break;
-      if (error instanceof ReadAborted) throw cancelled();
+      if (error instanceof ReadAborted) throw cancelled(signal);
       last = describeError(error);
       await sleep(Math.min(interval, deadline.remaining()), signal);
       continue;
@@ -165,7 +179,7 @@ function build<T>(
     (Object.keys(MATCHERS) as ValueMatcherName[]).map((name) => [
       name,
       (...args: unknown[]) => {
-        const scope = currentPollScope();
+        const scope = currentPollScope() ?? currentAttempt()?.polls;
         if (scope === undefined) return pollMatcher(read, options, negated, name, args, undefined);
         return scope.track(matcherLabel(negated, name), callStack(), (signal) =>
           pollMatcher(read, options, negated, name, args, signal),

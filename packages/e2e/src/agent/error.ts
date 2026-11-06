@@ -41,6 +41,7 @@ export const AGENT_CODE_TABLE: Readonly<
   STEP_BUDGET_EXHAUSTED: { category: 'test', blockedCategory: 'automation' },
   STEP_TIMEOUT: { category: 'test', blockedCategory: 'automation' },
   CONTEXT_OVERFLOW: { category: 'test', blockedCategory: 'automation' },
+  MODEL_REFUSED: { category: 'test', blockedCategory: 'automation' },
   MODEL_PROVIDER_FAILED: { category: 'infrastructure', modelUnreachable: true },
   CANCELLED: { category: 'infrastructure' },
   AUTHENTICATION_FAILED: { category: 'test' },
@@ -52,8 +53,7 @@ export const AGENT_CODE_TABLE: Readonly<
   ASSERTION_FAILED: { category: 'test' },
   ASSERTION_INCONCLUSIVE: { category: 'test' },
   // A stale recording is committed test data to re-record, not a product
-  // failure: a retry never replays, so a test-category code would pass live
-  // on the retry and read as flaky.
+  // failure: every attempt replays the same entry, so a retry cannot help.
   REPLAY_STALE: { category: 'configuration' },
 };
 
@@ -76,7 +76,8 @@ const MODEL_UNREACHABLE_CODES: ReadonlySet<string> = new Set(
  * 5xx), or the stall guard cut off a request that got no response. Such a
  * failure is a verdict on the model's reachability, never on the app, so it
  * implicates no recorded flow. A model that answered with something unusable
- * (`MODEL_OUTPUT_INVALID`, `CONTEXT_OVERFLOW`) or a step that ran out of time
+ * (`MODEL_OUTPUT_INVALID`, `CONTEXT_OVERFLOW`), refused the request
+ * (`MODEL_REFUSED`), or a step that ran out of time
  * (`STEP_TIMEOUT`, even while a request was open) is not this: the screen the
  * model was shown may be what went wrong.
  */
@@ -118,6 +119,13 @@ export class AgentError extends E2EError {
   }
 }
 
+/**
+ * A throw from a test's action observer hook. It fails the step, but it is the
+ * test's own failure: it says nothing about the actions, so the step's
+ * recording is neither kept nor evicted for it.
+ */
+export class ActionHookError extends AgentError {}
+
 /** The closed agent code set, derived from the one classification table. */
 const AGENT_CODES = new Set<string>(Object.keys(CATEGORY_BY_CODE));
 
@@ -149,7 +157,8 @@ export function isAgentError(value: unknown): value is AgentError {
   return (
     value instanceof Error &&
     AGENT_ERROR_MARKER in value &&
-    typeof (value as unknown as { code?: unknown }).code === 'string' &&
-    (value as unknown as { code: string }).code in CATEGORY_BY_CODE
+    'code' in value &&
+    typeof value.code === 'string' &&
+    value.code in CATEGORY_BY_CODE
   );
 }

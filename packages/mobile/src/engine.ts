@@ -27,32 +27,35 @@ export function buildEngine(surface: AgentDeviceSurface): EngineHandle {
     ...(surface.pool.size === undefined ? {} : { workers: surface.pool.size }),
     prepare: (info) => surface.pool.prepare(info),
     finish: (info) => surface.pool.finish(info),
+    doctor: (info) => surface.doctor(info),
     init: (info) => surface.init(info),
     startAttempt: (context) => surface.startAttempt(context),
     endAttempt: (context) => surface.endAttempt(context),
     dispose: (context) => surface.dispose(context),
-    observe: (operation, options) => surface.observe(operation, options),
-    locate: (expression, operation) => surface.locate(expression, operation),
-    perform: (ref, action, operation) => surface.perform(ref, action, operation),
+    // The harness signal does not abort at an operation's budget, so each
+    // operation enforces its own; see InputBudget in support.ts.
+    observe: (operation, options) => surface.observe(operation, options, surface.inputBudget('observe', operation.timeoutMs)),
+    locate: (expression, operation) => surface.locate(expression, operation, surface.inputBudget('locate', operation.timeoutMs)),
+    perform: (ref, action, operation) => surface.perform(ref, action, operation, surface.inputBudget(action.kind, operation.timeoutMs)),
     actions: DEVICE_ACTIONS,
-    performAt: (point, action, operation) => surface.performAt(point, action, operation),
+    performAt: (point, action, operation) => surface.performAt(point, action, operation, surface.inputBudget(action.kind, operation.timeoutMs)),
     pointerActions: DEVICE_POINTER_ACTIONS,
     keyboard: {
-      type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
-      press: (key, operation) => surface.pressFocusedKey(key, operation),
-      dismiss: (operation) => surface.dismissKeyboard(operation.signal),
+      type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation, surface.inputBudget('type', operation.timeoutMs)),
+      press: (key, operation) => surface.pressFocusedKey(key, operation, surface.inputBudget('press', operation.timeoutMs)),
+      dismiss: (operation) => surface.dismissKeyboard(operation.signal, surface.inputBudget('keyboard dismiss', operation.timeoutMs)),
     },
     validateApp: (app, info) => validateApp(app, info, surface.options.platform),
     // No `open`: a device app has no URL to open, so the runner serves
     // `app.open()` with `restart`, the fresh launch of the pinned app, which
     // is also the device's "recreate the context".
     session: {
-      back: (operation) => surface.back(operation),
+      back: (operation) => surface.back(operation, surface.inputBudget('back', operation.timeoutMs)),
       restart: (operation) => surface.restart(operation),
       reset: (operation) => surface.reset(operation),
     },
     artifacts: {
-      screenshot: (label, operation) => surface.screenshot(label, operation),
+      screenshot: (label, operation) => surface.screenshot(label, operation, surface.inputBudget('screenshot', operation.timeoutMs)),
       startVideo: (operation) => surface.startVideo(operation),
       stopVideo: (operation) => surface.stopVideo(operation),
     },
@@ -66,15 +69,19 @@ export function buildEngine(surface: AgentDeviceSurface): EngineHandle {
 
 /** Creates one agent-device engine: one device session per worker; a test launches the pinned app with `app.open()`. */
 export function mobile(options: MobileOptions): EngineHandle {
-  const factory: ClientFactory = (session, connection) =>
-    createAgentDeviceClient(
+  const factory: ClientFactory = (session, connection) => {
+    // A provider's local daemon must not inherit the user's remote-daemon connection.
+    const local = connection?.client?.stateDir !== undefined && connection.daemon === undefined;
+    return createAgentDeviceClient(
       obj({
         ...connection?.client,
         session,
-        daemonBaseUrl: connection?.daemon?.baseUrl,
-        daemonAuthToken: connection?.daemon?.authToken,
+        daemonBaseUrl: local ? '' : connection?.daemon?.baseUrl,
+        daemonAuthToken: local ? '' : connection?.daemon?.authToken,
+        daemonTransport: local ? 'auto' as const : undefined,
       }),
     );
+  };
   return buildEngine(new AgentDeviceSurface(options, factory));
 }
 

@@ -12,10 +12,20 @@ import {
 } from '../config/resolve.ts';
 import { collect, collectInMemory, collectSetups, type Collection } from '../collect/collect.ts';
 import type { ModuleRegistration } from '../collect/registry.ts';
-import { repeatEach, select, selectTargets, type Selection, type SelectionFilters, type Shard, type TagMode } from '../collect/select.ts';
+import {
+  repeatEach,
+  select,
+  selectTargets,
+  type Selection,
+  type SelectionFilters,
+  type Shard,
+  type TagMode,
+  type TestTargetPair,
+} from '../collect/select.ts';
 import {
   classifyError,
   combineExitCodes,
+  ConfigurationError,
   InfrastructureError,
   E2EError,
   errorMessage,
@@ -24,37 +34,42 @@ import {
   type ErrorPhase,
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
+import { leaveWorkBehind } from '../internal/abandoned.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
 import { DebugTrace } from '../internal/debug.ts';
-import { timestamp, uuidv7 } from '../internal/ids.ts';
+import { printableUrl } from '../internal/urls.ts';
+import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
-import { buildReport, type Report1Document, type ReportExplore, type TargetProvenance } from '../report/build.ts';
+import { buildReport, projectSource, type Report1Document, type ReportChanges, type ReportExplore, type ReportFilter, type TargetProvenance } from '../report/build.ts';
 import { agentStepTable } from '../report/debug-steps.ts';
+import { writeTracePages, type TracePages } from '../report/traces.ts';
 import { STATELESS_REPORTERS } from '../report/builtin.ts';
+import { failureLine } from '../report/format.ts';
 import { ListReporter } from '../report/list.ts';
 import { writeJsonReport } from '../report/write.ts';
-import { createRunEventEmitter, toEventResult, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupStep } from './events.ts';
+import { createRunEventEmitter, toEventResult, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupOutcome, type SetupStep } from './events.ts';
 import { allocateAppPorts } from './app-ports.ts';
 import { inProcessSpawner } from './in-process.ts';
-import { someSkippedAfterFailure, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
+import { cleanupErrorsOf, someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
 import { runUnits } from './scheduler.ts';
-import { buildWorkPlans, plannedSlots, type TargetWorkPlan } from './units.ts';
+import { buildWorkPlans, longestFirst, nonRunResult, plannedSlots, type TargetWorkPlan, type TimeLimit } from './units.ts';
 import { SessionStore } from './sessions.ts';
 import { outputLayout } from './output.ts';
 import type { RunnerOutput } from './process-output.ts';
 import { registerStaticSecrets } from './secrecy.ts';
-import { claimRerunDir, pruneArtifacts } from './artifacts.ts';
-import { carryForward, lastFailedIds, readLastRun, reportArtifactPaths, type RerunCollection } from './last-run.ts';
+import { nextRerunDir, pruneArtifacts } from './artifacts.ts';
+import { carryForward, fileDurationKey, lastFailedIds, previousFileDurations, readLastRun, reportArtifactPaths, type RerunCollection } from './last-run.ts';
 import { childProcessSpawner } from './worker/handle.ts';
 import { setSecretRegistry } from '../secrets.ts';
-import { withAbort } from '../internal/time.ts';
+import { budgetText, withAbort } from '../internal/time.ts';
 import type { BuiltinReporter, E2EConfig, FinishedRun, RecordingMode, Reporter, ReporterSummary } from '../types.ts';
 import { modelLabel } from '../config/agent.ts';
-import { positiveInt } from '../config/validate.ts';
+import { boundedInt, describeValue, positiveInt, timerMs } from '../config/validate.ts';
 import { detectVcs, type VcsInfo } from '../internal/vcs.ts';
 import type { EnginePrepareResult } from '../engine/index.ts';
 import type { AppProcesses } from './managed-process.ts';
 import { PreparedEngines, recordingNotices, startDeclaredProcesses, validateEngine, type EngineGrade, type PrepareScope } from './provision.ts';
+import { filterSelection } from './test-filters.ts';
 
 export interface RunOptions {
   cwd?: string | undefined;
@@ -77,18 +92,50 @@ export interface RunOptions {
    * `NO_LAST_RUN`; a run with nothing failed selects nothing.
    */
   lastFailed?: boolean | undefined;
-  /** One shard of the selection, cut once every other filter applied (`--shard 2/3`). */
+  /**
+   * Evaluates the project's own files afresh for this run, not only the
+   * config and the test files: the helpers they import too, one copy shared
+   * by the whole run. For a loop that runs again in one process after a
+   * save (`--watch`); each such run keeps its copy for the life of the
+   * process.
+   */
+  freshGraph?: boolean | undefined;
+  /** One shard of the selection, cut once every other flag applied and before the test filters judge it (`--shard 2/3`). */
   shard?: Shard | undefined;
+  /**
+   * Runs the configured `filters` on the change since this git ref
+   * (`--changed-since`): the files that differ from the merge base of it and
+   * HEAD. Without it no filter runs; a ref git cannot measure from is
+   * `INVALID_CHANGED_SINCE`.
+   */
+  changedSince?: string | undefined;
   targetIds?: readonly string[] | undefined;
   headed?: boolean | undefined;
   retries?: number | undefined;
   workers?: number | undefined;
+  /**
+   * The budget of every engine operation (`--action-timeout`), over the
+   * config's `actionTimeout`; a call's own `timeout` still wins.
+   */
+  actionTimeout?: number | undefined;
+  /**
+   * The default `expect` deadline (`--assertion-timeout`), over the config's
+   * `assertionTimeout`; a matcher's own `timeout` still wins.
+   */
+  assertionTimeout?: number | undefined;
   /**
    * Stops the run once this many tests have failed (`--max-failures`): the
    * tests running end as interrupted, the rest are skipped with cause
    * `failure-limit`, and the exit code is the failures' own.
    */
   maxFailures?: number | undefined;
+  /**
+   * Stops the run once it has spent this many milliseconds running tests
+   * (`--max-duration`), over the config's `maxDuration`: the tests running
+   * end as interrupted, the rest are skipped with cause `time-limit`, the
+   * run records a `RUN_TIMEOUT` error, and the exit code is 1.
+   */
+  maxDuration?: number | undefined;
   /**
    * Runs every selected test this many times (`--repeat-each`), each run a
    * result of its own with `repeat` 0 through `n - 1`. Setup tests run once.
@@ -107,8 +154,15 @@ export interface RunOptions {
   passWithNoTests?: boolean | undefined;
   /** Runs with the trace cache off (`--no-cache`), overriding the config. */
   noCache?: boolean | undefined;
+  /**
+   * The replay cache directory for this run (`--cache-dir`), relative to the
+   * project root, over `E2E_CACHE_DIR` and the config's `cache.dir`.
+   */
+  cacheDir?: string | undefined;
   /** Turns `cache.strict` on (`--strict-cache`): a recording that no longer replays fails its step. */
   strictCache?: boolean | undefined;
+  /** Rewrites the stored screenshots `toHaveScreenshot` finds different (`--update-snapshots`). */
+  updateSnapshots?: boolean | undefined;
   /**
    * The configured agents unpinned tests run as (`--agent`), instead of
    * `agents.default`. Several names run every such test once per agent.
@@ -119,12 +173,15 @@ export interface RunOptions {
   /** Records every model call to `<output>/ai-trace.json` (`--ai-trace`). */
   aiTrace?: boolean | undefined;
   /**
-   * Which attempts record a trace (`--trace [mode]`), over the config's and
-   * every target's `trace`; a test's own `trace` still wins. Applies to the
-   * targets whose engine can trace; the run names the others in a notice.
+   * Which attempts keep a trace (`--trace [mode]`), over the config's and
+   * every target's `trace`; a test's own `trace` still wins.
    */
   trace?: RecordingMode | undefined;
-  /** Which attempts record a video (`--video [mode]`), on the same terms as `trace`. */
+  /**
+   * Which attempts record a video (`--video [mode]`), on the same terms as
+   * `trace`. Applies to the targets whose engine can record video; the run
+   * names the others in a notice.
+   */
   video?: RecordingMode | undefined;
   /**
    * A config value instead of a discovered file, for the test harness. May
@@ -158,6 +215,8 @@ export interface RunOptions {
   onEvent?: RunEventSink | undefined;
   /** Budget for each reporter's `onRunFinished`, in ms. Only the test harness sets it; there is no flag. */
   reporterTimeout?: number | undefined;
+  /** Budget for each test filter's call, in ms; 5 minutes unless set. Only the test harness sets it; there is no flag. */
+  filterTimeout?: number | undefined;
   /**
    * The process's stdout and stderr, when the caller claimed them (the CLI):
    * what user code in this process prints is held while the config loads
@@ -187,6 +246,12 @@ export interface InMemoryTests {
    * events, and its record is read once the run is over, as `run.explore`.
    */
   readonly explore?: InMemoryExplore | undefined;
+  /**
+   * Notices decided before the run started, such as the target an
+   * exploration chose: the run emits them as `run` notices once it has
+   * started, for a caller with no terminal of its own to print them on.
+   */
+  readonly notices?: readonly string[] | undefined;
 }
 
 /** What the runner needs from an exploration: its moments as they happen, and its record at the end. */
@@ -203,72 +268,126 @@ function consumesSession(registration: ModuleRegistration): boolean {
 /** How long a reporter's `onRunFinished` may take before the run stops waiting for it. */
 const REPORTER_TIMEOUT_MS = 60_000;
 
-/** The selection flags of `run`, without anything that would start a process. */
-export type ListOptions = Pick<
-  RunOptions,
-  | 'cwd'
-  | 'configPath'
-  | 'files'
-  | 'tags'
-  | 'tagMode'
-  | 'excludeTags'
-  | 'grep'
-  | 'grepInvert'
-  | 'lastFailed'
-  | 'shard'
-  | 'targetIds'
-  | 'passWithNoTests'
-  | 'output'
-  | 'rawConfig'
-  | 'env'
->;
+/**
+ * What `list` selects on. `config` is a path or a config value (omit it to
+ * discover `e2e.config.ts`); `targets` are target names. The rest are the
+ * selection flags `run` takes, under the same names.
+ */
+export interface ListOptions
+  extends Pick<
+    RunOptions,
+    | 'cwd'
+    | 'files'
+    | 'tags'
+    | 'tagMode'
+    | 'excludeTags'
+    | 'grep'
+    | 'grepInvert'
+    | 'lastFailed'
+    | 'shard'
+    | 'changedSince'
+    | 'passWithNoTests'
+    | 'output'
+    | 'env'
+  >
+{
+  /**
+   * A config file path, or a config value in place of a discovered file.
+   * Omit it to discover `e2e.config.ts` from `cwd`.
+   */
+  config?: string | E2EConfig | undefined;
+  /** Target names (`--target`). An unknown name is `UNKNOWN_TARGET`. */
+  targets?: readonly string[] | undefined;
+}
 
-/** One test-target pair the runner would report, as `e2e list` prints it. */
+/**
+ * One test, target, and agent the selection produced, filtered pairs
+ * included. `id` is the result id `report.json` stores for repeat 0.
+ * `source`, `session`, and `serialId` are present and `undefined` when the
+ * test has none; `reason` is omitted unless the pair is skipped or filtered.
+ */
 export interface ListedPair {
+  readonly id: string;
   readonly file: string;
   readonly title: string;
   readonly titlePath: readonly string[];
   readonly kind: 'test' | 'setup';
   /** The tags the test declares; `[]` when none. */
   readonly tags: readonly string[];
+  /** The declaration, project-relative. `undefined` when the test recorded none. */
+  readonly source: { readonly file: string; readonly line: number; readonly column: number } | undefined;
+  /** The session the test consumes, from the test or its describe chain. */
+  readonly session: string | undefined;
+  /** Session names a setup produces; `[]` on an ordinary test. */
+  readonly sessions: readonly string[];
+  /** Set when the test belongs to a serial group. */
+  readonly serialId: string | undefined;
   readonly target: string;
-  readonly disposition: 'run' | 'skip';
-  readonly skipReason?: string;
+  /** The configured agent this pair runs as. */
+  readonly agent: string;
+  readonly disposition: 'run' | 'skip' | 'filtered';
+  /** Why the pair is skipped or filtered; omitted when it runs. */
+  readonly reason?: string;
+  /** The name of the test filter that left the pair out; omitted otherwise. */
+  readonly filter?: string;
+}
+
+/** The selection `list` returns. */
+export interface ListResult {
+  /** One pair per test, target, and agent, in selection order, filtered pairs included. */
+  readonly pairs: readonly ListedPair[];
+  /** Positional arguments, as written, that selected no discovered file. */
+  readonly unmatched: readonly string[];
+  /** Selected target names, in config order. */
+  readonly targets: readonly string[];
 }
 
 /**
- * Collects and selects like `run` and stops there: no app process, no engine
- * prepare, no worker. The pairs are the ones `run` would report, in report
- * order; pairs the selection filtered out are left out, as the list reporter
- * leaves them out. Config, collection, and selection failures throw the same
- * classified error `run` would record.
+ * Collects and selects like `e2e list` and stops there: no app process, no
+ * engine prepare, no worker. Every pair is returned, filtered ones included,
+ * in selection order, one per test, target, and agent; repeats are not
+ * expanded. `unmatched` is the positional arguments that selected no file,
+ * `targets` the selected target names in config order. An empty selection
+ * throws `NO_TESTS` unless `passWithNoTests`. Config, collection, and
+ * selection failures throw the same classified error `run` records. Each
+ * call imports the test files again, so a later call sees an edit. With
+ * `changedSince`, the configured test filters then judge the selection,
+ * which may call a model: a pair one left out is `filtered`, with its
+ * `filter` and `reason`, and a selection they leave empty resolves.
  */
-export async function list(options: ListOptions = {}): Promise<{ pairs: ListedPair[] }> {
+export async function list(options: ListOptions = {}): Promise<ListResult> {
+  return listSelection(options, () => undefined);
+}
+
+/**
+ * `list`, handing each line about the test filters, what they judge and
+ * what each decided, to `notice`: what `e2e list` prints on stderr. With
+ * `processOutput`, what the config prints while it loads is held until its
+ * secrets are known, as `run` does, since the filters run in this process.
+ */
+export async function listSelection(options: ListOptions, notice: (message: string) => void, processOutput?: RunnerOutput): Promise<ListResult> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const config = await loadRunConfig(options, cwd, env, options.output === undefined ? {} : { output: options.output });
-  const collection = await collect(config, options.files);
-  const selection = select(
-    collection,
-    config,
-    (await selectionInputs(options, config)).filters,
-    options.passWithNoTests !== undefined ? { passWithNoTests: options.passWithNoTests } : {},
-  );
-  const pairs: ListedPair[] = [];
-  for (const pair of selection.pairs) {
-    if (pair.disposition === 'filtered') continue;
-    pairs.push({
-      file: pair.test.file,
-      title: pair.test.title,
-      titlePath: pair.test.titlePath,
-      kind: pair.test.kind,
-      tags: pair.test.tags,
-      target: pair.target.name,
-      disposition: pair.disposition,
-      ...(pair.skip === undefined ? {} : { skipReason: pair.skip.reason }),
-    });
-  }
-  return { pairs };
+  const runOptions = toSelectionRunOptions(options);
+  const loadConfig = async (): Promise<ResolvedConfig> => {
+    const loaded = await loadRunConfig(runOptions, cwd, env, runOptions.output === undefined ? {} : { output: runOptions.output });
+    registerStaticSecrets(loaded.allSecrets);
+    return loaded;
+  };
+  const config = await (processOutput === undefined ? loadConfig() : processOutput.withholdDuring(loadConfig));
+  const { changedSince } = runOptions;
+  const collection = await collect(config, runOptions.files);
+  const inputs = await selectionInputs(runOptions, config);
+  const first = select(collection, config, inputs.filters, runOptions.passWithNoTests !== undefined ? { passWithNoTests: runOptions.passWithNoTests } : {});
+  const selection =
+    changedSince === undefined
+      ? first
+      : (await filterSelection(first, { config, collection, selectionFilters: inputs.filters, changedSince, signal: new AbortController().signal, notice })).selection;
+  return {
+    pairs: selection.pairs.map((pair) => toListedPair(config.projectRoot, pair)),
+    unmatched: collection.unmatchedPositionals,
+    targets: selection.perTarget.map((entry) => entry.target.name),
+  };
 }
 
 export interface RunOutcome {
@@ -296,6 +415,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const runId = uuidv7();
+  /** The fresh module graph this run's config and test files load in, when `freshGraph` asks for one. */
+  const graph = options.freshGraph === true ? `run-${runId}` : undefined;
   /**
    * When the run began executing: taken again right before `plan`, once
    * collection and provisioning are done, so a first-run download is never
@@ -325,10 +446,14 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const cli: CliOverrides = {};
   if (options.retries !== undefined) cli.retries = options.retries;
   if (options.workers !== undefined) cli.workers = options.workers;
+  if (options.actionTimeout !== undefined) cli.actionTimeout = options.actionTimeout;
+  if (options.assertionTimeout !== undefined) cli.assertionTimeout = options.assertionTimeout;
   if (options.reporters !== undefined) cli.reporters = options.reporters;
   if (options.noCache === true) cli.cache = 'off';
   if (options.strictCache === true) cli.cacheStrict = true;
+  if (options.updateSnapshots === true) cli.updateSnapshots = true;
   if (options.output !== undefined) cli.output = options.output;
+  if (options.cacheDir !== undefined) cli.cacheDir = options.cacheDir;
   if (options.trace !== undefined) cli.trace = options.trace;
   if (options.video !== undefined) cli.video = options.video;
   if (options.agent !== undefined) cli.agents = typeof options.agent === 'string' ? [options.agent] : options.agent;
@@ -344,12 +469,18 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   //
   // The config's secrets are known to the process before what its top-level
   // code printed is released, so that output is redacted like any other.
+  // `--reporter json` keeps stdout for the report, so user output moves to
+  // stderr before what the config printed while it loaded is released.
+  const processOutput = options.processOutput;
+  const keepStdoutFor = (reporters: readonly BuiltinReporter[] | undefined): void => {
+    if (reporters?.includes('json') === true) processOutput?.keepStdoutForReport();
+  };
   const loadConfig = async (): Promise<ResolvedConfig> => {
-    const config = await loadRunConfig(options, cwd, env, cli);
+    const config = await loadRunConfig(options, cwd, env, cli, graph);
     registerStaticSecrets(config.allSecrets);
+    keepStdoutFor(config.reporters);
     return allocateAppPorts(config);
   };
-  const processOutput = options.processOutput;
   const loaded = await debug
     .time('config.load', () => (processOutput === undefined ? loadConfig() : processOutput.withholdDuring(loadConfig)))
     .then(
@@ -361,8 +492,12 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   // the ids name the shipped ones, and a config failure still leaves the ids
   // the CLI asked for, so the failure renders through them.
   const reporterIds = loaded.config?.reporters ?? options.reporters ?? ['list'];
+  keepStdoutFor(reporterIds);
   const listReporter =
     options.quiet === true || !reporterIds.includes('list') ? undefined : new ListReporter(processOutput?.listOutput);
+  // Without the list reporter to print it under a heading, a test's output
+  // goes to the terminal as written.
+  const printsTestOutput = options.quiet !== true && listReporter === undefined;
   // Until the run is over, what user code prints lands above the live window.
   processOutput?.showThrough(
     listReporter === undefined
@@ -392,6 +527,12 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     recordRunError({ error: serializeError(classifyError(cause), phase === undefined ? {} : { phase }) });
   };
 
+  /** Records one result: into the report and onto the stream. */
+  const recordResult = (result: ResultRecord): void => {
+    results.push(result);
+    emit({ type: 'test-finished', result: toEventResult(result) });
+  };
+
   /**
    * A worker's run-level configuration failure stops the run through the
    * interrupt signal, recorded once: workers that meet the same failure in
@@ -407,9 +548,10 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   };
 
   /**
-   * The failure limit was reached: the scheduler has stopped dispatching and
-   * interrupted its workers on its own. What it cut short is interrupted,
-   * but the run is not: the exit code is the failures', never 130.
+   * The failure or time limit was reached: the scheduler has stopped
+   * dispatching and interrupted its workers on its own. What it cut short is
+   * interrupted, but the run is not: the exit code is the failures' or
+   * `RUN_TIMEOUT`'s, never 130.
    */
   let stoppedEarly = false;
   const stopEarly = (failures: number, limit: number): void => {
@@ -444,6 +586,15 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   // among them, and the files it could not collect: what a rerun can still
   // carry when the report lists no row.
   let rerunCollection: RerunCollection = { testIds: new Set(), uncollectedFiles: new Set() };
+  // What each test filter decided, once they ran, and the change they judged.
+  let filterReport: readonly ReportFilter[] = [];
+  let changesReport: ReportChanges | undefined;
+  // The results of the pairs that never run (skipped, filtered by a flag, or
+  // left out by a filter), from selection until the scheduler starts and
+  // records them with the rest. A run that stops in between records them
+  // once it has stopped, so the report, the events, and the outcome still
+  // show every test the selection held.
+  let pendingNonRun: readonly ResultRecord[] = [];
   const buildRunReport = (exitCode: RunExitCode): Report1Document => {
     const document = buildReport({
       runId,
@@ -456,6 +607,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       serialGroups,
       runErrors,
       targetProvenance,
+      changes: changesReport,
+      filters: filterReport,
       explore: options.tests?.explore?.snapshot(),
     });
     const carried = lastRun === undefined ? undefined : carryForward(lastRun, document, rerunCollection);
@@ -522,6 +675,25 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   };
 
   /**
+   * Writes the trace pages beside the report. Like `junit.xml` and
+   * `summary.md`, they read the report and add to it nothing it lacks, so a
+   * page that could not be written is a line on stderr, never a run error
+   * that would disagree with the report already on disk.
+   */
+  const writeTraces = async (config: ResolvedConfig, document: Report1Document): Promise<TracePages> => {
+    try {
+      return await writeTracePages(document, tracedResultIds(results, serialGroups), {
+        projectRoot: config.projectRoot,
+        resultsRoot: outputLayout(config.output).results,
+        cacheDir: config.cache.store === undefined ? config.cache.dir : undefined,
+      });
+    } catch (cause) {
+      process.stderr.write(`e2e: the trace pages could not be written: ${errorMessage(cause)}\n`);
+      return new Map();
+    }
+  };
+
+  /**
    * Whether the run got as far as its tests. Only such a run writes into the
    * output directory: one that stopped before leaves the previous run's
    * report, AI trace, and artifacts where they are.
@@ -537,6 +709,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     const document = buildRunReport(currentExitCode());
     const recorded = runErrors.length;
     const reportPath = written === undefined ? undefined : await writeCanonicalReport(written, document);
+    const traces = written === undefined ? new Map<string, string>() : await writeTraces(written, document);
     const exitCode = currentExitCode();
     const report = runErrors.length === recorded ? document : buildRunReport(exitCode);
     // Read back from the report rather than recomputed: the report derives
@@ -550,13 +723,21 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       exitCode,
       ...(reportPath === undefined ? {} : { reportPath }),
       ...(aiTracePath === undefined ? {} : { aiTracePath }),
+      ...(traces.size === 0 ? {} : { traces: Object.fromEntries(traces) }),
     });
     // The list reporter has printed its summary and stopped its window; a
     // line another reporter left unfinished on `run-finished` prints too.
     processOutput?.showThrough(undefined);
+    // Only the list reporter prints run errors, and a run that stopped before
+    // its tests writes no file to read them in, so without it they go to stderr.
+    if (listReporter === undefined && options.quiet !== true) {
+      for (const error of report.run.errors) process.stderr.write(failureLine(error));
+    }
     if (debug.enabled) {
       process.stderr.write(debug.summary());
       process.stderr.write(agentStepTable(results, serialGroups));
+      // The report is for scripts, so the summary leaves it out; a reader after the raw record finds it here.
+      if (written !== undefined && reportPath !== undefined) process.stderr.write(`[e2e debug] report ${path.relative(written.projectRoot, reportPath) || reportPath}\n`);
     }
     // `onRunFinished` runs last, after everything the terminal shows, so
     // nothing reading it waits on a slow reporter; the rows they resolve with
@@ -570,8 +751,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
         exitCode,
         projectRoot: loaded.config?.projectRoot ?? cwd,
         reportPath,
-        artifactsRoot: outputLayout(loaded.config?.output ?? path.resolve(cwd, options.output ?? '.e2e')).artifacts,
+        artifactsRoot: outputLayout(loaded.config?.output ?? path.resolve(cwd, options.output ?? '.e2e')).results,
         aiTracePath,
+        traces,
         ...(lastRun === undefined ? {} : { lastRun }),
       },
       options.reporterTimeout ?? REPORTER_TIMEOUT_MS,
@@ -598,7 +780,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     runId,
     projectId: config.projectId,
     projectRoot: config.projectRoot,
-    artifactsRoot: outputLayout(config.output).artifacts,
+    artifactsRoot: outputLayout(config.output).results,
     ci: isCiMode(env),
     targets: config.targets.map((target) => target.name),
     ...(config.agentNames.length === 1 && config.agentNames[0] === 'default' ? {} : { agents: config.agentNames }),
@@ -623,27 +805,29 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     }
 
     /**
-     * Narrates and times one setup step on the event spine. A step that
+     * Narrates and times one setup step on the event spine, its `finished`
+     * carrying the outcome `outcomeOf` reads off the result. A step that
      * throws ends as a run error, and a step the interrupt cut short reports
      * nothing more; either way no `finished` follows.
      */
-    const setupStep = async <T>(step: SetupStep, work: () => Promise<T>): Promise<T> => {
+    const setupStep = async <T>(step: SetupStep, work: () => Promise<T>, outcomeOf: (result: T) => SetupOutcome | undefined = () => undefined): Promise<T> => {
       emit({ type: 'setup', step, state: 'started' });
       const startedMs = Date.now();
       const result = await work();
-      if (!interrupted.aborted) emit({ type: 'setup', step, state: 'finished', durationMs: Date.now() - startedMs });
+      const outcome = outcomeOf(result);
+      if (!interrupted.aborted) emit({ type: 'setup', step, state: 'finished', durationMs: Date.now() - startedMs, ...(outcome === undefined ? {} : { outcome }) });
       return result;
     };
 
     // Collection comes first and starts no process: a collection failure or
     // NO_TESTS is reported before any dev server boots or browser downloads.
-    let planned: { collection: Collection; selection: Selection };
+    let planned: { collection: Collection; filters: SelectionFilters; selection: Selection };
     try {
       planned = await setupStep({ kind: 'collect' }, () =>
         debug.time('collect', async () => {
           const collection =
             options.tests === undefined
-              ? await collect(config, options.files)
+              ? await collect(config, options.files, graph)
               : collectInMemory(
                   config.projectRoot,
                   options.tests.file,
@@ -656,29 +840,51 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             testIds: new Set(collection.tests.map((test) => test.id)),
             uncollectedFiles: new Set(collection.uncollected.map((skipped) => skipped.file)),
           };
-          const selection = repeatEach(
-            select(
-              collection,
-              config,
-              inputs.filters,
-              options.passWithNoTests !== undefined ? { passWithNoTests: options.passWithNoTests } : {},
-            ),
-            options.repeatEach ?? 1,
-          );
-          return { collection, selection };
+          const flags = options.passWithNoTests !== undefined ? { passWithNoTests: options.passWithNoTests } : {};
+          // Pass 1, what any test filter judges. The run's own flag still
+          // decides an empty one, so a mistyped --tag fails before any
+          // filter calls a model.
+          return { collection, filters: inputs.filters, selection: select(collection, config, inputs.filters, flags) };
         }),
       );
     } catch (cause) {
       recordFailure(cause, 'collection');
       return;
     }
-    const { collection, selection } = planned;
+    const { collection } = planned;
+    let selection = planned.selection;
     if (!interrupted.aborted) {
       for (const skipped of collection.uncollected) {
         const why = options.tests === undefined ? 'which no positional selected' : 'collected only for its setup tests';
         notice('collect', `skipped ${skipped.file}, ${why} and which failed to collect: ${skipped.reason}`);
       }
     }
+
+    // The filters decide before any engine prepares or app starts, so a run
+    // they leave empty boots nothing. An interrupt records nothing: the run
+    // ends interrupted, like one cut short in `prepare`.
+    if (options.changedSince !== undefined) {
+      try {
+        const filtered = await filterSelection(selection, {
+          config,
+          collection,
+          selectionFilters: planned.filters,
+          changedSince: options.changedSince,
+          signal: interrupted,
+          notice: (message) => notice('filter', message),
+          step: (name, work) => setupStep({ kind: 'filter', name }, () => debug.time('filter', work), (call) => (call.outcome === 'answered' ? undefined : call.outcome)),
+          timeoutMs: options.filterTimeout,
+        });
+        selection = filtered.selection;
+        filterReport = filtered.records;
+        changesReport = filtered.changes;
+      } catch (cause) {
+        if (!interrupted.aborted) recordFailure(cause, 'filter');
+        return;
+      }
+    }
+    selection = repeatEach(selection, options.repeatEach ?? 1);
+    pendingNonRun = selection.pairs.filter((pair) => pair.test.kind !== 'setup' && pair.disposition !== 'run').map(nonRunResult);
 
     // Pre-flight: grade every selected target from its engine declaration
     // before any worker starts, so a config that asks for more than the
@@ -689,11 +895,16 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       grades.set(target.name, grade);
       targetProvenance.set(target.name, grade.provenance);
     }
+    for (const message of options.tests?.notices ?? []) notice('run', message);
     for (const message of recordingNotices(selection.perTarget, grades, { explore: options.tests?.explore !== undefined })) notice('run', message);
 
     // The work units, built once: the same plans tell each engine's `prepare`
     // how many worker slots to provision and the scheduler what to dispatch.
     let plans = buildWorkPlans(selection, collection, config.projectRoot);
+    // A run with nothing to run (the filters left nothing, or
+    // --pass-with-no-tests on an empty selection) still reports, but
+    // prepares no engine and starts no app.
+    const hasWork = plans.some((plan) => plan.setupUnits.length + plan.fileUnits.length > 0);
     // Workers re-load the config module themselves, so a file-backed config
     // runs across processes. A supplied `rawConfig` cannot cross a process
     // boundary (it may hold live engine handles), and neither can the bodies
@@ -703,6 +914,16 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     const workerConfigPath = options.tests === undefined ? config.configPath : undefined;
     const inProcess = workerConfigPath === undefined;
     const runWorkers = inProcess ? 1 : config.workers;
+    if (runWorkers > 1) {
+      const previous = await previousFileDurations(outputLayout(config.output).report);
+      plans = longestFirst(plans, (targetName, file) => previous.get(fileDurationKey(targetName, file)));
+    }
+    const timeLimit: TimeLimit | undefined =
+      options.maxDuration !== undefined
+        ? { ms: options.maxDuration, source: '--max-duration' }
+        : config.maxDuration === undefined
+          ? undefined
+          : { ms: config.maxDuration, source: 'maxDuration' };
 
     // Provisioning: an engine that must fetch something onto this machine (a
     // first-run browser download) does it here, once per target, before the
@@ -710,13 +931,15 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     // short. Each target is one setup step, and the engine's progress lines
     // stream as `notice` events under it, so the reporter prints them instead
     // of a worker's stderr fighting the live status block.
-    try {
-      plans = await debug.time('engine.prepare', () =>
-        prepareEngines(plans, runWorkers, engines, { runId, projectRoot: config.projectRoot, env, signal: interrupted, headed: options.headed ?? false, notice }, emit),
-      );
-    } catch (cause) {
-      if (!interrupted.aborted) recordFailure(cause, 'launch');
-      return;
+    if (hasWork) {
+      try {
+        plans = await debug.time('engine.prepare', () =>
+          prepareEngines(plans, runWorkers, engines, { runId, projectRoot: config.projectRoot, env, signal: interrupted, headed: options.headed ?? false, notice }, emit),
+        );
+      } catch (cause) {
+        if (!interrupted.aborted) recordFailure(cause, 'launch');
+        return;
+      }
     }
     if (interrupted.aborted) return;
 
@@ -730,35 +953,38 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
 
     // Each selected target declares the app it drives and the command that
     // starts it. Nothing spawns once the run was interrupted. Each command is
-    // one setup step; a reused process or an ignored `reuseExisting` narrates
-    // as a run notice.
+    // one setup step, named with the URL it answers on; a reused process or
+    // an ignored `reuseExisting` narrates as a run notice.
+    const appStep = (label: string, url: string | undefined) => ({ kind: 'app' as const, label, ...(url === undefined ? {} : { url: printableUrl(url) }) });
     const processHooks = () => ({
       ci: isCiMode(env),
+      env,
       notice: (message: string) => emit({ type: 'notice', target: 'app', message }),
-      starting: (label: string) => emit({ type: 'setup', step: { kind: 'app', label }, state: 'started' }),
-      ready: (label: string, durationMs: number, reused: boolean) =>
+      starting: (label: string, url: string | undefined) => emit({ type: 'setup', step: appStep(label, url), state: 'started' }),
+      ready: (label: string, url: string | undefined, durationMs: number, reused: boolean) =>
         emit({
           type: 'setup',
-          step: { kind: 'app', label },
+          step: appStep(label, url),
           state: 'finished',
           durationMs,
           ...(reused ? { outcome: 'reused' as const } : {}),
         }),
     });
-    processes = await startDeclaredProcesses(targets, config.projectRoot, processHooks, interrupted, debug);
+    processes = hasWork ? await startDeclaredProcesses(targets, config.projectRoot, processHooks, interrupted, debug) : undefined;
     // A run cancelled while the app was starting runs no test: the interrupt
     // alone decides the outcome.
     if (interrupted.aborted) return;
     const layout = outputLayout(config.output);
 
     // Tests are about to start, and only now is the previous run's evidence
-    // given up: the artifact tree is emptied, so what is there once this run
-    // ends is its own and nothing a report no longer names, and this run's
-    // report replaces the last. A `--last-failed` rerun keeps the evidence
-    // the report it reruns names instead, since that report's results fold
-    // into the rerun's and its carried tests do not run again, and files its
-    // own attempts in a fresh `rerun-<n>` directory beside it, so no attempt
-    // overwrites an earlier one's files. A run that stopped before here (no
+    // given up: the results tree (each test's trace page and artifacts) is
+    // emptied, so what is there once this run ends is its own and nothing a
+    // report no longer names, and this run's report replaces the last. A
+    // `--last-failed` rerun keeps the artifacts the report it reruns names
+    // instead, since that report's results fold into the rerun's and its
+    // carried tests do not run again, and files its own attempts in a fresh
+    // `rerun-<n>` directory inside each test's, so no attempt overwrites an
+    // earlier one's files. The trace pages are written again at the end. A run that stopped before here (no
     // test selected, a collection error, a target that cannot record what it
     // asks, an app that failed to start, an interrupt) leaves both, and
     // `--last-failed` still reads the run that executed. A wipe that fails
@@ -768,17 +994,17 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     let rerunDir: string | undefined;
     try {
       if (lastRun === undefined) {
-        await rm(layout.artifacts, { recursive: true, force: true });
+        await rm(layout.results, { recursive: true, force: true });
       } else {
-        await pruneArtifacts(layout.artifacts, reportArtifactPaths(lastRun));
-        rerunDir = await claimRerunDir(layout.artifacts);
+        await pruneArtifacts(layout.results, reportArtifactPaths(lastRun));
+        rerunDir = await nextRerunDir(layout.results);
       }
     } catch (cause) {
       recordFailure(cause, 'launch');
       return;
     }
 
-    const artifactsRoot = layout.artifacts;
+    const artifactsRoot = layout.results;
     const store = SessionStore.create(runId, layout.sessions);
     sessionStore = store;
 
@@ -821,21 +1047,20 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             envFor: workerEnvFor(plans, env),
           });
 
+    pendingNonRun = [];
     await debug.time('scheduler', () =>
       runUnits({
         plans,
         workers: runWorkers,
         ...(options.maxFailures === undefined ? {} : { maxFailures: options.maxFailures }),
+        ...(timeLimit === undefined ? {} : { timeLimit }),
         spawn,
         interruptGraceMs: config.timeout + config.cleanupTimeout,
         interruptSignal: interrupted,
         forceSignal: forceController.signal,
         forceGraceMs: config.cleanupTimeout + FORCE_KILL_MARGIN_MS,
         events: {
-          onResult: (result) => {
-            results.push(result);
-            emit({ type: 'test-finished', result: toEventResult(result) });
-          },
+          onResult: recordResult,
           onSerialGroup: (group) => {
             serialGroups.push(group);
             emit({ type: 'serial-group', group });
@@ -843,11 +1068,17 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           onRunError: recordRunError,
           onRunAbort: abortRun,
           onFailureLimit: stopEarly,
+          onTimeLimit: () => {
+            stoppedEarly = true;
+          },
           onTestStart: (start, targetName) =>
             emit({ type: 'test-started', ...start, target: targetName }),
           onProgress: (pair, targetName, progress) =>
             emit({ type: 'step', testId: pair.testId, agent: pair.agent, repeat: pair.repeat, target: targetName, progress }),
-          onOutput: (output, targetName) => emit({ type: 'output', target: targetName, ...output }),
+          onOutput: (output, targetName) => {
+            emit({ type: 'output', target: targetName, ...output });
+            if (printsTestOutput) processOutput?.testOutput(output.stream, output.text);
+          },
           onNotice: (message, targetName) => notice(targetName, message),
           onDebug: (snapshot) => debug.merge(snapshot),
           onAiTrace: (snapshot) => aiTrace?.merge(snapshot),
@@ -889,6 +1120,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     } catch (cause) {
       recordFailure(cause);
     }
+    for (const result of pendingNonRun) recordResult(result);
     // Engines finish first: every worker is gone, and what `prepare` leased
     // (a cloud device billed by the minute) should not wait on the app's
     // shutdown. Services go down after the apps that depended on them; a
@@ -990,12 +1222,71 @@ interface SelectionInputs {
 }
 
 /**
+ * What `loadRunConfig`, `selectionInputs`, and `validateRunOptions` read.
+ * `run` passes `RunOptions`; `list` translates the public bag into these
+ * (`config` string to `configPath`, object to `rawConfig`, `targets` to `targetIds`).
+ */
+type SelectionRunOptions = Pick<
+  RunOptions,
+  | 'configPath'
+  | 'rawConfig'
+  | 'files'
+  | 'tags'
+  | 'tagMode'
+  | 'excludeTags'
+  | 'grep'
+  | 'grepInvert'
+  | 'lastFailed'
+  | 'freshGraph'
+  | 'shard'
+  | 'changedSince'
+  | 'targetIds'
+  | 'passWithNoTests'
+  | 'output'
+  | 'maxFailures'
+  | 'maxDuration'
+  | 'repeatEach'
+>;
+
+/** The public `list` bag as the options config loading and selection already take. */
+export function toSelectionRunOptions(options: ListOptions): SelectionRunOptions {
+  const { config, targets, ...rest } = options;
+  return {
+    ...rest,
+    ...(typeof config === 'string' ? { configPath: config } : {}),
+    ...(config !== undefined && typeof config !== 'string' ? { rawConfig: config } : {}),
+    ...(targets !== undefined ? { targetIds: targets } : {}),
+  };
+}
+
+/** One collected pair as `list` reports it: the report's result id at repeat 0, project-relative source. */
+function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
+  return {
+    id: resultId(pair.test.id, pair.target.name, pair.agent),
+    file: pair.test.file,
+    title: pair.test.title,
+    titlePath: pair.test.titlePath,
+    kind: pair.test.kind,
+    tags: pair.test.tags,
+    source: projectSource(projectRoot, pair.test.source, pair.test.file),
+    session: pair.options.session,
+    sessions: pair.test.sessions,
+    serialId: pair.test.serialId,
+    target: pair.target.name,
+    agent: pair.agent,
+    disposition: pair.disposition,
+    ...(pair.skip === undefined ? {} : { reason: pair.skip.reason }),
+    ...(pair.skip?.filter === undefined ? {} : { filter: pair.skip.filter }),
+  };
+}
+
+/**
  * The selection filters the options ask for. `--last-failed` reads the
  * previous run's report here, before collection is judged, so a missing
  * report is a collection-phase failure like any other selection error; the
  * report itself reaches the reporters as `FinishedRun.lastRun`.
  */
-async function selectionInputs(options: ListOptions, config: ResolvedConfig): Promise<SelectionInputs> {
+async function selectionInputs(options: SelectionRunOptions, config: ResolvedConfig): Promise<SelectionInputs> {
   const lastRun =
     options.lastFailed === true ? await readLastRun(outputLayout(config.output).report) : undefined;
   const filters: SelectionFilters = {
@@ -1015,20 +1306,43 @@ async function selectionInputs(options: ListOptions, config: ResolvedConfig): Pr
  * The run options the CLI parser already bounds, checked again for the SDK
  * path so `run({ maxFailures: 0 })` or `run({ repeatEach: 0 })` is
  * `INVALID_CONFIG` rather than a run that stops at its first failure or
- * runs each test once.
+ * runs each test once. A `changedSince` that is not a string, is empty, or
+ * reads as a git option is `INVALID_CHANGED_SINCE` whether or not a filter
+ * would run.
  */
-function validateRunOptions(options: ListOptions): void {
-  const given = options as RunOptions;
-  positiveInt(given.maxFailures, 'maxFailures');
-  positiveInt(given.repeatEach, 'repeatEach');
+function validateRunOptions(options: SelectionRunOptions): void {
+  positiveInt(options.maxFailures, 'maxFailures');
+  timerMs(options.maxDuration, 'maxDuration');
+  positiveInt(options.repeatEach, 'repeatEach');
+  if (options.shard !== undefined) {
+    if (typeof options.shard !== 'object' || options.shard === null) {
+      throw new ConfigurationError('INVALID_CONFIG', `shard must be { index, total }, got ${describeValue(options.shard)}`);
+    }
+    if (options.shard.total === undefined) {
+      throw new ConfigurationError('INVALID_CONFIG', 'shard.total is required');
+    }
+    if (options.shard.index === undefined) {
+      throw new ConfigurationError('INVALID_CONFIG', 'shard.index is required');
+    }
+    const total = positiveInt(options.shard.total, 'shard.total');
+    boundedInt(options.shard.index, 'shard.index', 1, total!);
+  }
+  const ref = options.changedSince;
+  if (ref !== undefined && typeof ref !== 'string') {
+    throw new ConfigurationError('INVALID_CHANGED_SINCE', `--changed-since must name a git ref, such as origin/main; got ${describeValue(ref)}`);
+  }
+  if (ref !== undefined && (ref === '' || ref.startsWith('-'))) {
+    throw new ConfigurationError('INVALID_CHANGED_SINCE', `--changed-since must name a git ref, such as origin/main; got ${JSON.stringify(ref)}`);
+  }
 }
 
 /** Resolves the run's config: a supplied value, or the discovered file. */
 async function loadRunConfig(
-  options: ListOptions,
+  options: SelectionRunOptions,
   cwd: string,
   env: NodeJS.ProcessEnv,
   cli: CliOverrides,
+  graph?: string,
 ): Promise<ResolvedConfig> {
   validateRunOptions(options);
   if (options.rawConfig !== undefined) {
@@ -1038,7 +1352,7 @@ async function loadRunConfig(
   // A run with no config file has nothing to run against: `targets` is
   // required, so resolving an empty config would only report that symptom.
   if (discovered.configPath === undefined) throw missingConfigError(cwd);
-  const raw = await loadConfigModule(discovered.configPath);
+  const raw = await loadConfigModule(discovered.configPath, { graph });
   return resolveConfig(raw, {
     projectRoot: discovered.projectRoot,
     configPath: discovered.configPath,
@@ -1078,6 +1392,8 @@ function statusOf(exitCode: RunExitCode): Exclude<RunStatus, 'blocked'> {
  * or its attempts' error category when that is worse. A serial group answers
  * for its members, whose results carry no attempts, and for a group attempt
  * that failed before any member ran (a launch), whose members are skipped.
+ *
+ * An attempt whose cleanup failed adds its cleanup errors' codes, even when the test passed.
  */
 function verdictExitCodes(results: readonly ResultRecord[], serialGroups: readonly SerialGroupRecord[]): number[] {
   const codes: number[] = [0];
@@ -1095,6 +1411,9 @@ function verdictExitCodes(results: readonly ResultRecord[], serialGroups: readon
         break;
       default:
         break;
+    }
+    for (const cleanupError of cleanupErrorsOf(verdict.attempts)) {
+      codes.push(exitCodeForCategory(cleanupError.category));
     }
   }
   return codes;
@@ -1116,9 +1435,10 @@ const FILE_REPORTERS: ReadonlySet<Reporter> = new Set([STATELESS_REPORTERS.junit
  * and, except the built-in file reporters, until a forced interrupt, and
  * collects the summary rows they resolve with. Each reporter gets a signal
  * that aborts on either, so a well-behaved one cancels its own work and
- * leaves no handle holding the process. A reporter that throws, runs out of
- * time, or returns something other than rows is one line on stderr; it can
- * never change the run's outcome.
+ * leaves no handle holding the process; one given up on is work left behind,
+ * which the CLI does not wait for. A reporter that throws, runs out of time,
+ * or returns something other than rows is one line on stderr; it can never
+ * change the run's outcome.
  */
 async function runReporters(
   reporters: readonly Reporter[],
@@ -1129,21 +1449,23 @@ async function runReporters(
   const warn = (reporter: Reporter, detail: string): void => {
     process.stderr.write(`e2e: reporter "${reporter.name}" ${detail}\n`);
   };
-  const budget = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`;
+  const budget = budgetText(timeoutMs);
+  const forced = 'abandoned: the run was forced to stop';
   const outcomes = await Promise.all(
     reporters.map(async (reporter): Promise<ReporterSummary> => {
       const { onRunFinished } = reporter;
       if (onRunFinished === undefined) return [];
+      if (!FILE_REPORTERS.has(reporter) && force.aborted) {
+        warn(reporter, forced);
+        return [];
+      }
       const abandon = new AbortController();
       const timer = setTimeout(
         () => abandon.abort(new ReporterAbandoned(`did not finish within ${budget}`)),
         timeoutMs,
       );
-      const onForce = (): void => abandon.abort(new ReporterAbandoned('abandoned: the run was forced to stop'));
-      if (!FILE_REPORTERS.has(reporter)) {
-        if (force.aborted) onForce();
-        else force.addEventListener('abort', onForce, { once: true });
-      }
+      const onForce = (): void => abandon.abort(new ReporterAbandoned(forced));
+      if (!FILE_REPORTERS.has(reporter)) force.addEventListener('abort', onForce, { once: true });
       try {
         const result = await withAbort(
           () => Promise.resolve(onRunFinished.call(reporter, finished, abandon.signal)),
@@ -1160,6 +1482,7 @@ async function runReporters(
         if (dropped > 0) warn(reporter, `returned ${dropped} row(s) without a label and text; dropped`);
         return rows;
       } catch (cause) {
+        if (cause instanceof ReporterAbandoned) leaveWorkBehind();
         warn(reporter, cause instanceof ReporterAbandoned ? cause.message : `failed: ${errorMessage(cause)}`);
         return [];
       } finally {

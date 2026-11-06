@@ -5,7 +5,7 @@
  * params, and the test's agent context, and logged by the test itself.
  * Through the worker path, so the runner's collection and the worker's agree
  * on the redacted ids: it reaches no executor input, no step label, no
- * report, reporter file, trace entry, or file name under `.e2e`, and no
+ * report, reporter file, artifact, or file name under `.e2e`, and no
  * output event. A secret handle in the same run still types the real value.
  * Through the built-in agent in process: neither the act loop's prompt nor a
  * judgment's carries it.
@@ -23,7 +23,7 @@ import { contentsUnder, resultByTitle, runProject, runProjectWithConfigFile, typ
 
 const SECRET = 'plain-Zr8Kq2Wm5Tx9';
 const MARKER = '<secret:probe>';
-/** The value as written and base64 encoded, lowercased: a trace spells it in a URL, a DOM snapshot, and the fill's params. */
+/** The value as written and base64 encoded, lowercased: any form a file under `.e2e` could spell it in. */
 const SECRET_FORMS = [SECRET, Buffer.from(SECRET).toString('base64'), Buffer.from(SECRET).toString('base64url')].map((form) => form.toLowerCase());
 
 const CONFIG = `import type { E2EConfig, StepExecutor } from 'e2e';
@@ -36,7 +36,7 @@ const recording: StepExecutor = {
   cache: 'off',
   async runStep(context) {
     const { instruction, params } = context.step;
-    appendFileSync(new URL('./executor-input.jsonl', import.meta.url), JSON.stringify({ instruction, params, agentContext: context.agentContext }) + '\\n');
+    appendFileSync(new URL('./executor-input.jsonl', import.meta.url), JSON.stringify({ instruction, params, agentContext: context.agentContext, titlePath: context.attempt.titlePath }) + '\\n');
     if (context.step.secrets.length > 0) {
       const observation = await context.observe();
       const id = /#(\\S+) textbox "Focus target"/.exec(observation.text)?.[1];
@@ -50,7 +50,6 @@ const recording: StepExecutor = {
 export default {
   targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }],
   workers: 1,
-  trace: 'on',
   reporters: ['markdown', 'junit'],
   secrets: { probe: ${JSON.stringify(SECRET)} },
   agents: { default: { executor: recording } },
@@ -116,15 +115,20 @@ describe('a secret value passed as a plain string', () => {
     expect(attempt.steps.map((step) => step.label)).toContain(`inspect ${MARKER} with {note}`);
   });
 
-  it('hands the executor the instruction, params, and agent context redacted', () => {
+  it('hands the executor the instruction, params, agent context, and title path redacted', () => {
     const inputs = readFileSync(path.join(project.dir, 'executor-input.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as unknown);
     expect(inputs).toEqual([
       {
         instruction: `inspect ${MARKER} with {note}`,
         params: { note: MARKER, [`key ${MARKER}`]: [MARKER] },
         agentContext: `context ${MARKER}`,
+        titlePath: [`suite ${MARKER}`, `title holds ${MARKER}`],
       },
-      { instruction: 'paste the key into the focus target', params: { key: { kind: 'secret', name: 'probe', purpose: 'generic-secret' } } },
+      {
+        instruction: 'paste the key into the focus target',
+        params: { key: { kind: 'secret', name: 'probe', purpose: 'generic-secret' } },
+        titlePath: ['types the secret through its handle'],
+      },
     ]);
   });
 
@@ -142,11 +146,9 @@ describe('a secret value passed as a plain string', () => {
     const names = pathsUnder(root);
     expect(names).toContain('junit.xml');
     expect(names).toContain('summary.md');
-    expect(names.some((name) => name.startsWith('failures'))).toBe(true);
+    expect(names.some((name) => name.endsWith('trace.md'))).toBe(true);
     for (const name of names) expect(name.includes(SECRET), name).toBe(false);
-    const contents = contentsUnder(root);
-    expect(contents.filter(([file]) => file.includes('.zip!')).length).toBeGreaterThan(0);
-    for (const [file, text] of contents) {
+    for (const [file, text] of contentsUnder(root)) {
       for (const form of SECRET_FORMS) expect(text.toLowerCase().includes(form), file).toBe(false);
     }
     expect(readFileSync(path.join(root, 'junit.xml'), 'utf8')).toContain('title holds &lt;secret:probe&gt;');
@@ -156,7 +158,7 @@ describe('a secret value passed as a plain string', () => {
 const BUILT_IN_SUITE = `import { test, expect } from 'e2e';
 const S = ${JSON.stringify(SECRET)};
 
-test('built-in agent', { agentContext: \`context \${S}\` }, async ({ app, agent }) => {
+test(\`built-in agent \${S}\`, { agentContext: \`context \${S}\` }, async ({ app, agent }) => {
   await app.open();
   await agent.act(\`inspect \${S} with {note}\`, { params: { note: S } });
   await agent.assert(\`the page does not show \${S}\`);
@@ -184,14 +186,16 @@ describe('a secret value passed as a plain string to the built-in agent', () => 
   });
 
   it('sends the act loop and the judgment the redacted instruction, params, and context', () => {
-    expect(resultByTitle(outcome, 'built-in agent').status).toBe('passed');
+    expect(resultByTitle(outcome, `built-in agent ${MARKER}`).status).toBe('passed');
     expect(loopCalls.length).toBeGreaterThan(0);
     const [act] = loopCalls;
     expect(act!.prompt).toContain(`Execute this test step: inspect ${MARKER} with {note}`);
     expect(act!.prompt).toContain(`{"note":"${MARKER}"}`);
+    expect(act!.prompt).toContain(`Test: built-in agent ${MARKER}`);
     expect(act!.system).toContain(`context ${MARKER}`);
     expect(fakeCalls).toHaveLength(1);
     expect(fakeCalls[0]!.instruction).toBe(`the page does not show ${MARKER}`);
+    expect(fakeCalls[0]!.prompt).toContain(`Test: built-in agent ${MARKER}`);
     expect(fakeCalls[0]!.system).toContain(`context ${MARKER}`);
     expect(JSON.stringify([loopCalls, fakeCalls])).not.toContain(SECRET);
   });

@@ -23,7 +23,7 @@ import type {
   ViewportPoint,
   ViewportSize,
 } from './contract.ts';
-import type { EngineObserveOptions, EngineState, VideoSegment } from './index.ts';
+import type { AppLogEntry, EngineObserveOptions, EngineSnapshot, EngineState, VideoSegment } from './index.ts';
 
 export type * from './contract.ts';
 export { EngineError } from './contract.ts';
@@ -33,8 +33,9 @@ export type { EngineObserveOptions, EngineState, VideoSegment } from './index.ts
  * The agent's action grammar, by verb. A session derives which verbs its
  * engine can honor from the action kinds the engine declared, so the agent
  * offers the model exactly that vocabulary. The vision-located tap and hover
- * are not verbs of their own: each rides its node verb when the located
- * point sits on a node the tree lists, and `performAt` when it does not.
+ * are not verbs of their own: each rides `performAt` when the engine
+ * declares its pointer kind, else its node verb on the listed control at
+ * the point.
  */
 export type GrammarVerb =
   | 'tap'
@@ -57,8 +58,12 @@ export type GrammarVerb =
   | 'upload'
   | 'navigate'
   | 'back'
+  /** Sets the viewport size (`session.resize`), for checking a layout at another width. */
+  | 'resize'
   | 'tapAt'
   | 'hoverAt'
+  /** A drag from one viewport point to another (`dragTo` in `pointerActions`), for a drag the tree does not list. */
+  | 'dragAt'
   /** Keyboard input to whatever holds focus: `type` and `press` without a target. */
   | 'typeText'
   | 'pressKey'
@@ -69,6 +74,8 @@ export type Observation = ObservationMetadata & (
       readonly kind: 'semantic';
       readonly tree: SemanticNode;
       readonly truncated: boolean;
+      /** The engine's measured keyboard state (`EngineSnapshot.keyboardVisible`); `false` when it measured none, absent only when it did not measure. */
+      readonly keyboardVisible?: boolean;
       readonly pixels?: ObservationPixels;
     }
   | {
@@ -102,6 +109,8 @@ export interface SessionApp {
   open(url: string, operation: OperationContext): Promise<void>;
   /** Navigates back once. */
   back(operation: OperationContext): Promise<void>;
+  /** Sets the viewport size in CSS pixels. */
+  resize(size: ViewportSize, operation: OperationContext): Promise<void>;
   /** Recreates the app context without clearing persisted state; shows nothing until `open`. */
   restart(operation: OperationContext): Promise<void>;
   /** Clears persisted client state and recreates the context; shows nothing until `open`. */
@@ -111,14 +120,49 @@ export interface SessionApp {
 export interface SessionArtifacts {
   /** Captures a redacted screenshot and returns an artifact-relative path. */
   screenshot(label: string | undefined, operation: OperationContext): Promise<string>;
-  /** Starts trace recording. */
-  startTrace?(operation: OperationContext): Promise<void>;
-  /** Stops trace recording and returns the artifact-relative path, or every segment written, in order. */
-  stopTrace?(operation: OperationContext): Promise<string | readonly string[]>;
   /** Starts video recording. */
   startVideo?(operation: OperationContext): Promise<void>;
   /** Stops video recording and returns the segments written, in order. */
   stopVideo?(operation: OperationContext): Promise<readonly VideoSegment[]>;
+}
+
+/**
+ * Where the engine's app log goes. The engine reports from `startAttempt`
+ * on, before any step records; what arrives before a sink is set waits, up
+ * to a bound, and a serial group's members each point it at their own steps.
+ */
+export interface AppLogRoute {
+  /** Takes one entry from the engine, checked: a malformed one is dropped. */
+  push(entry: AppLogEntry): void;
+  /** Takes one line saying where the app went (`EngineAttemptContext.navigation`); a blank one is dropped. */
+  navigated(line: string): void;
+  /** Sends everything from now on, and everything still waiting, to `sink`; undefined holds it again. */
+  route(sink: ((event: AppEvent, at: string) => void) | undefined): void;
+}
+
+/** What the app did on its own, as the session passes it on: a log line, or where it went. */
+export type AppEvent = { readonly kind: 'log'; readonly entry: AppLogEntry } | { readonly kind: 'navigation'; readonly line: string };
+
+/**
+ * Where the screens of an attempt go for its trace: what the engine handed
+ * over (`EngineAttemptContext.screen`) and every observation the session
+ * took. Without a sink they are dropped; nothing waits for them.
+ */
+export interface ScreenRoute {
+  /** Whether the attempt keeps a trace; without one, nothing is pushed or routed, and the engine is not asked. */
+  readonly traced: boolean;
+  /** Takes one engine snapshot, checked: a malformed one is dropped. */
+  push(snapshot: EngineSnapshot): void;
+  /** Sends every screen from now on to `sink`; undefined drops them again. */
+  route(sink: ((observation: Observation) => void) | undefined): void;
+}
+
+/** What the engine said the attempt runs on (`EngineAttemptContext.environment`), bounded. */
+export interface EnvironmentFacts {
+  /** Merges facts in, checked: a non-string value is dropped. */
+  push(facts: Readonly<Record<string, string>>): void;
+  /** The facts so far, each name and value redacted with `redact`, then clipped; undefined when there are none. */
+  read(redact: (text: string) => string): Readonly<Record<string, string>> | undefined;
 }
 
 export interface TargetSession {
@@ -157,6 +201,9 @@ export interface TargetSession {
   };
   readonly app: SessionApp;
   readonly artifacts: SessionArtifacts;
+  readonly appLog: AppLogRoute;
+  readonly screens: ScreenRoute;
+  readonly environment: EnvironmentFacts;
   /** Captures immutable app state for a session envelope. */
   captureState?(operation: OperationContext): Promise<EngineState>;
   /** Replaces current app state with an immutable captured state. */

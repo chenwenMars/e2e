@@ -14,23 +14,21 @@ import { selectTargets } from '../collect/select.ts';
 import { discoverConfig, loadConfigModule, missingConfigError } from '../config/load.ts';
 import { missingModelError, resolveAgentConfig } from '../config/agent.ts';
 import { resolveConfig, type ResolvedConfig, type ResolvedCredential, type ResolvedTarget } from '../config/resolve.ts';
+import { launchesPinnedApp } from '../config/targets.ts';
 import { ConfigurationError } from '../internal/errors.ts';
 import type { ReportExplore } from '../report/build.ts';
-import { labelSegment } from '../run/artifacts.ts';
 import type { RunEventSink } from '../run/events.ts';
+import type { RunnerOutput } from '../run/process-output.ts';
 import { run, type RunOutcome } from '../run/runner.ts';
-import { staticSecretLedger } from '../run/secrecy.ts';
+import { registerStaticSecrets, staticSecretLedger } from '../run/secrecy.ts';
 import type { AgentConfig, BuiltinReporter, E2EConfig, RecordingMode } from '../types.ts';
 import { createExploreBody } from './body.ts';
+import { STEP_BOUNDS, TIMEOUT_BOUNDS } from './bounds.ts';
 import { explorerAgent, withFindingTool } from './executor.ts';
 import { signedInContext, type PlanAccount } from './plan.ts';
 import { ExploreState } from './state.ts';
 
 const DEFAULT_GOAL = 'Explore the app and find bugs';
-/** Exploration steps per run: breadth first, and diminishing returns come fast. */
-export const STEP_BOUNDS = { min: 1, max: 12, default: 8 } as const;
-/** The run's wall clock in milliseconds: three to fifteen minutes. */
-export const TIMEOUT_BOUNDS = { min: 180_000, max: 900_000, default: 600_000 } as const;
 const MAX_GOAL_CHARS = 2_000;
 /** Each step's action and model-call budget when the config sets none: a charter is longer than a scripted step. */
 const DEFAULT_STEP_BUDGET = 40;
@@ -71,7 +69,7 @@ export interface ExploreOptions {
   readonly output?: string | undefined;
   readonly debug?: boolean | undefined;
   readonly aiTrace?: boolean | undefined;
-  /** Which attempts record a trace, `--trace [mode]`; the exploration is one attempt, so a retry mode records nothing. */
+  /** Which attempts keep a trace page, `--trace [mode]`; the exploration is one attempt, so a retry mode keeps none. */
   readonly trace?: RecordingMode | undefined;
   /** Which attempts record a video, `--video [mode]`; the exploration is one attempt, so a retry mode records nothing. */
   readonly video?: RecordingMode | undefined;
@@ -84,10 +82,21 @@ export interface ExploreOptions {
    * root then.
    */
   readonly rawConfig?: E2EConfig | undefined;
-  /** Notices decided before the run starts: the target chosen, a replaced executor. */
+  /**
+   * Notices decided before the run starts: the target chosen, a replaced
+   * executor. Without it, the run emits them as `run` notices once it has
+   * started, where `explore` on `e2e/runner` delivers them through `onEvent`.
+   */
   readonly notice?: ((message: string) => void) | undefined;
   /** A second sink on the run's event spine, beside the reporters, as `run` takes. */
   readonly onEvent?: RunEventSink | undefined;
+  /** Suppresses the list reporter, as `run` takes. */
+  readonly quiet?: boolean | undefined;
+  /**
+   * The output a public run owns, as `run` takes: what user code prints is
+   * redacted, and held while the config loads, until its secrets are known.
+   */
+  readonly processOutput?: RunnerOutput | undefined;
 }
 
 export interface ExploreOutcome extends RunOutcome {
@@ -105,16 +114,25 @@ export interface ExploreOutcome extends RunOutcome {
 export async function explore(options: ExploreOptions = {}): Promise<ExploreOutcome> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const notice = options.notice ?? (() => undefined);
+  const earlyNotices: string[] = [];
+  const notice = options.notice ?? ((message: string) => void earlyNotices.push(message));
   const goal = resolveGoal(options.goal);
   const budgets = {
     maxSteps: resolveBounded(options.maxSteps, STEP_BOUNDS, 'maxSteps'),
     timeoutMs: resolveBounded(options.timeoutMs, TIMEOUT_BOUNDS, 'timeout'),
   };
 
-  const { raw, projectRoot } = await loadRawConfig(options, cwd);
-  const resolveOptions = { projectRoot, env, cli: options.agent === undefined ? {} : { agents: [options.agent] } };
-  const resolved = resolveConfig(raw, resolveOptions);
+  // The config's secrets are known to the process before what its top-level
+  // code printed is released, as `run` loads its config.
+  const loadConfig = async (): Promise<{ raw: E2EConfig; projectRoot: string; resolved: ResolvedConfig }> => {
+    const { raw, projectRoot } = await loadRawConfig(options, cwd);
+    const resolved = resolveConfig(raw, { projectRoot, env, cli: options.agent === undefined ? {} : { agents: [options.agent] } });
+    registerStaticSecrets(resolved.allSecrets);
+    return { raw, projectRoot, resolved };
+  };
+  const { raw, projectRoot, resolved } = await (options.processOutput === undefined
+    ? loadConfig()
+    : options.processOutput.withholdDuring(loadConfig));
   const target = pickTarget(resolved.targets, options.target, notice);
   const accounts = credentialAccounts(resolved.credentials);
   // An exploration runs as exactly one agent: the one named, else `default`.
@@ -134,16 +152,19 @@ export async function explore(options: ExploreOptions = {}): Promise<ExploreOutc
   // `--session` pulls in runs as the project's own agents, with its cache and
   // retries. The exploration pins no retries and runs with the cache off.
   const explorerAgents = new Map(resolved.agents).set(agentName, withFindingTool(resolvedExplorer, state));
+  // The exploration is bounded by its own `--timeout`, not `maxDuration`.
+  const { maxDuration: _maxDuration, ...runConfig } = raw;
   const outcome = await run({
     cwd: projectRoot,
-    rawConfig: raw,
+    rawConfig: runConfig,
     agent: options.agent,
     env,
     tests: {
       file: EXPLORE_FILE,
-      registration: exploreRegistration(state, { openApp: target.app.base !== undefined, accounts, session: options.session }),
+      registration: exploreRegistration(state, { openApp: target.app.base !== undefined || launchesPinnedApp(target), accounts, session: options.session }),
       agents: explorerAgents,
       explore: state,
+      notices: earlyNotices,
     },
     targetIds: [target.name],
     headed: options.headed,
@@ -156,6 +177,8 @@ export async function explore(options: ExploreOptions = {}): Promise<ExploreOutc
     interruptSignal: options.interruptSignal,
     forceSignal: options.forceSignal,
     onEvent: options.onEvent,
+    quiet: options.quiet,
+    processOutput: options.processOutput,
   });
   return { ...outcome, explore: state.snapshot() };
 }
@@ -262,9 +285,7 @@ function credentialAccounts(credentials: ReadonlyMap<string, ResolvedCredential>
  * The one-test registration: the goal is the title, the body is the
  * exploration loop. With a session it consumes that session like any test
  * declaring `{ session }`, so the runner runs the setup that saves it first
- * and restores it into the exploration's attempt. Its artifacts go under a
- * short name for the goal rather than the test id, which holds the whole
- * goal encoded.
+ * and restores it into the exploration's attempt.
  */
 function exploreRegistration(
   state: ExploreState,
@@ -280,7 +301,8 @@ function exploreRegistration(
     options: {
       timeout: state.budgets.timeoutMs + TIMEOUT_GRACE_MS,
       retries: 0,
-      agentContext: [`Exploration goal: ${state.goal}`, ...(session === undefined ? [] : [signedInContext(session)])].join('\n'),
+      // The goal reaches every prompt as the test's title (`Test: <goal>`).
+      ...(session === undefined ? {} : { agentContext: signedInContext(session) }),
       ...(session === undefined ? {} : { session }),
     },
     sessions: [],
@@ -290,7 +312,6 @@ function exploreRegistration(
     group: undefined,
     mode: 'normal',
     source: undefined,
-    artifactName: labelSegment(EXPLORE_FILE, state.goal),
   };
   return { tests: [test], hooks: [] };
 }

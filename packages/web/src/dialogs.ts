@@ -10,6 +10,8 @@ import { ErrorLatch, isClassified, message } from './support.ts';
 
 /** A native dialog as a test's handler sees it. */
 export interface Dialog {
+  /** The native dialog kind, independent of its message. */
+  readonly type: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
   /** The dialog's text. */
   readonly message: string;
   /** Accepts the dialog once. */
@@ -72,15 +74,19 @@ export class DialogRouter {
       return;
     }
     let decided = false;
+    let answered = false;
     const publicDialog: Dialog = {
+      type: dialog.type() as Dialog['type'],
       message: dialog.message(),
       accept: async (text) => {
         decided = true;
         await dialog.accept(text);
+        answered = true;
       },
       dismiss: async () => {
         decided = true;
         await dialog.dismiss();
+        answered = true;
       },
     };
     try {
@@ -113,6 +119,7 @@ export class DialogRouter {
               cause,
             }),
       );
+      if (!answered) await dialog.dismiss().catch(() => undefined);
     }
   }
 }

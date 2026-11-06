@@ -1,5 +1,5 @@
 /**
- * The Expo project id a run's sessions belong to when `easSimulators()` names
+ * The Expo project id a run's sessions belong to when `expoSimulators()` names
  * none: `extra.eas.projectId` of the app config in the e2e project root, the
  * id `eas init` writes.
  */
@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { isRecord } from './json.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,7 +22,7 @@ const STATIC_CONFIGS = ['app.config.json', 'app.json'];
 /** How long `expo config` may evaluate a dynamic config; it takes about a second. */
 const EXPO_CONFIG_TIMEOUT_MS = 60_000;
 
-const PASS_IT = 'pass `projectId` to easSimulators(), or run `eas init` to link the app to an EAS project';
+const PASS_IT = 'pass `projectId` to expoSimulators(), or run `eas init` to link the app to an Expo project';
 
 /**
  * `extra.eas.projectId` from the app config in `projectRoot`. A dynamic
@@ -94,9 +95,4 @@ function projectIdOf(config: unknown, source: string): string {
   const projectId = isRecord(eas) ? eas['projectId'] : undefined;
   if (typeof projectId === 'string' && projectId.trim() !== '') return projectId.trim();
   throw new Error(`${source} has no \`extra.eas.projectId\`; ${PASS_IT}`);
-}
-
-/** A plain JSON object, not an array or `null`. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

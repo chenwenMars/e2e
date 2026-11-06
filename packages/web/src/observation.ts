@@ -3,7 +3,7 @@
  * stitching, and element-handle bookkeeping the surface keeps per generation.
  */
 
-import type { ElementHandle, Frame, JSHandle } from 'playwright-core';
+import type { Frame } from 'playwright-core';
 import {
   EngineError,
   sameSite,
@@ -11,6 +11,7 @@ import {
   OBSERVED_TEXT_LIMIT,
   type NodeRef,
   type SemanticNode,
+  type ViewportPoint,
 } from 'e2e/engine';
 import {
   readDocumentSemanticsFunction,
@@ -19,6 +20,9 @@ import {
   type RawObservedNode,
 } from './read-node.ts';
 import { CaptureScope } from './capture-scope.ts';
+import { ElementList } from './element-list.ts';
+import { hasReadableDocument } from './frame-document.ts';
+import type { ListedTarget } from './refs.ts';
 
 /**
  * The id of every observation's root: the main document's element under one
@@ -50,8 +54,8 @@ export interface CaptureDeps {
   readonly site: string | undefined;
   /** Reserves a disjoint range before the reader can stamp any element, including on timeout. */
   reserveIds(count: number): number;
-  /** Publishes one element handle under its id in the generation being built. */
-  commit(id: string, element: ElementHandle<Element>): void;
+  /** Publishes one observed node under its id in the generation being built. */
+  commit(id: string, target: ListedTarget): void;
 }
 
 export interface CaptureOptions {
@@ -83,8 +87,8 @@ export interface CapturedDocument {
   readonly truncated: boolean;
 }
 
-/** One stored handle awaiting publication once its document captured successfully. */
-type StagedRef = readonly [id: string, element: ElementHandle<Element>];
+/** One observed node awaiting publication once its document captured successfully. */
+type StagedRef = readonly [id: string, target: ListedTarget];
 
 /**
  * Captures one document's semantic tree, then descends into each observed
@@ -105,15 +109,21 @@ export async function captureDocument(
   // A child document's handles are published only once it captured whole; a
   // frame that fails midway leaves no reachable ids behind.
   const staged: StagedRef[] = [];
-  const stage = (id: string, element: ElementHandle<Element>): void => {
-    if (scope.own(element)) staged.push([id, element]);
+  const accepted = new Map<ElementList, boolean>();
+  const stage = (id: string, target: ListedTarget): void => {
+    let owned = accepted.get(target.list);
+    if (owned === undefined) {
+      owned = scope.own(target.list.handle);
+      accepted.set(target.list, owned);
+    }
+    if (owned) staged.push([id, target]);
   };
   return scope.run(async () => {
     const captured = await captureInto(deps, scope, stage, host, framePath, budget, signal);
     scope.check();
-    for (const [id, element] of staged) {
-      deps.commit(id, element);
-      scope.release(element);
+    for (const [id, target] of staged) {
+      deps.commit(id, target);
+      scope.release(target.list.handle);
     }
     return captured;
   });
@@ -123,7 +133,7 @@ export async function captureDocument(
 async function captureInto(
   deps: CaptureDeps,
   scope: CaptureScope,
-  stage: (id: string, element: ElementHandle<Element>) => void,
+  stage: (id: string, target: ListedTarget) => void,
   host: DocumentHost,
   framePath: readonly string[],
   budget: number,
@@ -160,6 +170,7 @@ async function captureInto(
     return data;
   }));
   const decoded = typeof metadata === 'string'
+    // oxlint-disable-next-line e2e/no-unchecked-json -- page-reported metadata, as unchecked as the structured branch; only the ids and nodes alignment below is checked
     ? JSON.parse(metadata) as Omit<ReturnType<typeof readDocumentSemanticsFunction>, 'elements'>
     : metadata;
   const { nodes, ids, truncated: walkTruncated } = decoded;
@@ -173,23 +184,28 @@ async function captureInto(
   // number, the root's id must not change with it.
   if (framePath.length === 0 && ids.length > 0) ids[0] = ROOT_NODE_ID;
   const elementsHandle = await scope.read(() => captured.getProperty('elements'), (handle) => scope.own(handle));
-  const elements = await collectElementHandles(scope, elementsHandle, nodes.length);
-  elements.forEach((element, index) => stage(ids[index] as string, element));
+  const list = new ElementList(elementsHandle);
+  ids.forEach((id, index) => stage(id as string, { kind: 'listed', list, index }));
   let nodeCount = nodes.length;
   let truncated = walkTruncated === true;
-  const frameChildren = new Map<number, SemanticNode>();
+  const frameChildren = new Map<number, FrameChild>();
   for (let index = 0; index < nodes.length; index += 1) {
     const selector = nodes[index]!.frameSelector;
     if (selector === undefined) continue;
     // A frame with no document (detached, never loaded) shows nothing, so
     // nothing is missing from the tree.
-    const frame = await scope.read(() => elements[index]!.contentFrame().catch(() => null));
+    // Owned by the scope and released with it: the frame's element is read
+    // here, and an action reaches it later through the list like any node.
+    const element = await scope.read(() => list.fetch(index), (handle) => scope.own(handle));
+    const frame = await scope.read(() => element.contentFrame().catch(() => null));
     if (frame === null) continue;
     // Only frames on the app's site enter observations. Third-party
     // frames (ads, trackers, embeds) are not the agent's to read or act
     // on - and a stalled ad frame must not tax the capture. They stay
     // boundary nodes by design, so leaving them out is not truncation.
     if (!isOnSiteFrame(frame.url(), deps.site)) continue;
+    // A frame whose navigation has not committed shows nothing yet.
+    if (!(await scope.read(() => hasReadableDocument(frame, element)))) continue;
     // From here the frame's document is content the model should see: any
     // reason it is not read (depth, budget, deadline, a failed or timed-out
     // capture) leaves the tree incomplete, and the snapshot must say so.
@@ -199,6 +215,11 @@ async function captureInto(
     }
     const remaining = budget - nodeCount;
     if (remaining <= 0 || Date.now() >= scope.deadline) {
+      truncated = true;
+      continue;
+    }
+    const inset = await scope.read(() => element.evaluate(frameContentInset).catch(() => undefined));
+    if (inset === undefined) {
       truncated = true;
       continue;
     }
@@ -212,7 +233,7 @@ async function captureInto(
       truncated = true;
       continue;
     }
-    frameChildren.set(index, child.tree);
+    frameChildren.set(index, { tree: child.tree, inset });
     nodeCount += child.nodeCount;
     truncated ||= child.truncated;
   }
@@ -238,35 +259,6 @@ function isOnSiteFrame(url: string, site: string | undefined): boolean {
 }
 
 /**
- * Reads one element handle per observed node from the in-page element array.
- * `asElement` types handles as `ElementHandle<Node>`, but the observation walk
- * records `Element` nodes only, so the narrowing is safe by construction.
- */
-async function collectElementHandles(
-  scope: CaptureScope,
-  elementsHandle: JSHandle,
-  count: number,
-): Promise<ElementHandle<Element>[]> {
-  const properties = await scope.read(() => elementsHandle.getProperties(), (handles) => {
-    for (const handle of handles.values()) scope.own(handle);
-  });
-  const elements: ElementHandle<Element>[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const property = properties.get(String(index));
-    const element = (property?.asElement() ?? null) as ElementHandle<Element> | null;
-    if (element === null) {
-      // The in-page array outlived its document (a navigation committed while
-      // the handles were being read back). The capture is repeatable.
-      throw new EngineError('NODE_STALE', `observation node ${index} lost its element`, {
-        retryable: true,
-      });
-    }
-    elements.push(element);
-  }
-  return elements;
-}
-
-/**
  * Rebuilds the observation tree from the depth-first node list. Descendants
  * always follow their parent, so children are complete before a parent is
  * built. Captured child documents attach under their iframe boundary nodes.
@@ -275,7 +267,7 @@ function assembleTree(
   nodes: readonly RawObservedNode[],
   ids: readonly string[],
   framePath: readonly string[],
-  frameChildren: ReadonlyMap<number, SemanticNode>,
+  frameChildren: ReadonlyMap<number, FrameChild>,
 ): SemanticNode {
   if (nodes.length === 0 || ids.length === 0) {
     // An empty document is what a navigation in flight looks like; a real page
@@ -287,15 +279,16 @@ function assembleTree(
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const raw = nodes[index]!;
     const embedded = frameChildren.get(index);
-    // A child document measured its nodes against its own viewport. Shifted by
-    // the boundary element's box and clipped to it, every box in the tree is
-    // in the top-level viewport's CSS pixels, the space the screenshot and a
-    // point tap share, and a child that overflows its frame cannot claim a
-    // point over the page around it. The shift is the frame's border box; a
-    // bordered iframe is off by its border width, which is within a tap
-    // target. A frame under a CSS transform is not unwound: its boxes are
-    // where the untransformed frame would put them.
-    if (embedded !== undefined && raw.rect !== null) childLists[index]!.unshift(placeInFrame(embedded, raw.rect));
+    // A child document measured its nodes against its own viewport, which
+    // starts at the frame element's content box. Shifted by that box and
+    // clipped to it, every box in the tree is in the top-level viewport's CSS
+    // pixels, the space the screenshot and a point tap share, and a child that
+    // overflows its frame cannot claim a point over the page around it. A
+    // frame under a CSS transform is not unwound: its boxes are where the
+    // untransformed frame would put them.
+    if (embedded !== undefined && raw.rect !== null) {
+      childLists[index]!.unshift(placeInFrame(embedded.tree, contentBox(raw.rect, embedded.inset)));
+    }
     const node = toSemanticNode({ id: ids[index]!, revision: '' }, raw, childLists[index]!, framePath);
     built[index] = node;
     if (raw.parent >= 0) childLists[raw.parent]!.unshift(node);
@@ -305,15 +298,60 @@ function assembleTree(
 
 type Rect = NonNullable<SemanticNode['rect']>;
 
+/** A child document's tree, and where its viewport sits inside the frame element's border box. */
+interface FrameChild {
+  readonly tree: SemanticNode;
+  readonly inset: Rect;
+}
+
+/**
+ * Where a frame element's content box, the box its document's viewport
+ * fills, sits inside its border box: past the border and the padding. Runs in
+ * the page.
+ */
+export function frameContentInset(element: Element): Rect {
+  const style = getComputedStyle(element);
+  const left = Number.parseFloat(style.paddingLeft) || 0;
+  const top = Number.parseFloat(style.paddingTop) || 0;
+  const right = Number.parseFloat(style.paddingRight) || 0;
+  const bottom = Number.parseFloat(style.paddingBottom) || 0;
+  return {
+    x: element.clientLeft + left,
+    y: element.clientTop + top,
+    width: Math.max(0, element.clientWidth - left - right),
+    height: Math.max(0, element.clientHeight - top - bottom),
+  };
+}
+
+/** A frame element's content box, from its border box and `frameContentInset`. */
+export function contentBox(border: Rect, inset: Rect): Rect {
+  return { x: border.x + inset.x, y: border.y + inset.y, width: inset.width, height: inset.height };
+}
+
 /** The tree with every box translated into the frame's space and clipped to its box; a box left empty by the clip is dropped. */
 function placeInFrame(node: SemanticNode, frame: Rect): SemanticNode {
-  const { rect, ...rest } = node;
-  const placed = rect === undefined ? undefined : clipRect(offsetRect(rect, frame), frame);
+  const { rect, origin, ...rest } = node;
   return {
     ...rest,
-    ...(placed === undefined ? {} : { rect: placed }),
+    ...(rect === undefined ? {} : placeBoxInFrame(rect, origin, frame)),
     ...(node.children === undefined ? {} : { children: node.children.map((child) => placeInFrame(child, frame)) }),
   };
+}
+
+/**
+ * A node box a child document measured against its own viewport, in the
+ * top-level viewport's space: `rect` shifted by the frame's box and clipped
+ * to it, empty when nothing of it is inside the frame. `origin` is shifted
+ * but never clipped, and a clip that moves the box's corner keeps the
+ * unclipped corner as `origin`, so an offset into the node lands where it
+ * would at the top level.
+ */
+export function placeBoxInFrame(rect: Rect, origin: ViewportPoint | undefined, frame: Rect): Pick<SemanticNode, 'rect' | 'origin'> {
+  const placed = clipRect(offsetRect(rect, frame), frame);
+  if (placed === undefined) return {};
+  const corner = origin ?? rect;
+  const shifted = { x: corner.x + frame.x, y: corner.y + frame.y };
+  return shifted.x === placed.x && shifted.y === placed.y ? { rect: placed } : { rect: placed, origin: shifted };
 }
 
 function offsetRect(rect: Rect, by: Rect): Rect {
@@ -356,6 +394,7 @@ export function toSemanticNode(
     ...(raw.level !== null ? { level: raw.level } : {}),
     attributes: raw.attributes,
     ...(raw.rect !== null ? { rect: raw.rect } : {}),
+    ...(raw.origin !== null ? { origin: raw.origin } : {}),
     ...(framePath.length > 0 ? { framePath } : {}),
     ...(children.length > 0 ? { children } : {}),
   };

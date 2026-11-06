@@ -11,7 +11,7 @@ describe('the bundled agent skill', () => {
   it('starts with a SKILL.md whose frontmatter names the skill after its directory', () => {
     const [skill, ...rest] = readSkillFiles();
     expect(skill?.relative).toBe('SKILL.md');
-    expect(skill?.content).toMatch(/^---\nname: e2e\ndescription: .+\n---\n/);
+    expect(skill?.content).toMatch(/^---\nname: e2e\ndescription: .+\n(?:[ a-z].*\n)*---\n/);
     expect(rest.map((file) => file.relative)).toEqual(skillTopics().map((topic) => `references/${topic}.md`));
     const description = /^description: (.+)$/m.exec(skill?.content ?? '')?.[1] ?? '';
     expect(description.length).toBeLessThanOrEqual(1024);
@@ -25,6 +25,17 @@ describe('the bundled agent skill', () => {
     const linked = [...overview.matchAll(/\[references\/([a-z-]+)\.md\]\(references\/\1\.md\)/g)].map((match) => match[1]);
     expect(linked.toSorted()).toEqual([...topics]);
     for (const topic of topics) expect(overview).toContain(`| \`${topic}\` |`);
+  });
+
+  it('opens every reference longer than 100 lines with a Contents list of its sections', () => {
+    // Agents sometimes read only the head of a long file; the list shows them what the rest holds.
+    for (const file of readSkillFiles().filter((skillFile) => skillFile.relative.startsWith('references/'))) {
+      if (file.content.split('\n').length <= 100) continue;
+      const [first, ...sections] = sectionHeadings(file.content);
+      expect(first, file.relative).toBe('Contents');
+      const listed = /\n## Contents\n\n((?:- .*\n)+)/.exec(file.content)?.[1] ?? '';
+      expect(listed.trimEnd().split('\n').map((line) => line.slice('- '.length)), file.relative).toEqual(sections);
+    }
   });
 
   it('prints the overview without its frontmatter and each topic verbatim', () => {
@@ -48,10 +59,41 @@ describe('the bundled agent skill', () => {
     }
   });
 
+  it('writes every consumer skill frontmatter in block style', () => {
+    // The Agent Skills validator (skills-ref) parses frontmatter with strictyaml, which rejects `[a, b]` and `{a: b}`.
+    const skills = new URL('../../../../skills/', import.meta.url);
+    for (const entry of readdirSync(skills, { withFileTypes: true }).filter((dirent) => dirent.isDirectory())) {
+      const content = readFileSync(new URL(`${entry.name}/SKILL.md`, skills), 'utf8');
+      const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(content)?.[1] ?? '';
+      expect(frontmatter, entry.name).toMatch(new RegExp(`^name: ${entry.name}\\n`));
+      expect(frontmatter, entry.name).not.toMatch(/(?::|^\s*-)[ \t]*[[{]/m);
+    }
+  });
+
+  it('links every file of a consumer skill from its SKILL.md', () => {
+    // Hermes Agent installs a skill from GitHub as SKILL.md plus the files it links, nothing else.
+    const skills = new URL('../../../../skills/', import.meta.url);
+    for (const entry of readdirSync(skills, { withFileTypes: true }).filter((dirent) => dirent.isDirectory())) {
+      const skill = new URL(`${entry.name}/`, skills);
+      const content = readFileSync(new URL('SKILL.md', skill), 'utf8');
+      const files = markdownFiles(skill, '').filter((file) => file !== 'SKILL.md');
+      for (const file of files) expect(content, `${entry.name}/${file}`).toContain(`](${file})`);
+    }
+  });
+
   it('ships the docs pages in the published package through the build copy', () => {
     expect(packageJson.files).toContain('docs');
   });
 });
+
+/** The `## ` headings of a markdown file, in order, skipping fenced code blocks. */
+function sectionHeadings(markdown: string): string[] {
+  let fenced = false;
+  return markdown.split('\n').flatMap((line) => {
+    if (line.startsWith('```')) fenced = !fenced;
+    return !fenced && line.startsWith('## ') ? [line.slice('## '.length).trim()] : [];
+  });
+}
 
 /** Every `.md` and `.mdx` file under `dir`, relative to `root`, never descending into `node_modules`. */
 function markdownFiles(root: URL, dir: string): string[] {
