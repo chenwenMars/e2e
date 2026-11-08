@@ -330,3 +330,7 @@ a:focus-visible,button:focus-visible { outline:3px solid #60a5fa; outline-offset
 @media(max-width:760px){.quick-actions{flex-direction:column;align-items:flex-start}.el-pagination{overflow:auto;justify-content:flex-start}.top>span{font-size:13px}.actions .el-button+.el-button{margin-left:0}}
 
 @media(max-width:760px){.el-button{min-height:44px}.el-radio,.el-checkbox{min-height:44px}.el-radio-button__inner{min-height:44px;display:inline-flex;align-items:center}.el-step.is-simple .el-step__title{word-break:keep-all;font-size:11px}.el-steps--simple{gap:4px}.el-step.is-simple .el-step__arrow{flex-grow:0;margin:0 4px}}
+
+
+
+@media(max-width:760px){.shell{grid-template-rows:max-content 1fr}}

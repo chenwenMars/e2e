@@ -147,7 +147,7 @@ async function reset() {
     </section>
   <el-dialog :model-value="!!deleting" title="删除采购草稿" width="min(440px,94vw)" @close="deleting=undefined"><p>确认删除“{{deleting?.title}}”及其附件？</p><p v-if="deleteError" role="alert" class="error">{{deleteError}}</p><template #footer><el-button @click="deleting=undefined">取消</el-button><el-button type="danger" @click="remove">确认删除草稿</el-button></template></el-dialog>
   <el-dialog v-model="resetDialog" title="恢复初始演示数据" width="410px">
-    将删除本应用保存的供应商、申请单、附件和审批历史，并恢复初始演示数据。
+    将删除项目共享文件中的供应商、申请单、附件和审批历史，并恢复初始演示数据。所有浏览器和 E2E 都会受影响。
     <template #footer>
       <el-button @click="resetDialog = false">取消</el-button>
       <el-button type="danger" @click="reset">确认重置</el-button>

@@ -46,7 +46,7 @@ function move(direction: number) {
   error.value = direction > 0 ? validate(form.value.step) : "";
   if (!error.value) form.value.step += direction;
 }
-/** Attach the original File for IndexedDB structured cloning. */
+/** Attach the original File for byte-preserving shared SQLite persistence. */
 function addFile(upload: UploadFile) {
   if (!upload.raw) throw new Error("无法读取选中的文件");
   form.value.files.push(upload.raw);

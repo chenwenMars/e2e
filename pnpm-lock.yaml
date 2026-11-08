@@ -248,9 +248,6 @@ importers:
       element-plus:
         specifier: ^2.14.8
         version: 2.14.8(vue@3.5.45(typescript@5.9.3))
-      idb:
-        specifier: ^8.0.4
-        version: 8.0.4
       vue:
         specifier: ^3.5.45
         version: 3.5.45(typescript@5.9.3)
@@ -4036,9 +4033,6 @@ packages:
   human-id@4.2.1:
     resolution: {integrity: sha512-zPGsiS+dWoTZtZ4AtpA9Y+BdSFSNWvnouNlWNoUFyAM6xHOHmdCvqO3k8AIbdamCOv4gUFUVNPf6rJFfc4UiJw==}
     hasBin: true
-
-  idb@8.0.4:
-    resolution: {integrity: sha512-jd0ITCrN+Zah4J7R/Z2jnR3W7A4BXDAjmo62MwWuSjxCiueUAf7X5rbodEdidWzeknwXHmLpdZkoiiCppNi30Q==}
 
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
@@ -9078,8 +9072,6 @@ snapshots:
       - supports-color
 
   human-id@4.2.1: {}
-
-  idb@8.0.4: {}
 
   ignore@5.3.2: {}
 

@@ -12,6 +12,7 @@ export default {
       url: 'http://127.0.0.1:0',
       command: {
         executable: 'npm',
+        inheritEnv: ['PROCUREMENT_DATA_DIR'],
         args: ['run', 'preview', '--', '--host', '127.0.0.1', '--port', '{port}', '--strictPort'],
         log: '.e2e/logs/preview.log',
       },

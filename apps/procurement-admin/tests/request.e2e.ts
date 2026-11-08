@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { login } from '../test-support/login.ts';
+import { uniqueTitle, createSupplier } from '../test-support/fixtures.ts';
 
 /** Read the issued business code from the row actually rendered on screen. */
 async function readCode(browser: import('@e2e-dev/web').Browser, title: string) {
@@ -15,7 +16,8 @@ async function readCode(browser: import('@e2e-dev/web').Browser, title: string) 
 }
 
 test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser }) => {
-    const title = '扩展坞采购验收';
+    const title = uniqueTitle('扩展坞采购验收');
+    const supplier = await createSupplier(app);
     const button = (name: string) => screen.getByRole('button', name);
     await login(app, screen);
     await screen.getByRole('link', '采购申请').click();
@@ -28,8 +30,8 @@ test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser
     await date.press('Enter');
     await screen.getByRole('textbox', /采购事由/).fill('工位增加显示器接口');
     await button('下一步').click();
-    await screen.getByRole('combobox', /供应商/).fill('青禾');
-    await screen.getByRole('option', '青禾办公用品').click();
+    await screen.getByRole('combobox', /供应商/).fill(supplier.name);
+    await screen.getByRole('option', supplier.name).click();
     await screen.getByRole('textbox', '品名 1').fill('USB-C 扩展坞');
     await screen.getByRole('spinbutton', '数量 1').fill('2');
     await screen.getByRole('spinbutton', '单价（元） 1').fill('129.50');
@@ -60,7 +62,8 @@ test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser
 });
 
 test('直接提交采购申请，刷新后仍可在列表搜索并查看详情', async ({ app, screen, browser }) => {
-    const title = '本地持久化采购验收';
+    const title = uniqueTitle('本地持久化采购验收');
+    const supplier = await createSupplier(app);
     const button = (name: string) => screen.getByRole('button', name);
     await login(app, screen);
     await screen.getByRole('link', '采购申请').click();
@@ -73,8 +76,8 @@ test('直接提交采购申请，刷新后仍可在列表搜索并查看详情',
     await date.press('Enter');
     await screen.getByRole('textbox', /采购事由/).fill('验证提交后的本地存储和列表查询');
     await button('下一步').click();
-    await screen.getByRole('combobox', /供应商/).fill('青禾');
-    await screen.getByRole('option', '青禾办公用品').click();
+    await screen.getByRole('combobox', /供应商/).fill(supplier.name);
+    await screen.getByRole('option', supplier.name).click();
     await screen.getByRole('textbox', '品名 1').fill('USB-C 扩展坞');
     await screen.getByRole('spinbutton', '数量 1').fill('2');
     await screen.getByRole('spinbutton', '单价（元） 1').fill('129.50');
@@ -107,15 +110,16 @@ test('直接提交采购申请，刷新后仍可在列表搜索并查看详情',
 });
 
 test('空表单不能进入下一步，草稿删除后刷新仍不存在', async ({ app, screen, browser }) => {
+  const title = uniqueTitle('临时删除草稿');
   await login(app, screen);
   await screen.getByRole('link', '采购申请').click();
   await screen.getByRole('button', '创建申请单').click();
   await screen.getByRole('button', '下一步').click();
   await expect(screen.getByRole('heading', '基本信息')).toBeVisible();
   await expect(screen.getByRole('alert')).toContainText('请输入申请标题');
-  await screen.getByPlaceholder('例如：研发工作站采购').fill('临时删除草稿');
+  await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
   await screen.getByRole('button', '保存草稿').click();
-  const row = screen.getByRole('row', /临时删除草稿/);
+  const row = screen.getByRole('row', new RegExp(title));
   await expect(row).toContainText('草稿');
   await row.getByRole('button', '删除草稿').click();
   await screen.getByRole('button', '取消').click();

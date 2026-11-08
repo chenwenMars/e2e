@@ -1,10 +1,12 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { login } from '../test-support/login.ts';
+import { uniqueTitle, createSupplier } from '../test-support/fixtures.ts';
 
 for (const type of ['服务', '软件'] as const) {
   test(`${type}采购创建、刷新持久化及两级审批`, async ({ app, screen, browser }) => {
-    const title = `${type}采购流程验收`;
+    const title = uniqueTitle(`${type}采购流程验收`);
+    const supplier = await createSupplier(app);
     const button = (name: string) => screen.getByRole('button', name);
     const setDate = async (name: RegExp, value: string) => { const field = screen.getByRole('combobox', name); await field.fill(value); await field.press('Enter'); };
     await login(app, screen);
@@ -17,8 +19,8 @@ for (const type of ['服务', '软件'] as const) {
     await setDate(/期望到货日期/, '2027-01-01');
     await screen.getByRole('textbox', /采购事由/).fill('验证新类型与审批流程');
     await button('下一步').click();
-    await screen.getByRole('combobox', /供应商/).fill('远山');
-    await screen.getByRole('option', '远山信息技术').click();
+    await screen.getByRole('combobox', /供应商/).fill(supplier.name);
+    await screen.getByRole('option', supplier.name).click();
     if (type === '服务') {
       await screen.getByRole('combobox', /服务类别/).press('Enter');
       await screen.getByRole('option', '咨询').click();
