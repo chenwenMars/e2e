@@ -25,6 +25,7 @@ function logout() {
           采购申请
         </router-link>
         <router-link to="/suppliers">供应商名录</router-link>
+        <router-link to="/approvals">审批工作台</router-link>
       </nav>
       <footer>本地工作空间</footer>
     </aside>

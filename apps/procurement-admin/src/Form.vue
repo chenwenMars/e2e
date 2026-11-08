@@ -3,9 +3,13 @@ import { computed, onMounted, ref, toRaw } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, type UploadFile } from "element-plus";
 import RichText from "./RichText.vue";
+import TypeFields from './TypeFields.vue';
+import TypeSummary from './TypeSummary.vue';
+import { validateRequest, newDetails, approvalPath, type ProcurementType, type ValidationIssue } from './domain.ts';
 import {
   departments,
-  suppliers,
+  listSuppliers,
+  type Supplier,
   tags,
   money,
   total,
@@ -19,42 +23,35 @@ const form = ref(newForm()),
   ready = ref(false),
   busy = ref(false),
   error = ref("");
+const suppliers = ref<Supplier[]>([]);
 const steps = ["基本信息", "采购明细", "说明与附件", "确认提交"];
-const readonly = computed(() => form.value.status === "已提交");
+const readonly = computed(() => !['草稿', '已驳回'].includes(form.value.status));
+const issues = ref<ValidationIssue[]>([]);
+const selectedType = computed({ get: () => form.value.details.type, set: (type: ProcurementType) => { form.value.details = newDetails(type); form.value.supplierId = ''; issues.value = []; } });
+/** Locate the validation error for a basic form field. */
+function fieldError(field: string) { return issues.value.find(i => i.field === field)?.message; }
+const selectedSupplier = computed(() => suppliers.value.find(s => s.id === form.value.supplierId));
 onMounted(async () => {
+  suppliers.value = await listSuppliers();
   if (props.id) form.value = await getRequest(props.id);
   ready.value = true;
 });
+/** Validate the visible step using the same rules as persisted submission. */
 function validate(step: number) {
-  const f = form.value;
-  if (!f.title.trim()) return "请输入申请标题";
-  if (
-    !step &&
-    (!f.department || !f.applicant.trim() || !f.date || !f.purpose.trim())
-  )
-    return "请填写申请部门、申请人、期望到货日期和采购事由";
-  if (
-    step === 1 &&
-    (!f.supplier ||
-      !f.lines.length ||
-      f.lines.some(
-        (l) =>
-          !l.name.trim() ||
-          !Number.isInteger(l.quantity) ||
-          !(l.quantity > 0 && l.price > 0),
-      ))
-  )
-    return "请选择供应商，并为每行填写品名、正整数数量和大于零的单价";
-  return "";
+  issues.value = validateRequest(form.value).filter(i => i.step === step);
+  return issues.value.map(i => i.message).join('；');
 }
+/** Move only after the current step passes centralized validation. */
 function move(direction: number) {
   error.value = direction > 0 ? validate(form.value.step) : "";
   if (!error.value) form.value.step += direction;
 }
+/** Attach the original File for IndexedDB structured cloning. */
 function addFile(upload: UploadFile) {
   if (!upload.raw) throw new Error("无法读取选中的文件");
   form.value.files.push(upload.raw);
 }
+/** Download the persisted attachment bytes. */
 function download(file: File) {
   const url = URL.createObjectURL(file),
     link = document.createElement("a");
@@ -63,10 +60,12 @@ function download(file: File) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** Validate the submission and persist before navigating to the list. */
 async function save(submit: boolean) {
   error.value = "";
   if (!form.value.title.trim()) {
     error.value = "请输入申请标题";
+    issues.value = [{field: 'title', step: 0, message: error.value}];
     form.value.step = 0;
     return;
   }
@@ -85,9 +84,12 @@ async function save(submit: boolean) {
       ...toRaw(form.value),
       updated: new Date().toISOString(),
       status: submit ? "已提交" : "草稿",
-    });
+    }, props.id ? 'update' : 'create');
     ElMessage.success(submit ? "申请单已提交" : "草稿已保存");
     await router.push("/requests");
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
+    console.error(cause);
   } finally {
     busy.value = false;
   }
@@ -114,20 +116,23 @@ async function save(submit: boolean) {
         <el-step v-for="s in steps" :key="s" :title="s" />
       </el-steps>
       <h2>{{ readonly ? form.title : steps[form.step] }}</h2>
+      <div class="request-status"><el-tag>{{form.status}}</el-tag><span data-testid="procurement-code">采购编码：{{form.code || '首次保存草稿或提交时自动生成'}}</span><span v-if="form.status==='已提交'">当前节点：{{form.approvalStage}}审批</span></div>
+      <el-alert v-if="form.status==='已驳回'" title="申请已驳回，请根据审批意见修改后重新提交。历史记录会保留。" type="warning" :closable="false"/>
       <el-form label-position="top" v-if="!readonly && form.step === 0">
+        <el-form-item label="采购类型" required><el-radio-group v-model="selectedType"><el-radio-button value="物资">物资采购</el-radio-button><el-radio-button value="服务">服务采购</el-radio-button><el-radio-button value="软件">软件订阅</el-radio-button></el-radio-group></el-form-item>
         <div class="grid">
-          <el-form-item label="申请标题" required>
+          <el-form-item label="申请标题" required :error="fieldError('title')">
             <el-input v-model="form.title" placeholder="例如：研发工作站采购" />
           </el-form-item>
-          <el-form-item label="申请部门" required>
+          <el-form-item label="申请部门" required :error="fieldError('department')">
             <el-select v-model="form.department">
               <el-option v-for="d in departments" :key="d" :value="d" />
             </el-select>
           </el-form-item>
-          <el-form-item label="申请人" required>
+          <el-form-item label="申请人" required :error="fieldError('applicant')">
             <el-input v-model="form.applicant" />
           </el-form-item>
-          <el-form-item label="期望到货日期" required>
+          <el-form-item label="期望到货日期" required :error="fieldError('date')">
             <el-date-picker v-model="form.date" value-format="YYYY-MM-DD" />
           </el-form-item>
           <el-form-item label="优先级">
@@ -144,42 +149,21 @@ async function save(submit: boolean) {
             </el-checkbox-group>
           </el-form-item>
         </div>
-        <el-form-item label="采购事由" required>
+        <el-form-item label="采购事由" required :error="fieldError('purpose')">
           <el-input v-model="form.purpose" type="textarea" :rows="3" />
         </el-form-item>
       </el-form>
       <el-form v-else-if="!readonly && form.step === 1" label-position="top">
-        <el-form-item label="供应商" required>
+        <el-form-item label="供应商" required :error="fieldError('supplierId')">
           <el-select
-            v-model="form.supplier"
+            v-model="form.supplierId"
             filterable
             placeholder="搜索并选择供应商"
           >
-            <el-option v-for="s in suppliers" :key="s" :value="s" />
+            <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" :disabled="!s.enabled || !s.scopes.includes(form.details.type)" />
           </el-select>
         </el-form-item>
-        <div class="line" v-for="(line, i) in form.lines" :key="i">
-          <el-form-item :label="'品名 ' + (i + 1)">
-            <el-input v-model="line.name" />
-          </el-form-item>
-          <el-form-item :label="'数量 ' + (i + 1)">
-            <el-input-number v-model="line.quantity" :min="1" :precision="0" />
-          </el-form-item>
-          <el-form-item :label="'单价（元） ' + (i + 1)">
-            <el-input-number v-model="line.price" :min="0" :precision="2" />
-          </el-form-item>
-          <el-button
-            :disabled="form.lines.length === 1"
-            @click="form.lines.splice(i, 1)"
-          >
-            删除行
-          </el-button>
-        </div>
-        <el-button
-          @click="form.lines.push({ name: '', quantity: 1, price: 0 })"
-        >
-          添加明细
-        </el-button>
+        <TypeFields v-model="form" :issues="issues"/>
         <p class="amount">合计 {{ money.format(total(form)) }}</p>
       </el-form>
       <div v-else-if="!readonly && form.step === 2">
@@ -213,7 +197,9 @@ async function save(submit: boolean) {
               ['优先级', form.priority],
               ['用途标签', form.categories.join('、')],
               ['采购事由', form.purpose],
-              ['供应商', form.supplier],
+              ['供应商', readonly ? form.supplier : selectedSupplier?.name],
+              ['采购类型', form.details.type],
+              ['审批路径', approvalPath(form).join(' → ')],
             ]"
             :key="k"
           >
@@ -221,23 +207,7 @@ async function save(submit: boolean) {
             <dd>{{ v }}</dd>
           </template>
         </dl>
-        <h3>采购明细</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>品名</th>
-              <th>数量</th>
-              <th>单价</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(l, i) in form.lines" :key="i">
-              <td>{{ l.name }}</td>
-              <td>{{ l.quantity }}</td>
-              <td>{{ money.format(l.price) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <TypeSummary :form="form"/>
         <p class="amount">合计 {{ money.format(total(form)) }}</p>
         <h3>采购说明</h3>
         <RichText :model-value="form.notes" readonly />
@@ -253,6 +223,7 @@ async function save(submit: boolean) {
           下载 {{ f.name }}
         </el-button>
       </div>
+      <section v-if="form.history.length" class="history"><h3>审批记录</h3><el-timeline><el-timeline-item v-for="event in form.history" :key="event.id" :timestamp="new Date(event.at).toLocaleString('zh-CN')"><strong>{{event.stage}} · {{event.action}}</strong><p>{{event.actor}}：{{event.comment}}</p></el-timeline-item></el-timeline></section>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <div v-if="!readonly" class="actions">
         <el-button :disabled="busy" @click="save(false)">保存草稿</el-button>

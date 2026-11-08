@@ -7,6 +7,8 @@ import "./style.css";
 import App from "./App.vue";
 import Login from "./Login.vue";
 import Desk from "./Desk.vue";
+import Suppliers from "./Suppliers.vue";
+import Approvals from "./Approvals.vue";
 import Form from "./Form.vue";
 
 const router = createRouter({
@@ -14,11 +16,13 @@ const router = createRouter({
   routes: [
     { path: "/", redirect: "/home" },
     { path: "/login", component: Login },
-    ...["home", "requests", "suppliers"].map((name) => ({
+    ...["home", "requests"].map((name) => ({
       path: "/" + name,
       name,
       component: Desk,
     })),
+    { path: "/approvals", name: "approvals", component: Approvals },
+    { path: "/suppliers", name: "suppliers", component: Suppliers },
     { path: "/requests/new", component: Form },
     { path: "/requests/:id", component: Form, props: true },
   ],

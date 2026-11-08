@@ -8,7 +8,10 @@
     "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:e2e": "e2e run"
+    "test:e2e": "e2e run",
+    "test:unit": "node --test tests-unit/*.test.ts",
+    "test:storage": "node tests-browser/storage.mjs",
+    "test:layout": "node tests-browser/layout.mjs"
   },
   "dependencies": {
     "@tiptap/pm": "^3.33.0",
