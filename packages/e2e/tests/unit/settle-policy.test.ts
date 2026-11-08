@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { changeWaitAfter, SETTLE_AFTER } from '../../src/agent/settle-policy.ts';
 
 const full = SETTLE_AFTER.tap.changeWaitMs;
+const caretWait = 150;
 const textbox = { role: 'textbox', states: { focused: true } };
 const unfocused = { role: 'textbox' };
 
@@ -30,8 +31,8 @@ describe('changeWaitAfter', () => {
   it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Shift+ArrowRight', 'Control+Shift+ArrowLeft', 'Control+a', 'Meta+a'])(
     'shortens the window for the caret key %s in a text field',
     (key) => {
-      expect(changeWaitAfter({ name: 'press', node: textbox, key })).toBeLessThan(full!);
-      expect(changeWaitAfter({ name: 'pressKey', key }, textbox)).toBeLessThan(full!);
+      expect(changeWaitAfter({ name: 'press', node: textbox, key })).toBe(caretWait);
+      expect(changeWaitAfter({ name: 'pressKey', key }, textbox)).toBe(caretWait);
     },
   );
 
