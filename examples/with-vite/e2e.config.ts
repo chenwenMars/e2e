@@ -1,13 +1,24 @@
 import type { E2EConfig } from 'e2e';
 import { web } from '@e2e-dev/web';
-import { gateway } from 'ai';
+import { createDeepSeek } from '@ai-sdk/deepseek';
+import { loadEnvFile } from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+loadEnvFile(fileURLToPath(new URL('./.env', import.meta.url)));
+
+const model = process.env.DEEPSEEK_MODEL;
+const baseURL = process.env.DEEPSEEK_BASE_URL;
+if (!model || !baseURL) {
+  throw new Error('Set DEEPSEEK_MODEL and DEEPSEEK_BASE_URL in examples/with-vite/.env');
+}
+
+const deepseek = createDeepSeek({ baseURL });
 
 export default {
-  // The Vercel AI Gateway serves the model and reads AI_GATEWAY_API_KEY.
-  // Only tests that use `agent` need it; tests/deterministic.e2e.ts runs without one.
+  // The provider reads DEEPSEEK_API_KEY when an agent step calls the model.
   agents: {
     default: {
-      model: gateway('openai/gpt-6-luna-fast'),
+      model: deepseek(model),
       system: 'You are a thorough QA agent. Verify every outcome.',
     },
   },

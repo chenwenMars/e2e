@@ -1,7 +1,19 @@
 import type { E2EConfig } from 'e2e';
 import { github } from '@e2e-dev/github';
-import { gateway } from 'ai';
+import { createDeepSeek } from '@ai-sdk/deepseek';
+import { loadEnvFile } from 'node:process';
+import { fileURLToPath } from 'node:url';
 import base from './e2e.config.ts';
+
+loadEnvFile(fileURLToPath(new URL('./.env', import.meta.url)));
+
+const model = process.env.DEEPSEEK_MODEL;
+const baseURL = process.env.DEEPSEEK_BASE_URL;
+if (!model || !baseURL) {
+  throw new Error('Set DEEPSEEK_MODEL and DEEPSEEK_BASE_URL in apps/web-benchmark/.env');
+}
+
+const deepseek = createDeepSeek({ baseURL });
 
 /**
  * Agentic suite against the same app and account as the deterministic one.
@@ -9,10 +21,9 @@ import base from './e2e.config.ts';
  * (`benchmark.yml`), replaying the recordings committed under `.e2e/cache/`
  * and calling the model for a step with none. To re-record by hand:
  *
- *   AI_GATEWAY_API_KEY=... pnpm --filter @e2e-dev/web-benchmark test:agent
+ *   pnpm --filter @e2e-dev/web-benchmark test:agent
  *
- * `E2E_MODEL` overrides the pinned model so one suite dogfoods several
- * providers.
+ * DeepSeek credentials, endpoint, and model are configured in the local .env.
  */
 export default {
   ...base,
@@ -25,7 +36,7 @@ export default {
   reporters: ['list', github({ key: 'web agent' })],
   agents: {
     default: {
-      model: gateway(process.env.E2E_MODEL ?? 'openai/gpt-6-luna-fast'),
+      model: deepseek(model),
       // The ceiling a step may ask for: a per-call `maxSteps` can only lower it,
       // and the scroll-heavy scenarios declare the budget they need per test.
       maxSteps: 60,

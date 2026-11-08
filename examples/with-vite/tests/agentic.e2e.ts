@@ -1,10 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 
-// Agent steps call the model in e2e.config.ts. Without a key these tests are skipped.
-const skip = process.env.AI_GATEWAY_API_KEY ? false : 'set AI_GATEWAY_API_KEY to run agent tests';
-
-test('the agent gets a greeting', { skip }, async ({ app, agent, screen }) => {
+test('the agent gets a greeting', async ({ app, agent, screen }) => {
   await app.open('/');
 
   // The agent works out which field and button to use.
@@ -15,7 +12,7 @@ test('the agent gets a greeting', { skip }, async ({ app, agent, screen }) => {
   await agent.assert('the app greets Grace by name');
 });
 
-test('the agent finds the empty-name error', { skip }, async ({ app, agent, screen }) => {
+test('the agent finds the empty-name error', async ({ app, agent, screen }) => {
   await app.open('/');
 
   await agent.act('press greet without typing a name');

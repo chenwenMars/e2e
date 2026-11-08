@@ -28,7 +28,7 @@ planted bug.
   declared with `{ skip: '<reason>' }`, so the gap stays visible.
 - `e2e.agent.config.ts` + `tests-agent/`: the agentic suite, derived from the
   deterministic config. It gates every PR too. Each step spends real model
-  calls (cents per run) and needs `AI_GATEWAY_API_KEY`. `scenarios.e2e.ts`
+  calls and needs `DEEPSEEK_API_KEY` in this folder's `.env`. `scenarios.e2e.ts`
   drives every task scenario the accessibility tree can carry with one
   `agent.act` per scenario and checks the success message deterministically;
   scenarios the grammar cannot finish yet are declared and skipped with the
@@ -48,13 +48,97 @@ does not exist yet at install time, and CI installs before it builds.
 
 ```bash
 pnpm build                                          # from the repo root, once
-pnpm --filter @e2e-dev/web-benchmark test            # build the app, run tests/
-pnpm --filter @e2e-dev/web-benchmark test:headed
-AI_GATEWAY_API_KEY=... pnpm --filter @e2e-dev/web-benchmark test:agent
+pnpm --filter @e2e-dev/web-benchmark run test         # build the app, run tests/ headlessly
 pnpm --filter @e2e-dev/web-benchmark dev             # browse the scenarios on :4280
 ```
 
-### Writing tests
+### 在浏览器中观察常规测试和 AI 测试
+
+以下命令均在仓库根目录执行。使用 Node.js 24.8+，或 Node.js 22.22.3+；
+本机已安装的版本可通过 `nvm use 24.15.0` 切换。
+首次运行前执行上面的 `pnpm build` 构建框架包；框架源码未变时，无须重复构建。
+
+运行全部常规测试（不调用模型），显示浏览器：
+
+```bash
+pnpm --filter @e2e-dev/web-benchmark run test:headed --workers 1 --retries 0
+```
+
+运行 onboarding-wizard 的完整五步表单填写和提交测试（不调用模型）：
+
+```bash
+pnpm --filter @e2e-dev/web-benchmark run test:headed tests/onboarding-wizard.e2e.ts --grep 'the review step repeats the brief and finishes with the PIN' --workers 1 --retries 0
+```
+
+要运行该场景文件中的全部五个常规测试，去掉 `--grep` 和后面的测试名称。
+
+运行全部 AI Agent 测试，显示浏览器并真实调用 DeepSeek
+（先按下一节填写 `apps/web-benchmark/.env`）：
+
+```bash
+pnpm --filter @e2e-dev/web-benchmark run test:agent --headed --debug --no-cache --workers 1 --retries 0
+```
+
+建议先验证一个商品搜索场景，再运行全部 AI 测试：
+
+常规测试（运行该文件中的两个测试，不调用模型）：
+
+```bash
+pnpm --filter @e2e-dev/web-benchmark run test:headed tests/debounced-search.e2e.ts --workers 1 --retries 0
+```
+
+AI Agent 测试（调用 DeepSeek）：
+
+```bash
+pnpm --filter @e2e-dev/web-benchmark run test:agent --tag debounced-search --headed --debug --no-cache --workers 1 --retries 0
+```
+
+将 `--tag debounced-search` 替换为 `--tag date-picker`、`--tag kanban-board`
+或 `--tag promo-storefront`，可以分别验证日期选择、看板和购买流程。
+
+| 参数 | 作用 |
+| --- | --- |
+| `--headed` | 显示浏览器执行界面；`test:headed` 已包含此参数 |
+| `--workers 1` | 使用单个 worker，方便观察 |
+| `--retries 0` | 失败直接报告，不自动重试 |
+| `--no-cache` | 禁用操作回放，让 AI 步骤真实调用模型 |
+| `--debug` | 输出更多调试信息 |
+| `--video=on --trace=on` | 可选，保留录像和执行 trace，供浏览器关闭后查看 |
+
+这些脚本会自动构建页面并由 runner 启动网站，无须提前运行 `dev`。
+运行前先在对应终端停止自己手动启动的 benchmark `dev` 服务，避免构建期间复用它。
+使用 pnpm 转发参数时，不要在参数前额外添加 `--`。
+报告位于 `apps/web-benchmark/.e2e/report.json`，录像和 trace 位于其 `.e2e/results/` 下。
+全部 AI 测试会产生更多模型调用；测试能否通过以实际运行结果为准。
+
+### Local DeepSeek configuration
+
+Create `apps/web-benchmark/.env` and fill in your DeepSeek API key:
+
+```dotenv
+DEEPSEEK_API_KEY=your-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+The agent config explicitly loads this file; it does not read the Vite example's
+`.env`. The repository ignores `.env` files. Existing shell variables take
+precedence, so unset them if you want to use the file's values. The model must
+support tools and image input; DeepSeek documents `deepseek-flash` as supporting
+images. A missing or invalid key fails model calls rather than skipping tests.
+
+After building the framework and the benchmark app, run one scenario with fresh
+model calls (from this folder):
+
+```bash
+pnpm run build
+node node_modules/e2e/dist/cli/bin.js run tests-agent/scenarios.e2e.ts --config e2e.agent.config.ts --tag debounced-search --headed --no-cache --workers 1 --retries 0
+```
+
+This local configuration uses DeepSeek instead of the upstream Gateway setup.
+CI using this config also needs the `.env` file and DeepSeek credentials.
+
+### Writing tests locally
 
 `test` rebuilds the production app on every run. While authoring, keep the dev
 server up instead: the config sets `reuseExisting`, so outside CI a server
