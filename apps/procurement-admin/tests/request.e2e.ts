@@ -1,0 +1,41 @@
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { login } from '../test-support/login.ts';
+
+test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser }) => {
+    const title = '扩展坞采购验收';
+    const button = (name: string) => screen.getByRole('button', name);
+    await login(app, screen);
+    await screen.getByRole('link', '采购申请').click();
+    await button('创建申请单').click();
+    await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
+    await screen.getByRole('combobox', /申请部门/).press('Enter');
+    await screen.getByRole('option', '研发部').click();
+    const date = screen.getByRole('combobox', /期望到货日期/);
+    await date.fill('2027-02-01');
+    await date.press('Enter');
+    await screen.getByRole('textbox', /采购事由/).fill('工位增加显示器接口');
+    await button('下一步').click();
+    await screen.getByRole('combobox', /供应商/).fill('青禾');
+    await screen.getByRole('option', '青禾办公用品').click();
+    await screen.getByRole('textbox', '品名 1').fill('USB-C 扩展坞');
+    await screen.getByRole('spinbutton', '数量 1').fill('2');
+    await screen.getByRole('spinbutton', '单价（元） 1').fill('129.50');
+    await button('下一步').click();
+    await screen.getByRole('textbox', '采购说明').fill('验收时检查双屏输出');
+    await browser.locator('input[type=file]').setInputFiles('test-support/quote.txt');
+    await button('保存草稿').click();
+
+    const row = screen.getByRole('row', new RegExp(title));
+    await expect(row).toContainText('草稿');
+    await browser.reload();
+    await row.getByRole('button', '继续编辑').click();
+    await button('下一步').click();
+    await expect(screen.getByText('合计 ¥259.00')).toBeVisible();
+    await expect(button('下载 quote.txt')).toBeVisible();
+    await button('提交申请').click();
+    await expect(row).toContainText('已提交');
+    await row.getByRole('button', '查看详情').click();
+    await expect(screen.getByRole('heading', title)).toBeVisible();
+    await expect(button('下载 quote.txt')).toBeVisible();
+});

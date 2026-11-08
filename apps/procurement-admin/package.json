@@ -7,7 +7,8 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "e2e run"
   },
   "dependencies": {
     "@tiptap/pm": "^3.33.0",
@@ -19,7 +20,11 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@ai-sdk/deepseek": "^3.0.81",
+    "@e2e-dev/web": "^0.15.5",
     "@vitejs/plugin-vue": "^6.0.10",
+    "ai": "^7.0.164",
+    "e2e": "^0.23.0",
     "typescript": "~5.9.3",
     "vite": "^8.1.5",
     "vue-tsc": "^3.3.14"
