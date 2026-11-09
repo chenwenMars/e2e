@@ -16,6 +16,8 @@ for (const type of ['服务', '软件'] as const) {
     await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
     await screen.getByRole('combobox', /申请部门/).press('Enter');
     await screen.getByRole('option', '研发部').click();
+    await screen.getByRole('combobox', /成本中心/).press('Enter');
+    await screen.getByRole('option', '研发成本中心').click();
     await setDate(/期望到货日期/, '2027-01-01');
     await screen.getByRole('textbox', /采购事由/).fill('验证新类型与审批流程');
     await button('下一步').click();

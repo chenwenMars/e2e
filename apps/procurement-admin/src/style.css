@@ -334,3 +334,24 @@ a:focus-visible,button:focus-visible { outline:3px solid #60a5fa; outline-offset
 
 
 @media(max-width:760px){.shell{grid-template-rows:max-content 1fr}}
+
+.rich .tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid #cbd5e1;
+}
+.rich .tools .el-button { margin: 0; }
+.rich .tools .el-button[aria-pressed="true"] {
+  color: #1d4ed8;
+  border-color: #93b4f7;
+  background: #eff6ff;
+}
+.rich .tiptap { min-height: 160px; overflow-wrap: anywhere; }
+.rich .tiptap:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.rich .tiptap h2 { margin: 12px 0 8px; font-size: 1.35em; }
+.rich .tiptap h3 { margin: 10px 0 6px; font-size: 1.15em; }
+.rich .tiptap ul, .rich .tiptap ol { padding-left: 1.6em; }
+.rich .tiptap li { margin: 2px 0; }
+.rich .tiptap blockquote { margin: 10px 0; padding-left: 14px; border-left: 3px solid #94a3b8; color: #475569; }
+.rich .tiptap a { color: #2563eb; text-decoration: underline; }

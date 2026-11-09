@@ -34,7 +34,7 @@ async function login(page,origin){await page.goto(origin);await page.getByLabel(
 try {
   const dev=await start('dev',4297);let preview=await start('preview',4296);
   browser=await chromium.launch();const a=await browser.newContext();const b=await browser.newContext();const original=await a.newPage();const other=await b.newPage();
-  const legacy={...newRequest(),id:'legacy-007',code:'202611080007',title:'原浏览器申请007',department:'研发部',date:'2027-02-01',purpose:'保留现有数据',supplierId:'SUP-1',supplier:'青禾办公用品',revision:2,updated:'2026-11-08T10:00:00Z',lines:[{name:'设备',specification:'标准',quantity:1,price:200}],details:{type:'物资',address:'上海',contact:'张三',installation:false,installationNotes:''},history:[{id:'history-id',at:'2026-11-08T09:00:00Z',stage:'部门',action:'驳回',actor:'原审批人',comment:'原审批意见'}],files:[]};
+  const legacy={...newRequest(),id:'legacy-007',code:'202611080007',title:'原浏览器申请007',costCenter:'研发',department:'研发部',date:'2027-02-01',purpose:'保留现有数据',supplierId:'SUP-1',supplier:'青禾办公用品',revision:2,updated:'2026-11-08T10:00:00Z',lines:[{name:'设备',specification:'标准',quantity:1,price:200}],details:{type:'物资',address:'上海',contact:'张三',installation:false,installationNotes:''},history:[{id:'history-id',at:'2026-11-08T09:00:00Z',stage:'部门',action:'驳回',actor:'原审批人',comment:'原审批意见'}],files:[]};
   const raw=new DatabaseSync(join(directory,'procurement.sqlite'));raw.exec('PRAGMA busy_timeout=5000;BEGIN IMMEDIATE');
   const {files,...data}=legacy;
   raw.prepare('INSERT INTO requests VALUES(?,?,?)').run(legacy.id,legacy.code,JSON.stringify(data));

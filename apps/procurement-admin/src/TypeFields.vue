@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import GoodsExcel from './GoodsExcel.vue';
 import type { RequestForm, ValidationIssue } from './domain.ts';
 const form = defineModel<RequestForm>({ required: true });
 const props = defineProps<{ issues: ValidationIssue[] }>();
@@ -7,11 +8,12 @@ function error(field: string) { return props.issues.find(i => i.field === field)
 </script>
 <template>
   <template v-if="form.details.type === '物资'">
+    <GoodsExcel :lines="form.lines" :currency="form.currency" @import="form.lines = $event" />
     <div class="line" v-for="(line,i) in form.lines" :key="i">
       <el-form-item :label="'品名 '+(i+1)" :error="error(`lines.${i}.name`)"><el-input v-model="line.name"/></el-form-item>
       <el-form-item :label="'规格 '+(i+1)"><el-input v-model="line.specification"/></el-form-item>
       <el-form-item :label="'数量 '+(i+1)" :error="error(`lines.${i}.quantity`)"><el-input-number v-model="line.quantity" :min="1" :precision="0"/></el-form-item>
-      <el-form-item :label="'单价（元） '+(i+1)" :error="error(`lines.${i}.price`)"><el-input-number v-model="line.price" :min="0" :precision="2"/></el-form-item>
+      <el-form-item :label="'单价（'+(form.currency === 'CNY' ? '元' : form.currency)+'） '+(i+1)" :error="error(`lines.${i}.price`)"><el-input-number v-model="line.price" :min="0" :precision="2"/></el-form-item>
       <el-button :disabled="form.lines.length===1" @click="form.lines.splice(i,1)">删除行</el-button>
     </div>
     <el-button @click="form.lines.push({name:'',specification:'',quantity:1,price:0})">添加明细</el-button>

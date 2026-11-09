@@ -4,7 +4,7 @@ import { newRequest, totalCents, validateRequest, approvalPath, nextApproval, ty
 
 function goods(): RequestForm {
   const f = newRequest();
-  return { ...f, title: '设备采购', department: '研发部', applicant: 'admin', date: '2027-01-01', purpose: '研发测试', supplierId: 'SUP-1', lines: [{ name: '设备', specification: '标准版', quantity: 1, price: 9999.99 }], details: { type: '物资', address: '上海', contact: '张三', installation: false, installationNotes: '' } };
+  return { ...f, title: '设备采购', costCenter: '研发', department: '研发部', applicant: 'admin', date: '2027-01-01', purpose: '研发测试', supplierId: 'SUP-1', lines: [{ name: '设备', specification: '标准版', quantity: 1, price: 9999.99 }], details: { type: '物资', address: '上海', contact: '张三', installation: false, installationNotes: '' } };
 }
 test('金额以分计算，10000 元起增加财务审批', () => {
   const f = goods();
@@ -58,4 +58,18 @@ test('采购编码为北京时间年月日加四位流水，超出容量明确�
   assert.equal(createProcurementCode(date, 9999), '202701019999');
   for (const sequence of [0, -1, 1.5, 10000]) assert.throws(() => createProcurementCode(date, sequence), /流水号/);
   assert.equal(newRequest().code, '');
+});
+
+test('外币使用保存的汇率，人民币按分四舍五入后决定审批门槛', () => {
+  const f = goods();
+  f.currency = 'USD';
+  assert.ok(validateRequest(f).some(i => i.field === 'exchangeRate'));
+  f.exchangeRate = {base: 'USD', date: '2026-11-06', rate: 6.4};
+  f.lines[0].price = 1562.49;
+  assert.deepEqual(approvalPath(f), ['部门']);
+  f.lines[0].price = 1562.5;
+  assert.deepEqual(approvalPath(f), ['部门', '财务']);
+  assert.deepEqual(validateRequest(f), []);
+  f.costCenter = '';
+  assert.ok(validateRequest(f).some(i => i.field === 'costCenter'));
 });

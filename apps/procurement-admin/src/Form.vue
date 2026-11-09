@@ -5,7 +5,7 @@ import { ElMessage, type UploadFile } from "element-plus";
 import RichText from "./RichText.vue";
 import TypeFields from './TypeFields.vue';
 import TypeSummary from './TypeSummary.vue';
-import { validateRequest, newDetails, approvalPath, type ProcurementType, type ValidationIssue } from './domain.ts';
+import { costCenters, currencyNames, cnyCents, validateRequest, newDetails, approvalPath, type ProcurementType, type ValidationIssue } from './domain.ts';
 import {
   departments,
   listSuppliers,
@@ -15,6 +15,7 @@ import {
   total,
   newForm,
   getRequest,
+  getExchangeRate,
   saveRequest,
 } from "./data";
 const props = defineProps<{ id?: string }>(),
@@ -23,6 +24,27 @@ const form = ref(newForm()),
   ready = ref(false),
   busy = ref(false),
   error = ref("");
+const rateLoading = ref(false);
+const rateError = ref('');
+let rateRequest = 0;
+const converted = computed(() => cnyCents(form.value));
+/** Discard superseded responses when the applicant changes currency twice. */
+async function refreshRate() {
+  const request = ++rateRequest;
+  const currency = form.value.currency;
+  form.value.exchangeRate = null;
+  rateError.value = '';
+  rateLoading.value = currency !== 'CNY';
+  if (currency === 'CNY') return;
+  try {
+    const quote = await getExchangeRate(currency);
+    if (request === rateRequest) form.value.exchangeRate = quote;
+  } catch (cause) {
+    if (request === rateRequest) rateError.value = '获取汇率失败：' + (cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    if (request === rateRequest) rateLoading.value = false;
+  }
+}
 const suppliers = ref<Supplier[]>([]);
 const steps = ["基本信息", "采购明细", "说明与附件", "确认提交"];
 const readonly = computed(() => !['草稿', '已驳回'].includes(form.value.status));
@@ -129,6 +151,21 @@ async function save(submit: boolean) {
               <el-option v-for="d in departments" :key="d" :value="d" />
             </el-select>
           </el-form-item>
+          <el-form-item label="成本中心" required :error="fieldError('costCenter')">
+            <el-select v-model="form.costCenter" placeholder="选择成本中心">
+              <el-option v-for="center in costCenters" :key="center" :value="center" :label="center + '成本中心'" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="结算币种" required :error="fieldError('currency')">
+            <el-select v-model="form.currency" @change="refreshRate">
+              <el-option v-for="(name, code) in currencyNames" :key="code" :value="code" :label="code + ' · ' + name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="form.currency !== 'CNY'" label="人民币参考汇率" :error="fieldError('exchangeRate')">
+            <span v-if="form.exchangeRate">1 {{ form.currency }} = {{ form.exchangeRate.rate }} CNY（欧洲央行，{{ form.exchangeRate.date }}）</span>
+            <span v-if="rateError" role="alert" class="error">{{ rateError }}</span>
+            <el-button link type="primary" :loading="rateLoading" @click="refreshRate">刷新汇率</el-button>
+          </el-form-item>
           <el-form-item label="申请人" required :error="fieldError('applicant')">
             <el-input v-model="form.applicant" />
           </el-form-item>
@@ -164,7 +201,7 @@ async function save(submit: boolean) {
           </el-select>
         </el-form-item>
         <TypeFields v-model="form" :issues="issues"/>
-        <p class="amount">合计 {{ money.format(total(form)) }}</p>
+        <p class="amount">合计 {{ money(total(form), form.currency) }}<span v-if="form.currency !== 'CNY' && converted !== null"> · 折合人民币 {{ money(converted / 100, 'CNY') }}</span></p>
       </el-form>
       <div v-else-if="!readonly && form.step === 2">
         <h3>采购说明</h3>
@@ -192,6 +229,9 @@ async function save(submit: boolean) {
             v-for="[k, v] in [
               ['申请标题', form.title],
               ['申请部门', form.department],
+              ['成本中心', form.costCenter ? form.costCenter + '成本中心' : '未填写'],
+              ['结算币种', form.currency + ' · ' + currencyNames[form.currency]],
+              ...(form.exchangeRate ? [['人民币参考汇率', `1 ${form.currency} = ${form.exchangeRate.rate} CNY（欧洲央行，${form.exchangeRate.date}）`]] : []),
               ['申请人', form.applicant],
               ['期望到货日期', form.date],
               ['优先级', form.priority],
@@ -199,7 +239,7 @@ async function save(submit: boolean) {
               ['采购事由', form.purpose],
               ['供应商', readonly ? form.supplier : selectedSupplier?.name],
               ['采购类型', form.details.type],
-              ['审批路径', approvalPath(form).join(' → ')],
+              ['审批路径', converted === null ? '待获取有效折算金额' : approvalPath(form).join(' → ')],
             ]"
             :key="k"
           >
@@ -208,7 +248,7 @@ async function save(submit: boolean) {
           </template>
         </dl>
         <TypeSummary :form="form"/>
-        <p class="amount">合计 {{ money.format(total(form)) }}</p>
+        <p class="amount">合计 {{ money(total(form), form.currency) }}<span v-if="form.currency !== 'CNY' && converted !== null"> · 折合人民币 {{ money(converted / 100, 'CNY') }}</span></p>
         <h3>采购说明</h3>
         <RichText :model-value="form.notes" readonly />
         <h3>附件</h3>

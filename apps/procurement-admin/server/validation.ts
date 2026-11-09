@@ -1,4 +1,4 @@
-import { ProcurementError } from '../src/domain.ts';
+import { currencyNames, costCenters, validDate, ProcurementError } from '../src/domain.ts';
 import type { Supplier, StoredRequest } from '../src/storage-model.ts';
 
 /** Require an object at the HTTP boundary, before business code trusts it. */
@@ -28,6 +28,14 @@ export function supplier(value:unknown):Supplier {
 export function request(value:unknown):StoredRequest {
   const r=object(value);
   for(const key of ['id','code','title','department','applicant','date','priority','supplier','supplierId','purpose','updated'])text(r[key],key);
+  choice(r.costCenter, ['', ...costCenters], '成本中心');
+  choice(r.currency, Object.keys(currencyNames), '结算币种');
+  if (r.exchangeRate !== null) {
+    const quote = object(r.exchangeRate);
+    if (r.currency === 'CNY' || quote.base !== r.currency || !validDate(text(quote.date, '汇率日期')) ||
+        typeof quote.rate !== 'number' || !Number.isFinite(quote.rate) || quote.rate <= 0)
+      throw new ProcurementError('申请汇率与结算币种不符或汇率无效');
+  }
   if(!r.id)throw new ProcurementError('申请 ID 不能为空');
   integer(r.revision,'版本');const step=integer(r.step,'步骤');if(step>3)throw new ProcurementError('步骤无效');
   choice(r.status,['草稿','已提交','已通过','已驳回'],'申请状态');choice(r.approvalStage,['部门','财务','完成'],'审批节点');

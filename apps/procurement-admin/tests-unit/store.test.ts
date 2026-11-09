@@ -32,12 +32,12 @@ test('已迁移的 SQLite 数据可直接读取，原编码、附件和流水高
   const row={...draft('demo1'),code:'202611080007',revision:1,status:'已提交' as const,supplierId:'SUP-4',history:[{id:'event',at:'2026-11-08T10:00:00Z',action:'提交' as const,stage:'部门' as const,actor:'admin',comment:'提交采购申请'}]};
   const raw=new DatabaseSync(f.file);
   for(const s of supplierSeeds())raw.prepare('INSERT INTO suppliers VALUES(?,?,?)').run(s.id,s.name,JSON.stringify(s));
-  const {files,...data}=row;
+  const {files,currency,costCenter,exchangeRate,...data}=row;
   raw.prepare('INSERT INTO requests VALUES(?,?,?)').run(row.id,row.code,JSON.stringify(data));
   raw.prepare('INSERT INTO attachments VALUES(?,?,?,?,?,?)').run(row.id,0,'quote.txt','text/plain',1,Buffer.from('原始报价'));
   raw.prepare('INSERT INTO sequences VALUES(?,?)').run('20261108',20);raw.close();
   const store=new ProcurementStore(f.file);
-  try{const saved=store.getRequest(row.id);assert.equal(saved.code,row.code);assert.equal(saved.status,row.status);assert.deepEqual(saved.history,row.history);assert.equal(Buffer.from(saved.files[0]!.base64,'base64').toString(),'原始报价');assert.equal(store.sequence('20261108'),20);assert.equal(store.listRequests().length,1);}
+  try{const saved=store.getRequest(row.id);assert.equal(saved.currency,'CNY');assert.equal(saved.costCenter,'');assert.equal(saved.exchangeRate,null);assert.equal(saved.code,row.code);assert.equal(saved.status,row.status);assert.deepEqual(saved.history,row.history);assert.equal(Buffer.from(saved.files[0]!.base64,'base64').toString(),'原始报价');assert.equal(store.sequence('20261108'),20);assert.equal(store.listRequests().length,1);}
   finally{store.close();f.clean();}
 });
 test('损坏文件不能当成空数据初始化',()=>{

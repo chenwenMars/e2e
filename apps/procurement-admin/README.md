@@ -42,7 +42,9 @@ PROCUREMENT_DATA_DIR=.data/e2e npm run test:e2e -- --workers 1 --retries 0
 ## 控制台功能与测试入口
 
 - **供应商名录**：新增、编辑、详情、删除，按名称/联系人/电话搜索，按启用状态及供应范围筛选并分页。名称不可重复；被申请引用的供应商只能停用。详情提供关联申请入口。旧版预置供应商缺少的联系方式保留为空，编辑保存时须补齐。
-- **采购申请**：物资采购（动态明细、规格、收货、安装条件字段）、服务采购（起止日期、交付说明、动态里程碑）、软件订阅（席位、每席月单价、月数、自动续费、敏感级别）。支持草稿恢复、草稿确认删除、附件上传下载、富文本说明、搜索/类型与状态筛选、金额排序及分页。
+- **采购申请**：物资采购（动态明细、规格、收货、安装条件字段）、服务采购（起止日期、交付说明、动态里程碑）、软件订阅（席位、每席月单价、月数、自动续费、敏感级别）。支持草稿恢复、草稿确认删除、附件上传下载、基于开源 Tiptap 的富文本说明（标题、文字样式、列表、引用、链接和撤销重做）、搜索/类型与状态筛选、金额排序及分页。
+- **成本中心与结算币种**：成本中心固定单选研发、行政、财务或运营。结算币种默认人民币。选择外币后，服务端通过 Frankfurter 取得欧洲央行最新公布的参考汇率；申请保留原币、汇率和报价日期。提交时服务端复核，报价有变化时须刷新并重新确认。审批和金额排序使用折算后的人民币。
+- **物资明细 Excel**：在「采购明细」下载对应币种的 .xlsx 模板，在「采购明细」工作表从第二行填写品名、规格（可空）、数量（正整数）及单价（正数，最多两位小数）。点击「导入明细」选择文件，预览显示原始行号和错误；勾选有效行并确认后追加到表单，取消不改动明细。编辑、确认和只读详情都可导出明细。
 - **审批工作台**：本地演示规则为低于 10,000 元仅部门审批，达到 10,000 元需部门和财务两级审批。审批意见必填；驳回后可修改重提，历史保留。已提交及已通过申请只读。此页面演示状态流转，不提供真实多用户权限隔离。
 
 - **重置数据**：首页重置会同时清除供应商、申请、附件及审批历史并恢复预置数据，所有浏览器都会受影响，执行前有确认弹窗。
@@ -152,7 +154,7 @@ export async function createSupplier(app:App) {
 }
 /** Provision an owned draft for reference checks or AI tests, never a user's seed record. */
 export async function createDraft(app:App,supplier:Awaited<ReturnType<typeof createSupplier>>,label='E2E采购草稿') {
-  const form={...newRequest(),title:uniqueTitle(label),department:'研发部',applicant:'admin',date:'2027-02-01',purpose:'测试业务流程',supplierId:supplier.id,lines:[{name:'会议设备',specification:'标准版',quantity:1,price:200}],details:{type:'物资' as const,address:'上海测试园区',contact:'测试联系人',installation:false,installationNotes:''}};
+  const form={...newRequest(),title:uniqueTitle(label),costCenter:'研发',department:'研发部',applicant:'admin',date:'2027-02-01',purpose:'测试业务流程',supplierId:supplier.id,lines:[{name:'会议设备',specification:'标准版',quantity:1,price:200}],details:{type:'物资' as const,address:'上海测试园区',contact:'测试联系人',installation:false,installationNotes:''}};
   const response=await fetch(`${app.baseUrl}/api/procurement/requests/save`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({form,operation:'create'})});
   if(!response.ok)throw new Error(await response.text());return form;
 }
@@ -188,6 +190,8 @@ test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser
     await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
     await screen.getByRole('combobox', /申请部门/).press('Enter');
     await screen.getByRole('option', '研发部').click();
+    await screen.getByRole('combobox', /成本中心/).press('Enter');
+    await screen.getByRole('option', '研发成本中心').click();
     const date = screen.getByRole('combobox', /期望到货日期/);
     await date.fill('2027-02-01');
     await date.press('Enter');
@@ -234,6 +238,8 @@ test('直接提交采购申请，刷新后仍可在列表搜索并查看详情',
     await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
     await screen.getByRole('combobox', /申请部门/).press('Enter');
     await screen.getByRole('option', '研发部').click();
+    await screen.getByRole('combobox', /成本中心/).press('Enter');
+    await screen.getByRole('option', '研发成本中心').click();
     const date = screen.getByRole('combobox', /期望到货日期/);
     await date.fill('2027-02-01');
     await date.press('Enter');

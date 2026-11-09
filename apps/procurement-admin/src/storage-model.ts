@@ -6,14 +6,21 @@ export const suppliers = [
   "方圆印务",
 ];
 export const tags = ["项目交付", "日常运营", "设备更新"];
-import { newRequest, totalCents, type RequestForm } from './domain.ts';
-/** Format the active procurement type's integer-cent total as yuan. */
+import { costCenters, type Currency, newRequest, totalCents, type RequestForm } from './domain.ts';
+/** Format the active procurement type's integer-cent total in settlement units. */
 export function total(form: RequestForm) { return totalCents(form) / 100; }
 
-export const money = new Intl.NumberFormat("zh-CN", {
-  style: "currency",
-  currency: "CNY",
-});
+const formatters = new Map<Currency, Intl.NumberFormat>();
+/** Display settlement amounts with the same two-place precision as entry and export. */
+export function money(amount: number, currency: Currency): string {
+  let formatter = formatters.get(currency);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat('zh-CN', {style: 'currency', currency,
+      currencyDisplay: currency === 'CNY' ? 'symbol' : 'code', minimumFractionDigits: 2, maximumFractionDigits: 2});
+    formatters.set(currency, formatter);
+  }
+  return formatter.format(amount);
+}
 
 /** Construct the initial demonstration requests without persistence side effects. */
 export function requestSeeds(): RequestForm[] {
@@ -28,6 +35,7 @@ export function requestSeeds(): RequestForm[] {
     ...newRequest(),
     id: "PR-100" + (i + 1),
     title,
+    costCenter: costCenters[i % costCenters.length],
     department: departments[i % departments.length],
     supplier: suppliers[i % suppliers.length],
     supplierId: `SUP-${i % suppliers.length + 1}`,

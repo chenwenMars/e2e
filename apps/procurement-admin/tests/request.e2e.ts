@@ -25,6 +25,8 @@ test('创建采购申请，恢复草稿并提交', async ({ app, screen, browser
     await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
     await screen.getByRole('combobox', /申请部门/).press('Enter');
     await screen.getByRole('option', '研发部').click();
+    await screen.getByRole('combobox', /成本中心/).press('Enter');
+    await screen.getByRole('option', '研发成本中心').click();
     const date = screen.getByRole('combobox', /期望到货日期/);
     await date.fill('2027-02-01');
     await date.press('Enter');
@@ -71,6 +73,8 @@ test('直接提交采购申请，刷新后仍可在列表搜索并查看详情',
     await screen.getByPlaceholder('例如：研发工作站采购').fill(title);
     await screen.getByRole('combobox', /申请部门/).press('Enter');
     await screen.getByRole('option', '研发部').click();
+    await screen.getByRole('combobox', /成本中心/).press('Enter');
+    await screen.getByRole('option', '研发成本中心').click();
     const date = screen.getByRole('combobox', /期望到货日期/);
     await date.fill('2027-02-01');
     await date.press('Enter');

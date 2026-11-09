@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { createDraft, createSupplier } from '../test-support/fixtures.ts';
+import { login } from '../test-support/login.ts';
+
+test('采购说明的格式和链接保存后可恢复并在详情只读显示', async ({ app, browser, screen }) => {
+  const draft = await createDraft(app, await createSupplier(app), '富文本验收');
+  await login(app, screen);
+  await app.open('/#/requests/' + draft.id);
+  const button = (name: string) => screen.getByRole('button', name);
+  await button('下一步').click();
+  await button('下一步').click();
+  const input = screen.getByRole('textbox', '采购说明');
+  await input.fill('采购说明测试');
+  await input.press('ControlOrMeta+A');
+  await button('加粗').click();
+  await button('链接').click();
+  await screen.getByRole('textbox', '链接地址').fill('https://example.com/detail');
+  await button('确定').click();
+  await expect(screen.getByRole('link', '采购说明测试')).toBeVisible();
+  await button('撤销').click();
+  await expect(screen.getByRole('link', '采购说明测试')).not.toBeVisible();
+  await button('重做').click();
+  await expect(screen.getByRole('link', '采购说明测试')).toBeVisible();
+  await button('保存草稿').click();
+  await screen.getByRole('row', new RegExp(draft.title)).getByRole('button', '继续编辑').click();
+  await expect(screen.getByRole('link', '采购说明测试')).toBeVisible();
+  assert.deepEqual(await browser.evaluate(() => {
+    const root = document.querySelector('.tiptap');
+    return { text: root?.textContent, bold: !!root?.querySelector('strong'), href: root?.querySelector('a')?.getAttribute('href') };
+  }), { text: '采购说明测试', bold: true, href: 'https://example.com/detail' });
+  await button('下一步').click();
+  await expect(screen.getByRole('link', '采购说明测试')).toBeVisible();
+  await button('提交申请').click();
+  await screen.getByRole('row', new RegExp(draft.title)).getByRole('button', '查看详情').click();
+  await expect(screen.getByRole('link', '采购说明测试')).toBeVisible();
+  assert.equal(await browser.evaluate(() => document.querySelector('.tiptap')?.getAttribute('contenteditable')), 'false');
+  assert.equal(await browser.evaluate(() => document.querySelector('.tiptap a')?.getAttribute('href')), 'https://example.com/detail');
+});

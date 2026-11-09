@@ -1,4 +1,4 @@
-import { ProcurementError, type RequestForm, type ApprovalStage } from './domain.ts';
+import { ProcurementError, type RequestForm, type Currency, type ExchangeRate, type ApprovalStage } from './domain.ts';
 import type { StoredRequest, Attachment, Supplier } from './storage-model.ts';
 export { departments, tags, suppliers, newSupplier, total, money } from './storage-model.ts';
 export type { Supplier } from './storage-model.ts';
@@ -22,6 +22,8 @@ async function serializeRequest(form:RequestForm):Promise<StoredRequest> {
 }
 /** Reconstruct real Files for the existing upload/download UI. */
 function deserializeRequest(r:StoredRequest):RequestForm {return {...r,files:r.files.map(f=>{const binary=atob(f.base64);return new File([Uint8Array.from(binary,c=>c.charCodeAt(0))],f.name,{type:f.type,lastModified:f.lastModified});})};}
+/** Fetch the latest published quotation through the same-origin server. */
+export function getExchangeRate(currency: Currency) { return api<ExchangeRate>('exchange-rates/' + currency); }
 /** List the shared supplier directory. */
 export function listSuppliers(){return api<Supplier[]>('suppliers');}
 /** Save supplier changes through centralized validation. */

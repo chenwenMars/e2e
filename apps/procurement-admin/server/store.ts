@@ -51,7 +51,10 @@ export class ProcurementStore {
   /** Read metadata and attachments within an existing snapshot. */
   private readRequest(id: string): StoredRequest {
     const row=this.db.prepare('SELECT data FROM requests WHERE id=?').get(id);if(!row)throw new ProcurementError('申请单不存在');
-    return {...JSON.parse(String(row.data)),files:this.files(id)} as StoredRequest;
+    const data = JSON.parse(String(row.data));
+    // Before multi-currency support all prices were RMB and no cost center was recorded.
+    if (!Object.hasOwn(data, 'currency')) Object.assign(data, { currency: 'CNY', exchangeRate: null, costCenter: '' });
+    return {...data,files:this.files(id)} as StoredRequest;
   }
   /** Read all requests in one consistent snapshot. */
   listRequests(): StoredRequest[] {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { cnyCents } from './domain.ts';
 import { useRoute, useRouter } from "vue-router";
 import {
   listRequests,
@@ -32,7 +33,7 @@ const filtered = computed(() =>
       (!status.value || r.status === status.value) &&
       (!type.value || r.details.type === type.value) &&
       (r.title + r.code + r.id + r.department).includes(query.value.trim()),
-  ).toSorted((a,b) => sort.value === "amount" ? total(b)-total(a) : b.updated.localeCompare(a.updated)),
+  ).toSorted((a,b) => sort.value === "amount" ? (cnyCents(b) ?? -1) - (cnyCents(a) ?? -1) : b.updated.localeCompare(a.updated)),
 );
 const home = computed(() => route.name === "home");
 async function reset() {
@@ -110,7 +111,7 @@ async function reset() {
           />
         </el-select>
         <el-select v-model="type" aria-label="筛选采购类型" placeholder="全部类型" clearable><el-option v-for="t in ['物资','服务','软件']" :key="t" :value="t"/></el-select>
-        <el-select v-model="sort" aria-label="排序方式"><el-option label="最近更新" value="updated"/><el-option label="金额从高到低" value="amount"/></el-select>
+        <el-select v-model="sort" aria-label="排序方式"><el-option label="最近更新" value="updated"/><el-option label="按人民币金额从高到低" value="amount"/></el-select>
       </div>
       <el-table
         :data="home ? records.slice(0, 5) : filtered.slice((page-1)*10,page*10)"
@@ -121,7 +122,7 @@ async function reset() {
         <el-table-column label="类型" width="90"><template #default="{row}">{{row.details.type}}</template></el-table-column>
         <el-table-column label="部门" prop="department" min-width="95" />
         <el-table-column label="金额" min-width="110">
-          <template #default="{ row }">{{ money.format(total(row)) }}</template>
+          <template #default="{ row }">{{ money(total(row),row.currency) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
