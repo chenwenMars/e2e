@@ -261,7 +261,7 @@ current path and revision. Takes no arguments.
 
 `tap`, `double_tap`, `long_press`, `right_click`, `hover`, `type`, `press`,
 `select`, `check`, `scroll`, `scroll_to`, `drag`, `upload`, `navigate`,
-`back`, `resize_viewport`, `type_secret`. Each returns the action's summary, the
+`back`, `resize_viewport`, `switch_tab`, `close_tab`, `type_secret`. Each returns the action's summary, the
 [test line](#test_lines) that repeats it or why there is none, and what
 changed on screen.
 
@@ -403,7 +403,9 @@ Test line: await screen.getByRole("button", "Sign in").tap();
 
 No line: `type` or `press` with no target, `press` with `times` over 1,
 `scroll`, `scroll_to` a text, `dismiss_keyboard`, `resize_viewport` (set the
-size with the engine fixture, `browser.setViewport` on web), and a `type` the
+size with the engine fixture, `browser.setViewport` on web), `switch_tab`
+and `close_tab` (`browser.tabs()[tab - 1].activate()` and `.close()` on
+web), and a `type` the
 node took through the keyboard. The [point tools](#point-tools) print nothing.
 
 #### `screenshot`
@@ -582,7 +584,8 @@ options, or to name an export, write `engine` as an object:
 - **Lookup.** The server looks for each package in the project, then beside
   the running `e2e`, then in `~/.e2e/engines`. When it is in none of them,
   the error names the command that installs it for every project:
-  `npm install --prefix ~/.e2e/engines @e2e-dev/web`.
+  `npm install --prefix ~/.e2e/engines @e2e-dev/web`. An agent that cannot
+  run it, such as one in a sandbox without network access, asks you to.
 - **`app`** takes `url`, `bundleId`, and `appPath`, as a target's
   [`app`](/reference/config#the-app-under-test) does. `@e2e-dev/web` needs
   `url`. `@e2e-dev/mobile` needs `bundleId` or `appPath`.

@@ -9,6 +9,7 @@
  * the module is safe to import from a config that never calls a model.
  */
 
+import { redactToolResult } from './redaction.ts';
 import type { StepResult, Tool, ToolSet } from 'ai';
 import { z } from 'zod';
 import { isTapActionName, type NodeActionName, type PointActionName } from '../cache/trace.ts';
@@ -604,6 +605,22 @@ export function grammarTools(
         ),
     });
   }
+  if (verbs.has('switchTab')) {
+    tools['switch_tab'] = screenTool({
+      description:
+        'Show another open tab. When more than one tab is open, the screen header says which tab you are on and how many there are, numbered from 1 in the order they opened. A tab the app opens stays in the background until you switch to it.',
+      inputSchema: z.object({ tab: z.number().int().min(1).describe('The tab number, from 1 in the order the tabs opened.') }),
+      execute: ({ tab }) => acting({ done: `Switched to tab ${String(tab)}.`, attempt: `switch_tab ${String(tab)}` }, () => context.actions.switchTab(tab)),
+    });
+  }
+  if (verbs.has('closeTab')) {
+    tools['close_tab'] = screenTool({
+      description:
+        'Close an open tab, numbered as switch_tab counts them. Closing the tab on screen shows the tab that opened it, else the tab shown before it. The last open tab cannot be closed.',
+      inputSchema: z.object({ tab: z.number().int().min(1).describe('The tab number, from 1 in the order the tabs opened.') }),
+      execute: ({ tab }) => acting({ done: `Closed tab ${String(tab)}.`, attempt: `close_tab ${String(tab)}` }, () => context.actions.closeTab(tab)),
+    });
+  }
   // The pixel verbs are the fallback for a target the tree does not list: a
   // tap, hover, or drag reaches the engine as bare points where it takes
   // them, and a type, press, or select acts on a listed control under the
@@ -900,7 +917,7 @@ function verbKit(context: StepExecutorContext, options: GrammarToolSetup) {
   const inOrder = <T>(body: () => Promise<T>): Promise<T> => queue.run(body);
   /** The screen after an action: the changes since the one the model holds and, once the step shows pixels, a fresh screenshot. */
   const present = async (lead: string, update: ScreenUpdate = {}): Promise<ScreenOutput> =>
-    screen.present(await context.observe({ pixels: screen.showingPixels }), { lead, ...update });
+    screen.present(await context.observe({ pixels: screen.showingPixels }), { lead: redactToolResult(context, lead), ...update });
   /** An action and its look at the result, for a caller already inside the queue. */
   const perform = (
     label: ActionLabel,

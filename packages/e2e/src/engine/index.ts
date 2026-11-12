@@ -139,16 +139,21 @@ export interface EngineAppCheckInfo {
 
 /**
  * The app the harness resolved from the target's declaration, handed to
- * `prepare` and `init`: the site policy for the decisions only a surface can
- * make (which nested documents enter an observation, which requests carry
- * injected credentials), and what a device launches. The URL itself stays
- * with the harness: a surface never learns where the app is, and opens what
- * `session.open` is given.
+ * `prepare` and `init`: the origin and site policy for the decisions only a
+ * surface can make (which requests carry injected credentials, which nested
+ * documents enter an observation), and what a device launches. Navigation
+ * stays with the harness: a surface opens what `session.open` is given.
  */
 export interface EngineAppInfo {
   /**
+   * The origin of the app's `url` on the run's port (`scheme://host:port`, as
+   * `URL.origin` serializes it): where credentials an engine injects into
+   * requests (headers, basic auth) go by default. Absent for an app without
+   * a URL, and for a free port the run has not assigned (`e2e doctor`).
+   */
+  readonly origin?: string;
+  /**
    * The site of the app's `url`, its registrable domain as `siteOf` reads it:
-   * where the app's secrets, headers, and basic-auth credentials may go, and
    * whose child frames an observation reads; `sameSite` applies it. Absent
    * for an app without a URL, which is no policy at all.
    */
@@ -360,6 +365,20 @@ export interface EngineSession {
   back?(context: OperationContext): Promise<void>;
   /** Sets the viewport to `size` in CSS pixels, for this page and every page the attempt opens after it. */
   resize?(size: ViewportSize, context: OperationContext): Promise<void>;
+  /**
+   * Shows the open tab at `index`, zero-based in the order the tabs opened,
+   * as `EngineSnapshot.tabs` counts them: every observation and action after
+   * it reads and acts on that tab. An index with no open tab is an
+   * `ACTION_FAILED` the model reads. Declare it with `tabs` in snapshots.
+   */
+  switchTab?(index: number, context: OperationContext): Promise<void>;
+  /**
+   * Closes the open tab at `index`, counted as `switchTab` counts them. When
+   * it was the tab shown, the engine shows another, such as the tab that
+   * opened it. An index with no open tab, or the last open tab, is an
+   * `ACTION_FAILED` the model reads.
+   */
+  closeTab?(index: number, context: OperationContext): Promise<void>;
   /** Recreates the execution context, keeping persisted state. */
   restart?(context: OperationContext): Promise<void>;
   /** Clears persisted client state and recreates the execution context. */
@@ -487,7 +506,7 @@ export interface EngineInitInfo {
    * `process.cwd()`, which an in-process run does not change.
    */
   readonly projectRoot: string;
-  /** The app the target declares: the site policy of its URL, and what a device launches. */
+  /** The app the target declares: the origin and site policy of its URL, and what a device launches. */
   readonly app: EngineAppInfo;
   /**
    * This worker's environment: the run's, plus what this target's `prepare`
@@ -649,6 +668,14 @@ export interface EngineObserveOptions {
   readonly comparable?: boolean;
 }
 
+/** The tabs a surface has open, as `EngineSnapshot.tabs` reports them. */
+export interface EngineTabs {
+  /** How many tabs are open: 2 or more. */
+  readonly count: number;
+  /** The zero-based position, in the order the tabs opened, of the tab `root` reads. */
+  readonly active: number;
+}
+
 /**
  * One fresh semantic snapshot of the surface under test. The harness owns
  * everything downstream: revision minting, secret redaction, and the
@@ -691,6 +718,14 @@ export interface EngineSnapshot {
    * the engine did not measure it; consumers then fall back to the tree.
    */
   readonly keyboardVisible?: boolean;
+  /**
+   * The tabs the surface has open, when it has more than one, such as a
+   * browser with a tab the app opened. The harness tells the model which
+   * tab it reads and how many there are, and the agent switches between them
+   * through `session.switchTab` and closes them through `session.closeTab`.
+   * Omit with one tab.
+   */
+  readonly tabs?: EngineTabs;
   /**
    * Semantic capture timed out. Return only the stable root reference, with no other fields,
    * and fresh pixels whose masking was proven independently of the failed

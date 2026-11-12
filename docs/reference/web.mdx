@@ -53,6 +53,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 | [`connect`](#connect) | `WebConnectOptions` | launches locally |
 | [`headers`](#headers) | `Record<string, string>` | - |
 | [`basicAuth`](#basicauth) | `WebBasicAuth` | - |
+| [`credentialOrigins`](#credentialorigins) | `string[]` | - |
 | [`testIdAttribute`](#testidattribute) | `string` | `'data-testid'` |
 | [`userAgent`](#useragent) | `string` | the browser's own |
 | [`locale`](#locale) | `string` | the browser's own |
@@ -181,10 +182,11 @@ How recovery runs:
 - After a disconnect, the next operation calls `reconnectEndpoint` once,
   within that operation's timeout and abort signal. The resolver must return
   the existing browser's endpoint.
-- The engine checks the persistent default context ID and the original
-  page's target ID. It refuses a browser that does not expose the default
-  context ID. A missing page or a different context fails the attempt. A
-  matching URL does not select a replacement tab.
+- The engine checks the persistent default context ID and the active tab's
+  target ID. It refuses a browser that does not expose the default context
+  ID. A missing active tab or a different context fails the attempt. A
+  matching URL does not select a replacement tab. The attempt's other tabs
+  are found by their target IDs; one that is gone is dropped.
 - The engine installs secure-field masking before it publishes each CDP
   binding. An incompatible Playwright version fails the connection instead of
   exposing pixels.
@@ -240,15 +242,20 @@ session state capture and restore. `app.clearState` fails with
 
 #### `headers`
 
-Headers added to requests within the app's site, including subdomains.
+Headers added to every request that starts at the app's origin: the scheme,
+host, and port of `app.url`. A request that starts at another port, a
+subdomain, or any other host gets none. A redirect keeps the headers its
+request started with, to any origin.
 
 ```ts
 web({ headers: { 'x-preview-token': process.env.PREVIEW_TOKEN ?? '' } });
 ```
 
-- A [continued](#route) request bound for the app's site still carries them.
+- A [continued](#route) request bound for an allowed origin still carries
+  them.
 - `headers` and `basicAuth` are how a test reaches a
   [protected preview](/web#protected-previews).
+- See [request credentials](/reference/security#request-credentials).
 
 | Throws | When |
 | --- | --- |
@@ -261,8 +268,9 @@ blocks service workers.
 
 #### `basicAuth`
 
-HTTP basic authentication. The browser answers a `401` challenge with these
-credentials on any origin, matching Playwright's `httpCredentials`.
+HTTP basic authentication. The browser answers a `401` challenge from the
+app's origin with these credentials. A challenge from any other origin goes
+unanswered unless [`credentialOrigins`](#credentialorigins) lists it.
 
 ```ts
 import { secrets } from 'e2e';
@@ -275,7 +283,7 @@ redacted like any configured secret. So is the base64 credential of the
 `Authorization` header it becomes.
 
 ```ts
-/** HTTP basic authentication the browser answers a `401` challenge with. */
+/** HTTP basic authentication the browser answers a `401` challenge from the app's origin with. */
 export interface WebBasicAuth {
   /** The user name; `:` is not allowed in one (RFC 7617). */
   readonly username: string;
@@ -288,11 +296,37 @@ export interface WebBasicAuth {
 | --- | --- |
 | `INVALID_CONFIG` | A `:` in the user name, or an unknown key. |
 
+<Note>
+WebKit can't scope a credential to an origin on its scheme's default port
+(`https://staging.example.com`) or with an IPv6 host. When the app's origin
+or one in `credentialOrigins` is such an origin, WebKit answers a `401` from
+any origin, as Playwright does by default.
+</Note>
+
 <Warning>
 The secret protection is text only. A page that renders the password on
 screen is not masked in screenshots or model pixels
 ([Security rules](/reference/security#secrets-in-engine-options)).
 </Warning>
+
+#### `credentialOrigins`
+
+More origins that receive [`headers`](#headers) and
+[`basicAuth`](#basicauth), beyond the app's own, such as an API on another
+host behind the same gate.
+
+```ts
+web({
+  headers: { 'x-preview-token': process.env.PREVIEW_TOKEN ?? '' },
+  credentialOrigins: ['https://api.staging.example.com'],
+});
+```
+
+List each origin exactly. A `*` in the host and port `0` match no request.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_CONFIG` | No `headers` or `basicAuth`, an entry that is not an `http:` or `https:` origin with no path, query, or fragment, a `*` in the host, or port `0`. |
 
 #### `testIdAttribute`
 
@@ -405,9 +439,9 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
   `addInitScript`.
 - `setViewport` sizes the active tab and every tab opened after it, and
   `emulateMedia` sets its media the same way.
-- A tab the app opens itself, from a `target="_blank"` link or `window.open`,
-  is not followed. The active tab stays the one the attempt opened. Assert on
-  what that tab shows, or open the link's URL with `browser.goto`.
+- A tab the app opens, from a `target="_blank"` link or `window.open`,
+  opens in the background: the active tab stays where it was until
+  `waitForPopup` or `activate` makes another one active. See [Tabs](#tabs).
 - Every `browser` call is a recorded `browser.<method>` step, except
   `locator` and `frameLocator`. They build a locator without touching the
   page, and the action or assertion on it is the step.
@@ -442,6 +476,9 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`setViewport`](#setviewport) | `Promise<void>` |
 | [`emulateMedia`](#media-emulation) | `Promise<void>` |
 | [`onDialog`](#ondialog) | `Promise<() => Promise<void>>` |
+| [`tabs`](#tabs) | `readonly BrowserTab[]` |
+| [`waitForPopup`](#tabs) | `Promise<BrowserTab>` |
+| [`newTab`](#tabs) | `Promise<BrowserTab>` |
 | [`waitForDownload`](#waitfordownload) | `Promise<{ path, absolutePath, … }>` |
 | [`waitForDownloads`](#waitfordownloads) | `Promise<{ path, absolutePath, … }[]>` |
 | [`keyboard`](#keyboard) | `{ press, down, up, type }` |
@@ -456,10 +493,10 @@ The [config](/reference/config) sets each member's budget:
   `locator` and `frameLocator` touch no page and take none.
 
 A `{ timeout }` option overrides the budget on `goto`, `reload`, `back`,
-`forward`, `waitForResponse`, `waitForDownload`, and `waitForDownloads`, capped
+`forward`, `waitForResponse`, `waitForPopup`, `waitForDownload`, and `waitForDownloads`, capped
 by the test deadline (`cleanupTimeout` in `afterEach`); `0` waits until it. `url`, `title`, `evaluate`, `addInitScript`, `route`,
 `unroute`, `unrouteAll`, `cookies`, `setCookies`, `clearCookies`, `setViewport`,
-`emulateMedia`, `onDialog`, `keyboard.*`, and `mouse.*` take no override.
+`emulateMedia`, `onDialog`, `newTab`, the `BrowserTab` methods, `keyboard.*`, and `mouse.*` take no override.
 
 #### `goto`
 
@@ -616,7 +653,8 @@ await browser.route('**/api/quote', async (route) => {
 ```
 
 `route.fetch()` returns the upstream `{ url, status, headers, body(), text(), json() }`
-with the site's headers, under the action timeout, without deciding the route.
+with the configured headers when its origin gets them, under the action
+timeout, without deciding the route.
 It does not follow redirects, which could take it past the navigation rule.
 
 - The pattern is a string or a `RegExp`, both tested against the full URL. In
@@ -672,7 +710,7 @@ export interface RouteContinueOverrides {
   url?: string;
   /** Request method. */
   method?: string;
-  /** Replaces every request header; `undefined` drops one, and the configured `headers` for the app's site are added on top. */
+  /** Replaces every request header; `undefined` drops one, and the configured `headers` for an allowed origin are added on top. */
   headers?: Record<string, string | undefined>;
   /** Request body. */
   postData?: string;
@@ -715,7 +753,7 @@ await browser.unroute('**/api/quote');
 #### `unrouteAll`
 
 Removes every route registered by the browser fixture, preserving configured
-site headers.
+headers.
 
 ```ts
 await browser.unrouteAll();
@@ -884,6 +922,64 @@ export interface Dialog {
 
 export type DialogHandler = 'accept' | 'dismiss' | ((dialog: Dialog) => void | Promise<void>);
 ```
+
+#### Tabs
+
+A tab the app opens, from a `target="_blank"` link or `window.open`, opens
+in the background. The active tab stays where it was, and `screen`,
+`expect`, and the `browser` page methods keep acting on it.
+`waitForPopup` makes the tab its trigger opens active. When the active tab
+closes, the tab that opened it is active again, or the open tab that was
+active most recently when the opener is gone too.
+
+```ts
+const popup = await browser.waitForPopup(() =>
+  screen.getByRole('button', 'Open verification tab').tap(),
+);
+const code = await screen.getByText(/^TAB-/).textContent();
+await popup.close(); // the opener is active again
+await screen.getByRole('textbox', 'Verification code').fill(code);
+```
+
+- `waitForPopup(trigger)` runs the trigger and resolves with the tab it
+  opens once that tab is active. It takes the first tab the app opens
+  after the wait starts, which can be one an earlier action opened whose
+  page loaded only now.
+- `tabs()` returns the open tabs in the order they opened, the same
+  `BrowserTab` for a tab the whole attempt. A tab joins once its first page
+  loads, so two tabs one action opens are listed in the order their pages
+  load. A tab that never gets a page is never listed: a `target="_blank"`
+  link to a download, to a `mailto:` address, or to a response with no
+  content.
+- `tab.activate()` makes a tab active without closing the others.
+  `tab.close()` closes it, and when it was active, waits until the next one
+  is.
+- `newTab()` opens a blank tab in the same browser context, with the same
+  cookies and storage, and makes it active. Navigate it with `goto`.
+- A tab whose opener closed before the tab loaded is listed too, on
+  Chromium. A page a test opens through `surfaceOf(engine)` is not.
+- The screencast records the active tab, one video segment per change. A tab
+  that closes itself keeps no segment, since its page closes before the
+  recording can be saved. A provider's own recording covers every tab.
+
+```ts
+/** One tab of the browser the attempt drives. */
+export interface BrowserTab {
+  url(): Promise<string>;
+  title(): Promise<string>;
+  /** Whether this is the active tab. */
+  isActive(): boolean;
+  isClosed(): boolean;
+  /** Makes this the active tab. */
+  activate(): Promise<void>;
+  /** Closes the tab; the tab that opened it becomes active when it was. */
+  close(): Promise<void>;
+}
+```
+
+| Throws | When |
+| --- | --- |
+| `ACTION_FAILED` | `waitForPopup`: no tab opened in time. A trigger that resolved in time fails with `no tab opened within <n>ms; the trigger resolved after <m>ms`, or with `the tab the app opened did not load <url> within <n>ms` when a tab was still loading its first page. `activate`: the tab has closed. |
 
 #### `waitForDownload`
 
@@ -1079,18 +1175,25 @@ export interface WebOptions {
    */
   readonly connect?: WebConnectOptions;
   /**
-   * Headers added to requests within the app's site, including subdomains.
-   * Useful for preview-protection tokens. Other sites never receive them.
+   * Headers added to every request that starts at the app's origin (the
+   * scheme, host, and port of `app.url`) or one in `credentialOrigins`.
+   * Useful for preview-protection tokens. A request that starts at another
+   * origin goes without them; a redirect keeps them, to any origin.
    * Names are case-insensitive and replace existing headers of the same name.
    * This enables request routing, disables the browser's HTTP cache, and
    * blocks service workers.
    */
   readonly headers?: Readonly<Record<string, string>>;
   /**
-   * HTTP basic authentication. The browser answers a `401` challenge with
-   * these credentials on any origin, matching Playwright's `httpCredentials`.
+   * HTTP basic authentication. The browser answers a `401` challenge from the
+   * app's origin, or one in `credentialOrigins`, with these credentials.
    */
   readonly basicAuth?: WebBasicAuth;
+  /**
+   * More origins that receive `headers` and `basicAuth`, such as
+   * `https://api.example.com`; requires `headers` or `basicAuth`.
+   */
+  readonly credentialOrigins?: readonly string[];
   /**
    * The attribute that carries an element's test id: what the `testId` query
    * (`screen.getByTestId`) resolves and what `SemanticNode.testId` reports.
@@ -1136,9 +1239,11 @@ export interface WebOptions {
  * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForDownload`,
  * the keyboard and mouse, `expect(browser)`, and `screen` act on the active
  * tab; cookies, routes, and dialog handlers cover the whole browser, every
- * tab included. A tab the app opens itself (a `target="_blank"` link,
- * `window.open`) is not followed: the active tab stays the one the attempt
- * opened.
+ * tab included. A tab the app opens (a `target="_blank"` link,
+ * `window.open`) joins `tabs()` but does not become active on its own:
+ * `waitForPopup` makes the tab its trigger opens active, and `activate`
+ * any other. When the active tab closes, the tab that opened it is active
+ * again.
  */
 export interface Browser extends Expectable<BrowserExpectation> {
   /** Navigates to an allowed URL. */
@@ -1183,7 +1288,7 @@ export interface Browser extends Expectable<BrowserExpectation> {
   ): Promise<void>;
   /** Removes matching attempt-scoped routes. */
   unroute(pattern: string | RegExp): Promise<void>;
-  /** Removes all routes registered by this browser fixture, preserving configured site headers. */
+  /** Removes all routes registered by this browser fixture, preserving the configured headers. */
   unrouteAll(): Promise<void>;
   /** Waits for a matching response. */
   waitForResponse(
@@ -1202,6 +1307,18 @@ export interface Browser extends Expectable<BrowserExpectation> {
   emulateMedia(media: WebMedia): Promise<void>;
   /** Registers an attempt-scoped dialog handler and returns an unsubscribe function. */
   onDialog(handler: DialogHandler): Promise<() => Promise<void>>;
+  /** Returns the open tabs, in the order they opened. */
+  tabs(): readonly BrowserTab[];
+  /**
+   * Runs a trigger and waits for the tab it opens, then resolves with that
+   * tab once it is the active tab. The wait takes the first tab the app
+   * opens after it starts, which can be one an earlier action opened whose
+   * page loaded only now. Rejects with `ACTION_FAILED` when no tab opens
+   * within the timeout, naming the page when a tab was still loading it.
+   */
+  waitForPopup(trigger: () => Promise<void>, options?: { timeout?: number }): Promise<BrowserTab>;
+  /** Opens a blank tab in the same browser context, sharing its cookies and storage, and makes it the active tab. */
+  newTab(): Promise<BrowserTab>;
   /** Runs a trigger and waits for its download. */
   waitForDownload(
     trigger: () => Promise<void>,

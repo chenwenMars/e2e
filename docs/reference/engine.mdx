@@ -370,7 +370,7 @@ member. Three gaps end differently:
 | `state` | `state` | - | `test.setup` sessions and the `session:` option. |
 | `artifacts` | `artifacts` | - | Screenshots and videos. |
 | `validateApp` | - | - | A config-load check of the target's `app`. |
-| `session` | - | - | The `app` steering methods and the agent's `navigate`, `back`, and `resize_viewport` verbs. |
+| `session` | - | - | The `app` steering methods and the agent's `navigate`, `back`, `resize_viewport`, `switch_tab`, and `close_tab` verbs. |
 
 #### Agent verbs
 
@@ -396,6 +396,8 @@ An undeclared verb is absent from the toolset.
 | `navigate` | `session.open` |
 | `back` | `session.back` |
 | `resize_viewport` | `session.resize` |
+| `switch_tab` | `session.switchTab` |
+| `close_tab` | `session.closeTab` |
 | `tap_at`, `hover_at` | the `tap` or `hover` kind, in `actions` or in `pointerActions` |
 | `drag_at` | the `dragTo` kind, in `actions` or in `pointerActions` |
 | `type_at` | `fill` or `keyboard` |
@@ -730,7 +732,7 @@ export interface EngineInitInfo {
    * `process.cwd()`, which an in-process run does not change.
    */
   readonly projectRoot: string;
-  /** The app the target declares: the site policy of its URL, and what a device launches. */
+  /** The app the target declares: the origin and site policy of its URL, and what a device launches. */
   readonly app: EngineAppInfo;
   /**
    * This worker's environment: the run's, plus what this target's `prepare`
@@ -952,9 +954,15 @@ export interface EngineDisposeContext extends EngineCleanupContext {
 | `viewport` | `ViewportSize` |
 | [`truncated`](#truncated-trees) | `boolean` |
 | `keyboardVisible` | `boolean` |
+| `tabs` | `{ count, active }` |
 | [`treeUnavailable`](#pixel-fallback) | `true` |
 | `pixels` | `ObservationPixels` |
 | `maskedRegionCount` | `number` |
+
+`tabs` reports the open tabs when there is more than one: `count`, and the
+zero-based place of the tab `root` reads, in the order the tabs opened. The
+harness names the tab in every screen header and tells the model when a
+tab opened or the screen moved to another tab. Omit it with one tab.
 
 Return the surface as it is right now. The runner mints the revision and
 stamps it onto every ref. When `pixels` are present, it checks that
@@ -1003,6 +1011,11 @@ export interface EngineSnapshot {
    * engine did not measure it.
    */
   readonly keyboardVisible?: boolean;
+  /**
+   * The tabs the surface has open, when it has more than one, such as a
+   * browser with a tab the app opened. Omit with one tab.
+   */
+  readonly tabs?: { readonly count: number; readonly active: number };
   /** Semantic capture failed; only fresh, independently masked pixels are evidence. */
   readonly treeUnavailable?: true;
   /** Masked pixels, when requested and producible; omitted otherwise. */
@@ -1292,6 +1305,7 @@ the declaration to [`validateApp`](#validateapp) at config load.
 | Target field | Reaches the engine as |
 | --- | --- |
 | `url` | `validateApp` only. The harness opens it through `session.open`. |
+| the origin of `url`, on the run's port | `info.app.origin` in `prepare` and `init` |
 | the site of `url` | `info.app.site` in `prepare` and `init` |
 | `bundleId`, `appPath`, `launchArguments`, `permissions` | `validateApp`, and `info.app` in `prepare` and `init`, as the target declared them |
 | `command`, `readyUrl` | Never. The runner starts the app. |
@@ -1343,26 +1357,33 @@ export type AppPermissionState = 'grant' | 'deny' | 'reset';
 #### `EngineAppInfo`
 
 The resolved app, as `EnginePrepareInfo.app` and `EngineInitInfo.app`: the
-site of the URL and the device fields as the target declared them. Apply the
-site to a URL with [`sameSite`](#site-helpers).
+origin and site of the URL, and the device fields as the target declared
+them. Scope a credential the engine injects to the exact origin. Apply the
+site to observed frames with [`sameSite`](#site-helpers).
 
 ```ts
-if (sameSite(request.url, info.app.site ?? '')) request.headers.set('x-api-key', key);
+if (new URL(request.url).origin === info.app.origin) request.headers.set('x-api-key', key);
 ```
 
 ```ts
 /**
  * The app the harness resolved from the target's declaration, handed to
- * `prepare` and `init`: the site policy for the decisions only a surface can
- * make (which nested documents enter an observation, which requests carry
- * injected credentials), and what a device launches.
+ * `prepare` and `init`: the origin and site policy for the decisions only a
+ * surface can make (which requests carry injected credentials, which nested
+ * documents enter an observation), and what a device launches.
  */
 export interface EngineAppInfo {
   /**
+   * The app URL's origin on the run's port (`scheme://host:port`, as
+   * `URL.origin` serializes it): where injected request credentials go.
+   * Absent when the app has no URL, and for a free port the run has not
+   * assigned (`e2e doctor`).
+   */
+  readonly origin?: string;
+  /**
    * The app URL's registrable domain, as read by `siteOf`. Use `sameSite`
-   * to scope secret fills, injected headers, and observed child frames.
-   * Absent when the app has no URL. The runner passes navigation URLs
-   * separately through `session.open`.
+   * to scope observed child frames. Absent when the app has no URL. The
+   * runner passes navigation URLs separately through `session.open`.
    */
   readonly site?: string;
   /** The installed app to launch, as the target declared it. */
@@ -1379,13 +1400,15 @@ export interface EngineAppInfo {
 ### Session
 
 Steering hooks behind the universal `app` fixture and the agent's `navigate`,
-`back`, and `resize_viewport` verbs.
+`back`, `resize_viewport`, `switch_tab`, and `close_tab` verbs.
 
 | Hook | Behind |
 | --- | --- |
 | `open(url)` | `app.open()`, the agent's `navigate` verb, the reopen after `restart` and `reset` |
 | `back()` | `app.back()`, the agent's `back` verb |
 | `resize(size)` | the agent's `resize_viewport` verb; `size` is `{ width, height }` in CSS pixels and holds for the rest of the attempt |
+| `switchTab(index)` | the agent's `switch_tab` verb; `index` is zero-based in the order the tabs opened, as [`tabs`](#observation) counts them. An index with no open tab is `ACTION_FAILED`. |
+| `closeTab(index)` | the agent's `close_tab` verb; `index` counts as for `switchTab`. Closing the tab shown shows another, such as the tab that opened it. An index with no open tab, or the last open tab, is `ACTION_FAILED`. |
 | `restart()` | `app.restart()` |
 | `reset()` | `app.clearState()` |
 
@@ -1420,6 +1443,20 @@ export interface EngineSession {
   back?(context: OperationContext): Promise<void>;
   /** Sets the viewport to `size` in CSS pixels, for this page and every page the attempt opens after it. */
   resize?(size: ViewportSize, context: OperationContext): Promise<void>;
+  /**
+   * Shows the open tab at `index`, zero-based in the order the tabs opened,
+   * as `EngineSnapshot.tabs` counts them: every observation and action after
+   * it reads and acts on that tab. An index with no open tab is an
+   * `ACTION_FAILED` the model reads. Declare it with `tabs` in snapshots.
+   */
+  switchTab?(index: number, context: OperationContext): Promise<void>;
+  /**
+   * Closes the open tab at `index`, counted as `switchTab` counts them. When
+   * it was the tab shown, the engine shows another, such as the tab that
+   * opened it. An index with no open tab, or the last open tab, is an
+   * `ACTION_FAILED` the model reads.
+   */
+  closeTab?(index: number, context: OperationContext): Promise<void>;
   /** Recreates the execution context, keeping persisted state. */
   restart?(context: OperationContext): Promise<void>;
   /** Clears persisted client state and recreates the execution context. */

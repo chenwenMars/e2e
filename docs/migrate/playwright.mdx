@@ -68,8 +68,8 @@ A Playwright key such as `testDir`, `baseURL`, `use`, `webServer`, or
 | --- | --- | --- |
 | `use.viewport`, `use.browserName` | `web({ viewport, browser })` | renamed |
 | `use.testIdAttribute` | `web({ testIdAttribute })` | renamed |
-| `use.httpCredentials` | `web({ basicAuth })` | renamed |
-| `use.extraHTTPHeaders` | `web({ headers })`, sent to the app's site only | renamed |
+| `use.httpCredentials` | `web({ basicAuth })`, answered for the app's origin only; `credentialOrigins` adds more | renamed |
+| `use.extraHTTPHeaders` | `web({ headers })`, sent on requests that start at the app's origin; `credentialOrigins` adds more | renamed |
 | `chromium.connectOverCDP(url)` | `web({ connect: { cdpEndpoint: () => url } })`, chromium only | renamed |
 | `use.connectOptions` (`wsEndpoint`) | `web({ connect })` attaches over CDP only | missing |
 | `retries`, `workers`, `timeout` | the same names at the top level. `workers` takes an integer from 1 to 1024, not `'50%'`; `retries` stops at 10. The defaults differ, see [below](#defaults-that-differ) | renamed |
@@ -257,7 +257,7 @@ uses it declares `requires: ['browser']` and other targets skip it. Calls on
 | --- | --- | --- |
 | `page.route(pattern, handler)` | `browser.route(pattern, handler)`; a string or `RegExp` pattern, no predicate function; the handler decides exactly once. A string is a glob on the full URL, never resolved against `app.url`. `?` matches any one character on purpose, where Playwright reads it literally; `{a,b}` is literal, and `**/` needs at least one segment | web only |
 | `route.fulfill({ json, body, path, status, headers, contentType })` | the same; one of `json`, `body`, or `path`, and `path` is relative to the project root. `body` is a string, `Buffer`, or `Uint8Array`, and a `\n`-joined `set-cookie` sets each cookie | web only |
-| `route.continue({ url, method, headers, postData })`, `route.fallback()` | the same; a `url` resolves against `app.url` and keeps the request's `http` or `https` scheme. A header set to `undefined` is dropped; configured site headers still apply. `fallback()` takes no overrides | web only |
+| `route.continue({ url, method, headers, postData })`, `route.fallback()` | the same; a `url` resolves against `app.url` and keeps the request's `http` or `https` scheme. A header set to `undefined` is dropped; configured headers still apply to an allowed origin. `fallback()` takes no overrides | web only |
 | `route.fetch()` | argument-free: no `timeout`, `headers`, or `maxRedirects` options, and redirects return unfollowed; returns `{ url, status, headers, body(), text(), json() }` without deciding the route | web only |
 | `route.abort(code)`, `route.fallback(overrides)` | none yet; `abort()` takes no error code | missing |
 | `page.unroute()` | `browser.unroute()` | web only |
@@ -269,7 +269,8 @@ uses it declares `requires: ['browser']` and other targets skip it. Calls on
 | `routeFromHAR()`, `routeWebSocket()` | not yet | missing |
 | `page.on('dialog')` | `browser.onDialog('accept')`, or a handler that calls `accept` or `dismiss` | web only |
 | `page.waitForEvent('download')` | `browser.waitForDownload(() => trigger)` | web only |
-| `page.waitForEvent('popup')`, `context.on('page')` | a window the app opens is not driven | missing |
+| `page.waitForEvent('popup')` | `browser.waitForPopup(() => trigger)`, which also makes the tab active. Without it, a tab the app opens stays in the background, as in Playwright. When the active tab closes, its opener is active again, or the tab active most recently when the opener is gone | web only |
+| `context.on('page')`, `context.pages()`, `context.newPage()`, `page.bringToFront()` | `browser.tabs()`, `browser.newTab()`, `tab.activate()`; no event per new page | web only |
 | `page.on('console')`, `page.on('pageerror')` | assert on what the page shows | missing |
 | `page.evaluate(fn, arg)` | `browser.evaluate(fn, arg)`; JSON in and out, no handles. It and the locator reads run in the page's main world, so a page that deletes a global such as `Map` or `Array` breaks them | web only |
 | `page.addInitScript(script, arg)`, `context.addInitScript()` | `browser.addInitScript(script, arg)`, or `web({ initScripts })` for every test; pass `{ content }` as a plain string | web only |

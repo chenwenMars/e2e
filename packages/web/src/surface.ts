@@ -11,6 +11,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { Browser, BrowserContext, ElementHandle, Frame, FrameLocator, Locator, Page, Request, Route } from 'playwright-core';
 import {
+  ConfigurationError,
   Deadline,
   EngineError,
   obj,
@@ -43,7 +44,7 @@ import {
 import { matchesText } from 'e2e/engine';
 import { classifyActionError, classifyInputError, dispatchLocatorAction, dispatchPointerAction } from './actions.ts';
 import { BrowserConnection, connectCdp, type BrowserName } from './browser-connection.ts';
-import { AttemptSession, type StorageState } from './attempt-session.ts';
+import { AttemptSession, type AttemptTab, type StorageState } from './attempt-session.ts';
 import type { CdpEndpointResolver } from './cdp-recovery.ts';
 import { LeasedBrowsers, type BrowserProvider, type LeaseDownloads } from './provider.ts';
 import { installAppLog } from './app-log.ts';
@@ -62,11 +63,12 @@ import { ConfiguredInitScripts, type WebInitScript } from './init-scripts.ts';
 import type { WebMedia } from './media.ts';
 import { SECURE_FIELD_SELECTOR, type RawNodeData } from './read-node.ts';
 import { readSelector, takeReadsFunction } from './read-selector.ts';
-import { httpCredentials, installSiteHeaders, lowercaseNames, siteHeadersFor } from './protected-app.ts';
+import { credentialOrigins, httpCredentials, installConfiguredHeaders, lowercaseNames, configuredHeadersFor } from './protected-app.ts';
 import { RefRegistry } from './refs.ts';
 import {
   cancelled,
   DEFAULT_VIEWPORT,
+  dispatchedInput,
   ErrorLatch,
   invalidState,
   isClassified,
@@ -139,7 +141,7 @@ export interface WebConnectOptions {
   readonly reconnectEndpoint?: (signal: AbortSignal) => string | Promise<string>;
 }
 
-/** HTTP basic authentication the browser answers a `401` challenge with. */
+/** HTTP basic authentication the browser answers a `401` challenge from the app's origin with. */
 export interface WebBasicAuth {
   /** The user name; `:` is not allowed in one (RFC 7617). */
   readonly username: string;
@@ -192,11 +194,14 @@ export interface WebOptions {
    */
   readonly connect?: WebConnectOptions;
   /**
-   * HTTP headers added to every request the browser sends to an allowed
-   * origin: a preview-protection bypass token, a tunnel's interstitial skip.
-   * Requests to any other origin (a CDN, an analytics endpoint, an identity
-   * provider) never carry them, so a header that is a secret stays with the
-   * app it unlocks. Names are case-insensitive; a header the page already
+   * HTTP headers added to every request the browser starts at the app's
+   * origin (`app.url`'s scheme, host, and port) or one in
+   * `credentialOrigins`: a preview-protection bypass token, a tunnel's
+   * interstitial skip. A request that starts at any other origin (another
+   * port on the same host, a sibling subdomain, a CDN) goes without them.
+   * Playwright keeps a request's headers through its redirects, so a
+   * redirect from the app to an identity provider carries them there.
+   * Names are case-insensitive; a header the page already
    * sends under the same name is replaced. Applies to every path onto the
    * page, deterministic and agent-driven alike. Injecting headers routes
    * every request of the attempt, which turns the browser's HTTP cache off
@@ -206,11 +211,20 @@ export interface WebOptions {
   readonly headers?: Readonly<Record<string, string>>;
   /**
    * HTTP basic authentication for a staging app behind a browser challenge.
-   * The browser answers a `401` with these credentials wherever one is
-   * issued, as Playwright's own `httpCredentials` does. Applies to every path
-   * onto the page.
+   * The browser answers a `401` from the app's origin, or one in
+   * `credentialOrigins`, with these credentials, and no other. WebKit cannot
+   * scope a credential to an origin on its scheme's default port or with an
+   * IPv6 host, so when one of those origins is such an origin, WebKit
+   * answers every origin's challenge. Applies to every path onto the page.
    */
   readonly basicAuth?: WebBasicAuth;
+  /**
+   * More origins that receive `headers` and `basicAuth`, beyond the app's
+   * own: an API host or a redirect target behind the same gate. Exact
+   * origins, such as `https://api.example.com`; requires `headers` or
+   * `basicAuth`.
+   */
+  readonly credentialOrigins?: readonly string[];
   /**
    * The attribute that carries an element's test id: what the `testId` query
    * (`screen.getByTestId`) resolves and what `SemanticNode.testId` reports.
@@ -288,6 +302,9 @@ export class PlaywrightSurface {
   private readonly screencast: WebScreencastOptions;
   /** Injected request headers, names lowercased so they replace the browser's own of the same name. */
   private readonly headers: Readonly<Record<string, string>> | undefined;
+  private readonly credentialOrigins: readonly string[] | undefined;
+  /** Where `headers` and `basicAuth` go: the app's origin and each of `credentialOrigins`, set at `init`. */
+  private credentialScope: ReadonlySet<string> = new Set();
   private readonly basicAuth: WebBasicAuth | undefined;
   private readonly testIdAttribute: string;
   private readonly userAgent: string | undefined;
@@ -324,6 +341,7 @@ export class PlaywrightSurface {
     this.viewport = options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport;
     this.screencast = options.screencast ?? {};
     this.headers = options.headers === undefined ? undefined : lowercaseNames(options.headers);
+    this.credentialOrigins = options.credentialOrigins;
     this.basicAuth = options.basicAuth;
     this.testIdAttribute = options.testIdAttribute ?? DEFAULT_TEST_ID_ATTRIBUTE;
     this.userAgent = options.userAgent;
@@ -368,7 +386,12 @@ export class PlaywrightSurface {
 
   /** Provisions the shared browser once per worker: a local launch, or a CDP attach. */
   async init(info: EngineInitInfo): Promise<void> {
+    // A runner older than the peer floor passes no origin; fail rather than send the credentials nowhere.
+    if (info.app.origin === undefined && (this.headers !== undefined || this.basicAuth !== undefined)) {
+      throw new ConfigurationError('INVALID_CONFIG', 'web({ headers, basicAuth }) needs an e2e runner that tells the engine the app\'s origin; update e2e to the release beside this @e2e-dev/web');
+    }
     this.app = info.app;
+    this.credentialScope = credentialOrigins(info.app.origin, this.credentialOrigins);
     this.projectRoot = info.projectRoot;
     this.headed = info.headed;
     this.leases?.init(info);
@@ -484,7 +507,11 @@ export class PlaywrightSurface {
     const credentials =
       basicAuth === undefined
         ? undefined
-        : await raceAbort(() => httpCredentials(basicAuth, context.resolveSecret), context.signal, 'resolving the basic-auth password');
+        : await raceAbort(
+            () => httpCredentials(basicAuth, this.credentialScope, this.browserName, context.resolveSecret),
+            context.signal,
+            'resolving the basic-auth password',
+          );
     const persistent = await this.persistentBinding(context);
     this.artifactsDir = context.artifactsDir;
     this.artifactCounter = 0;
@@ -525,7 +552,7 @@ export class PlaywrightSurface {
           ownNavigation: () => this.ownNavigations > 0,
           testPage: () => this.openPage(),
         });
-        await installSiteHeaders(target, this.app.site, this.headers);
+        await installConfiguredHeaders(target, this.credentialScope, this.headers);
         if (granted.length > 0) await target.grantPermissions(granted);
         for (const stored of routes) await target.route(stored.predicate, stored.handler);
       },
@@ -607,9 +634,9 @@ export class PlaywrightSurface {
     await context.route(predicate, handler);
   }
 
-  /** The configured headers a request to `url` carries, lowercased; `undefined` off the app's site. */
-  siteHeaders(url: string): Readonly<Record<string, string>> | undefined {
-    return siteHeadersFor(url, this.app.site, this.headers);
+  /** The configured headers a request to `url` carries, lowercased; `undefined` off the app's origin and `credentialOrigins`. */
+  configuredHeaders(url: string): Readonly<Record<string, string>> | undefined {
+    return configuredHeadersFor(url, this.credentialScope, this.headers);
   }
 
   /** Resolves a file a test names against the project root, as config paths do, never `process.cwd()`. */
@@ -735,6 +762,49 @@ export class PlaywrightSurface {
     ));
   }
 
+  /** Shows the open tab at `index`, in opening order, for the agent's `switchTab` verb, and shows the screen after it. */
+  switchTab(index: number, operation: OperationContext): Promise<void> {
+    return this.acted(operation, this.guard(operation, 'switch tab', () => this.requireSession().showTabAt(index)));
+  }
+
+  /** Closes the open tab at `index`, in opening order, for the agent's `closeTab` verb, and shows the screen after it. */
+  closeTabAt(index: number, operation: OperationContext): Promise<void> {
+    return this.acted(operation, this.guard(operation, 'close tab', () => this.requireSession().closeTabAt(index)));
+  }
+
+  // --- tabs shared with the browser fixture ---
+
+  /** The attempt's open tabs, in the order they opened. */
+  tabs(): readonly AttemptTab[] {
+    this.latch.throwPending();
+    return this.requireSession().openTabs();
+  }
+
+  /** The tab the attempt shows, if one is open. */
+  shownTab(): AttemptTab | undefined {
+    return this.session?.shownTab();
+  }
+
+  /** Shows one of the attempt's tabs (`BrowserTab.activate`). */
+  showTab(tab: AttemptTab, operation: OperationContext): Promise<void> {
+    return this.guard(operation, 'tab', () => this.requireSession().showTab(tab));
+  }
+
+  /** Opens a blank tab in the attempt's context and shows it (`browser.newTab`). */
+  newTab(operation: OperationContext): Promise<AttemptTab> {
+    return this.guard(operation, 'tab', () => this.requireSession().newTab());
+  }
+
+  /** Closes one of the attempt's tabs (`BrowserTab.close`); the tab shown next is shown before it resolves. */
+  closeTab(tab: AttemptTab, operation: OperationContext): Promise<void> {
+    return this.guard(operation, 'tab', () => this.requireSession().closeTab(tab));
+  }
+
+  /** Waits for the next tab the app opens and shows it (`browser.waitForPopup`). */
+  nextPopup(signal: AbortSignal): ReturnType<AttemptSession['nextPopup']> {
+    return this.requireSession().nextPopup(signal);
+  }
+
   /** Sets the viewport for the agent's `resize` verb, as `browser.setViewport` does, and shows the screen after it. */
   resize(size: ViewportSize, operation: OperationContext): Promise<void> {
     return this.acted(operation, this.guard(operation, 'resize', () => this.setViewport(size)));
@@ -810,15 +880,33 @@ export class PlaywrightSurface {
     return this.guard(
       operation,
       'locate',
-      async (currentOperation) => {
+      (currentOperation) => this.readingTab(async () => {
         try {
           return await this.locateNow(expression, currentOperation);
         } catch (cause) {
           throw (await pageScriptFailure(this.frameScope(expression), cause, 'locate', currentOperation.timeoutMs)) ?? cause;
         }
-      },
+      }),
       staleOr,
     );
+  }
+
+  /**
+   * Runs a read of the tab the attempt shows. A tab the app closes under the
+   * read makes it stale, as a navigation does: nothing was dispatched, and
+   * the read repeats on the tab shown next.
+   */
+  private async readingTab<T>(read: () => Promise<T>): Promise<T> {
+    const session = this.session;
+    const page = this.openPage();
+    try {
+      return await read();
+    } catch (cause) {
+      if (page !== undefined && session?.tabClosed(page) === true) {
+        throw new EngineError('NODE_STALE', 'the tab closed while it was read', { retryable: true, cause });
+      }
+      throw cause;
+    }
   }
 
   /** The body of `locate`, inside its guard. */
@@ -937,10 +1025,17 @@ export class PlaywrightSurface {
           this.requireSession().requireObservation();
           return performViewportSwipe(page, action.direction, action.momentum ?? 'none');
         }
-        const { refs } = this.requireSession();
-        return refs.lookup(ref).then((target) => {
+        const session = this.requireSession();
+        const { refs } = session;
+        return refs.lookup(ref).then(async (target) => {
           currentOperation.signal.throwIfAborted();
-          return dispatchLocatorAction(target, action, currentOperation, (other) => refs.lookup(other));
+          try {
+            await dispatchLocatorAction(target, action, currentOperation, (other) => refs.lookup(other));
+          } catch (cause) {
+            // The input went out and its own tab closed: closing was what it did.
+            if (dispatchedInput(cause) && session.tabClosed(page)) return;
+            throw cause;
+          }
         });
       },
       (cause) => classifyActionError(cause, action),
@@ -1202,7 +1297,7 @@ export class PlaywrightSurface {
     return this.guard(
       operation,
       'observe',
-      (currentOperation) => this.captureObservation(currentOperation, options),
+      (currentOperation) => this.readingTab(() => this.captureObservation(currentOperation, options)),
       navigationStaleOr,
     );
   }
@@ -1238,12 +1333,20 @@ export class PlaywrightSurface {
       }
       refs.publish(capture, captured);
       session.observedGeneration(token);
-      return snapshot;
+      return withTabs(snapshot, session);
     } catch (cause) {
       RefRegistry.dispose(generation);
       throw cause;
     }
   }
+}
+
+/** The snapshot with the attempt's tabs, when more than one is open; the snapshot as is otherwise. */
+function withTabs(snapshot: EngineSnapshot, session: AttemptSession): EngineSnapshot {
+  const tabs = session.openTabs();
+  const shown = session.shownTab();
+  const active = shown === undefined ? -1 : tabs.indexOf(shown);
+  return tabs.length < 2 || active === -1 ? snapshot : { ...snapshot, tabs: { count: tabs.length, active } };
 }
 
 /**
