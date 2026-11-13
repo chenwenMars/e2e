@@ -465,8 +465,10 @@ mobile({ platform: 'ios', device: ['iPhone 17', 'iPhone 17 Pro'] })
 ```
 
 Without `device`, the engine uses booted devices, up to the worker limit.
-If none are booted, it boots a shut-down one: newest OS first, then name
-order. Two workers never drive the same device.
+A paired iPhone or iPad that is reachable (USB or network) counts as booted.
+If none are booted, it boots a shut-down one: on iOS an iPhone before an iPad
+before an Apple TV, on Android a phone or tablet before a TV, then the newest
+OS, then name order. Two workers never drive the same device.
 
 ## Agent tools
 
@@ -527,8 +529,8 @@ mobile({ platform: 'ios', device: 'QA iPhone' })
 Use the name, not the id. The engine reads a `device` string as an id only
 for a simulator UDID or an `emulator-<port>` serial. The first device with
 a matching name wins, so give each phone a unique name. Without `device`, a
-connected phone counts as booted and joins the pool beside booted
-simulators.
+paired iPhone or iPad that is reachable (USB or network), or a connected
+Android phone, counts as booted and joins the pool beside booted simulators.
 
 Set the phone up one time:
 
@@ -806,8 +808,8 @@ export function cloudDevices(options: { provider: string; device: string; osVers
   nodes, and a tap on one fails with `ACTION_FAILED`. Call
   `device.dismissKeyboard()` or scroll the node clear first. See
   [Visibility](/reference/mobile#visibility).
-- `doubleTap()` on iOS is two taps about 285 ms apart. Give a double-tap
-  detector a window of 350 ms or more.
+- `doubleTap()` and `screen.doubleTapAt()` on iOS are two taps about 285 to
+  335 ms apart. Give a double-tap detector a window of 350 ms or more.
 - On iOS, `device.foregroundApp()` still names the session's app after
   `device.home()`. Check the screen instead.
 - On an Android build with no shell command for the clipboard service (the
@@ -859,11 +861,13 @@ message and hint, never `LAUNCH_TIMEOUT`, `ACTION_FAILED`, or
 **An action that outlives its timeout.** A tap, fill, key, swipe, or
 `back` gets its `timeout` (default `actionTimeout`). If the device doesn't
 answer in time, the step fails with `ACTION_FAILED` and isn't retried: the
-input may have landed. A `longPress` that holds at least as long as the
-time left is refused before it's sent; raise its `timeout`. Snapshots and
-screenshots run within the timeout of the call that takes them, so a device
-that stops answering fails the step with `ACTION_FAILED` instead of holding
-it until the test timeout. `locator.waitFor`, `expect`, and
+input may have landed. A pending tap, double tap, focus, check or uncheck is
+cancelled when the step stops waiting for it or the run is interrupted. Input
+already sent to the device may still finish. A `longPress` that holds at least
+as long as the time left is refused before it's sent; raise its `timeout`.
+Snapshots and screenshots run within the timeout of the call that takes them,
+so a device that stops answering fails the step with `ACTION_FAILED` instead
+of holding it until the test timeout. `locator.waitFor`, `expect`, and
 `toHaveScreenshot` give their last snapshot extra time, up to their slowest
 one so far and within the test timeout, so a screen that shows up during it
 still passes. An element that never shows up fails as
