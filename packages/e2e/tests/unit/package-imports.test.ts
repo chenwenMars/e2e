@@ -201,7 +201,8 @@ function startupGraph(dir: string, entry: string): { readonly modules: number; r
 const STARTUP: readonly { readonly dir: string; readonly entry: string; readonly lazy: readonly string[] }[] = [
   // `e2e run`, `list`, and `--help` need none of the MCP server, the prompts, or the schemas of `mcp`, `init`, `login`, and `explore`.
   // None needs the image codec's native binding either: the first PNG decoded or encoded loads it, and a missing one fails only that call.
-  { dir: 'e2e', entry: 'cli/index.ts', lazy: ['@modelcontextprotocol/server', '@clack/prompts', 'zod', '@napi-rs/image'] },
+  // Only `init` parses the YAML of a CI pipeline and the TOML of a Codex config; its flags name their choices without the parsers.
+  { dir: 'e2e', entry: 'cli/index.ts', lazy: ['@modelcontextprotocol/server', '@clack/prompts', 'zod', '@napi-rs/image', 'yaml', 'toml-eslint-parser'] },
   { dir: 'e2e', entry: 'runner.ts', lazy: ['@modelcontextprotocol/server', '@clack/prompts', 'zod', 'commander', '@napi-rs/image'] },
   { dir: 'e2e', entry: 'run/worker/entry.ts', lazy: ['@modelcontextprotocol/server', '@clack/prompts', 'zod', 'commander', '@napi-rs/image'] },
   // Every test file imports this entry.

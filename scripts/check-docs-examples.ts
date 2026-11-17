@@ -50,6 +50,7 @@ const EXAMPLES: Record<string, string> = {
   'docs/examples/mobile/browserstack.e2e.ts': 'docs/integrations/browserstack.mdx',
   'docs/examples/mobile/e2b.config.ts': 'docs/integrations/e2b.mdx',
   'docs/examples/web/browser-provider.ts': 'docs/browser.mdx',
+  'docs/examples/web/moli.config.ts': 'docs/integrations/moli.mdx',
   'docs/examples/web/testmu-browsers.config.ts': 'docs/integrations/testmu.mdx',
   'docs/examples/web/e2b-browsers.config.ts': 'docs/integrations/e2b.mdx',
   'docs/examples/web/e2b-template.ts': 'docs/integrations/e2b.mdx',

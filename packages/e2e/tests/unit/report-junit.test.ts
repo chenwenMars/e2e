@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { serializeError, TestError } from '@e2e-dev/core/lib/internal/errors';
 import type { FinishedRun } from '../../src/run-types.ts';
 import type { Report1Document, ReportSerialGroup } from '../../src/report/build.ts';
 import { junitReporter, renderJunitReport, type JunitReportOptions } from '../../src/report/junit.ts';
@@ -355,6 +356,25 @@ describe('renderJunitReport', () => {
     expect(xml).toContain('message="line one&#10;line &lt;two&gt;� &amp; done"');
     expect(xml).toContain('>ASSERTION_FAILED: line one\nline &lt;two&gt;� &amp; done</failure>');
     expect(xml).not.toContain('');
+  });
+
+  it('keeps a carriage return in the failure message and body as a character reference', () => {
+    const error = serializeError(new TestError('ERROR', 'line one\r\nline two'));
+    const xml = render(
+      reportDocument({
+        results: [
+          reportResult({
+            status: 'failed',
+            attempts: [reportAttempt({ status: 'failed', error })],
+          }),
+        ],
+      }),
+    );
+    assertWellFormed(xml);
+    expect(xml).toContain('message="line one&#13;&#10;line two"');
+    expect(xml).toContain('>ERROR: line one&#13;\nline two</failure>');
+    expect(xml).not.toContain('\uFFFD');
+    expect(xml).not.toContain('\r');
   });
 
   it('replaces XML-forbidden noncharacters and lone surrogates in text and attributes', () => {

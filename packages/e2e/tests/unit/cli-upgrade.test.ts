@@ -171,6 +171,31 @@ describe('e2e upgrade', () => {
     expect(out).toContain('Release notes: https://github.com/e2e-inc/e2e/releases/tag/e2e%400.21.2');
   });
 
+  it('ends with the star ask on a terminal when e2e moved up, and not in CI', async () => {
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    try {
+      const latest: UpgradeTarget = { kind: 'tag', tag: 'latest' };
+      const cases = [
+        [{}, { e2e: '0.20.0' }, latest, true],
+        [{ CI: 'true' }, { e2e: '0.20.0' }, latest, false],
+        // Only an engine moved: e2e is the version it was, so nothing to celebrate.
+        [{}, { e2e: '0.21.2', '@e2e-dev/web': '0.14.0' }, latest, false],
+        [{}, { e2e: '0.21.2' }, { kind: 'version', version: '0.15.0' }, false],
+      ] as const;
+      for (const [env, installed, target, shown] of cases) {
+        project({ devDependencies: Object.fromEntries(Object.entries(installed).map(([name, version]) => [name, `^${version}`])) }, installed);
+        stdoutSpy.mockClear();
+        await run(target, { env });
+        expect(written(stdoutSpy)).toContain('Upgraded');
+        expect(written(stdoutSpy).includes('Enjoying it? Star us on GitHub')).toBe(shown);
+      }
+    } finally {
+      if (tty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+      else Object.defineProperty(process.stdout, 'isTTY', tty);
+    }
+  });
+
   it('keeps an exact pin exact beside a caret spec, and leaves the rest of package.json as written', async () => {
     const text = '{\n\t"name": "app",\n\t"devDependencies": {\n\t\t"e2e": "0.20.0",\n\t\t"@e2e-dev/web": "^0.14.0"\n\t},\n\t"private": true\n}\n';
     writeFileSync(path.join(dir, 'package.json'), text);

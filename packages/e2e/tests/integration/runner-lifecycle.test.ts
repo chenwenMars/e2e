@@ -189,6 +189,56 @@ test.describe('wizard', { serial: true }, () => {
   );
 
   it(
+    'skips test.skipIf(true) and test.runIf(false) tests at collection and runs test.runIf(true), each located at its own line',
+    async () => {
+      const file = `import { test } from 'e2e';
+
+test.skipIf(true)('skipIf true', async () => {
+  throw new Error('a skipIf(true) body must never run');
+});
+test.runIf(false)('runIf false', async () => {
+  throw new Error('a runIf(false) body must never run');
+});
+test.skipIf(true)('with reason', { skip: 'not on this platform' }, async () => {});
+test.runIf(true)('runIf true', async ({ platform }) => {
+  if (platform !== 'fake') throw new Error('unexpected platform ' + platform);
+});
+test('plain', async () => {});
+`;
+      const { outcome, project } = await runProject({ 'tests/conditional.e2e.ts': file }, {});
+      for (const title of ['skipIf true', 'runIf false']) {
+        const skipped = resultByTitle(outcome, title);
+        expect(skipped.skip).toEqual({ cause: 'explicit', reason: 'skipped' });
+        expect(skipped.attempts).toEqual([]);
+      }
+      expect(resultByTitle(outcome, 'with reason').skip).toEqual({ cause: 'explicit', reason: 'not on this platform' });
+      // Lines are measured from the plain test, so each registrar call is located by the same rule as test().
+      const plain = resultByTitle(outcome, 'plain').test.source!;
+      expect(plain.file).toMatch(/tests\/conditional\.e2e\.ts$/);
+      const lines = file.split('\n');
+      const lineOf = (title: string): number => lines.findIndex((line) => line.includes(`'${title}'`));
+      const located = outcome.results.map((result) => [
+        result.test.title,
+        result.status,
+        result.test.source?.file,
+        result.test.source?.line,
+      ]);
+      expect(located).toEqual(
+        [
+          ['skipIf true', 'skipped'],
+          ['runIf false', 'skipped'],
+          ['with reason', 'skipped'],
+          ['runIf true', 'passed'],
+          ['plain', 'passed'],
+        ].map(([title, status]) => [title, status, plain.file, plain.line - lineOf('plain') + lineOf(title!)]),
+      );
+      expect(outcome.exitCode).toBe(0);
+      project.cleanup();
+    },
+    120_000,
+  );
+
+  it(
     'rejects test.skip(condition) outside a test body at collection',
     async () => {
       const file = `import { test } from 'e2e';

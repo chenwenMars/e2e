@@ -9,7 +9,7 @@
  */
 
 import { BLOCKABLE_CODES } from '@e2e-dev/core/lib/agent/executor';
-import { sanitizeText, TestError, truncateUtf8, type ErrorPhase, type SerializedError } from '@e2e-dev/core/lib/internal/errors';
+import { sanitizeRecordedText, TestError, truncateUtf8, type ErrorPhase, type SerializedError } from '@e2e-dev/core/lib/internal/errors';
 import type { ExpectedFailureInfo } from '@e2e-dev/core/lib/internal/expected-failure';
 import type { AgentErrorCode } from '@e2e-dev/core/lib/types';
 import type { AttemptStatus } from '@e2e-dev/core/lib/run/records';
@@ -64,7 +64,7 @@ function isProductFailure(error: SerializedError): boolean {
  */
 export function settleExpectedFailure(record: MarkableAttempt, mark: string | undefined, { serialize, redact }: ExpectedFailureSerializer): void {
   if (mark === undefined || record.status === 'skipped' || record.skip !== undefined) return;
-  const reason = truncateUtf8(sanitizeText(redact(mark)), MAX_REASON_BYTES);
+  const reason = truncateUtf8(sanitizeRecordedText(redact(mark)), MAX_REASON_BYTES);
   if (record.status === 'passed') {
     record.status = 'failed';
     record.error = serialize(

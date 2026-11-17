@@ -8,8 +8,8 @@ import type { Role, RoleAlias, RoleOptions, TextMatch, TextMatchOptions } from '
 /** The alias spellings `getByRole` takes, onto the role every engine speaks. */
 const ROLE_ALIASES: ReadonlyMap<string, Role> = new Map([['img', 'image']]);
 
-/** The vocabulary role behind a `getByRole` argument; a role is its own. */
-function canonicalRole(role: Role | RoleAlias): Role {
+/** The vocabulary role behind a `getByRole` or `toHaveRole` argument; a role is its own. */
+export function canonicalRole(role: Role | RoleAlias): Role {
   return ROLE_ALIASES.get(role) ?? (role as Role);
 }
 

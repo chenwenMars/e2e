@@ -230,6 +230,32 @@ test('waits after the last page', async ({ app }) => {
     expect(end.stdout).toMatch(/The stepped run has ended\.\n$/);
   });
 
+  it('prints a failed step\'s message without a raw carriage return', () => {
+    const { dir } = project(
+      `import { test } from 'e2e';
+
+test('taps', async ({ app, screen }) => {
+  await app.open('/one');
+  await screen.getByRole('button', 'Submit').tap();
+});
+`,
+      `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+const engine = createFakeEngine({ perform: () => { throw new Error('line one\\r\\nline two'); } }).engine;
+
+export default {
+  targets: [{ name: 'fake', platform: 'fake', engine, app: FAKE_APP }],
+  workers: 1,
+} satisfies E2EConfig;
+`,
+    );
+    expect(e2e(dir, ['run', '--step']).exitCode).toBe(0);
+    const failed = e2e(dir, ['run', '--step', 'next']);
+    expect(failed.stdout).toContain('  ENGINE_FAILURE: actions failed: line one\uFFFD\n  line two\n');
+    expect(failed.stdout).not.toContain('\r');
+  });
+
   it('shows a secret on a held screen as its placeholder', () => {
     const { dir } = project(
       SUITE,

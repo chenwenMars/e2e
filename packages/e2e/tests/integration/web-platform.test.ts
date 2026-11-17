@@ -97,6 +97,30 @@ test('a negated toHaveAttribute fails on a plain field that holds the same marke
   await expect(screen.getByLabel('Plain')).not.toHaveAttribute('value', { timeout: 500 });
 });
 
+test('toHaveRole compares the role the tree reads', async ({ app, screen }) => {
+  await app.open('/role-matcher');
+  await expect(screen.getByLabel('Name')).toHaveRole('textbox');
+  await expect(screen.getByLabel('Secret')).toHaveRole('textbox');
+  await expect(screen.getByTestId('logo')).toHaveRole('img');
+  await expect(screen.getByTestId('logo')).toHaveRole('image');
+  await expect(screen.getByTestId('title')).toHaveRole('heading');
+  await expect(screen.getByText('Wi-Fi')).toHaveRole('switch');
+  await expect(screen.getByText('Wi-Fi')).not.toHaveRole('checkbox', { timeout: 200 });
+  await expect(screen.getByTestId('plain')).not.toHaveRole('button', { timeout: 200 });
+  // An editing host reads as a textbox in the tree, though getByRole finds it by its tag's role.
+  await expect(screen.getByRole('heading', { name: 'Untitled' })).toHaveRole('textbox');
+});
+
+test('toHaveRole fails on another role', async ({ app, screen }) => {
+  await app.open('/role-matcher');
+  await expect(screen.getByText('Wi-Fi')).toHaveRole('checkbox', { timeout: 500 });
+});
+
+test('toHaveRole fails on a secure field without its value', async ({ app, screen }) => {
+  await app.open('/role-matcher');
+  await expect(screen.getByLabel('Secret')).toHaveRole('searchbox', { timeout: 300 });
+});
+
 test('secure fields refuse value reads', async ({ app, screen }) => {
   await app.open();
   await screen.getByLabel('Password').fill('hunter2');
@@ -476,6 +500,7 @@ describe('web platform integration', () => {
     'reads wait for a node that arrives late',
     'toHaveURL ignoreCase folds the comparison',
     'string and RegExp URL patterns match what they name',
+    'toHaveRole compares the role the tree reads',
   ])('passes %s', (title) => {
     const result = resultByTitle(outcome, title);
     expect(result.status, JSON.stringify(result.attempts[0]?.error)).toBe('passed');
@@ -545,6 +570,21 @@ describe('web platform integration', () => {
     expect(control.status).toBe('failed');
     expect(control.attempts[0]!.error?.code).toBe('ASSERTION_FAILED');
     expect(control.attempts[0]!.error?.message).toContain('observed: attribute "value" "marker-5e0c"');
+  });
+
+  it('fails toHaveRole on a switch asked for a checkbox, naming both roles', () => {
+    const result = resultByTitle(outcome, 'toHaveRole fails on another role');
+    expect(result.status).toBe('failed');
+    expect(result.attempts[0]!.error?.code).toBe('ASSERTION_FAILED');
+    expect(result.attempts[0]!.error?.message).toContain('expected: role "checkbox"\nobserved: role "switch"');
+  });
+
+  it('fails toHaveRole on a password field and keeps its value out of the result', () => {
+    const result = resultByTitle(outcome, 'toHaveRole fails on a secure field without its value');
+    expect(result.status).toBe('failed');
+    expect(result.attempts[0]!.error?.code).toBe('ASSERTION_FAILED');
+    expect(result.attempts[0]!.error?.message).toContain('expected: role "searchbox"\nobserved: role "textbox"');
+    expect(JSON.stringify(result)).not.toContain('marker-7c1f');
   });
 
   it('denies secure value reads with POLICY_DENIED', () => {

@@ -101,7 +101,7 @@ export interface SessionControls extends AsyncDisposable {
   saveState(): Promise<SessionState>;
   /** The default timeout of operations started from now on, in milliseconds: actions, waits, reads, and app opens and restarts. */
   setDefaultTimeout(timeout: number): void;
-  /** Ends the session. Idempotent. Throws an `AggregateError` of the failures closing found, such as a cleanup that did not finish. */
+  /** Ends the session and cancels the calls still running on it: each fails as `CANCELLED`, an action, wait, or app or agent call naming itself. Idempotent. Throws an `AggregateError` of the failures closing found, such as a cleanup that did not finish. */
   close(): Promise<void>;
 }
 
@@ -229,7 +229,10 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
         // No session deadline: each operation keeps its own timeout.
         timeoutMs: MAX_TIMER_MS,
         onProgress: failures.onProgress,
-        closed: () => new E2EError('infrastructure', 'CANCELLED', 'the session is closed'),
+        cancelsOnClose: {
+          closed: () => new E2EError('infrastructure', 'CANCELLED', 'the session is closed'),
+          cut: (call) => new E2EError('infrastructure', 'CANCELLED', `the session closed while ${call} was running`),
+        },
         // No report stands between an operation's error and the program, so the error itself is classified and redacted.
         redactThrown: true,
         retainSteps: RETAINED_STEPS,

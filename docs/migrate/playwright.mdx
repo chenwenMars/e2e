@@ -132,11 +132,12 @@ run only in a browser, so a test that uses it declares
 
 | Playwright | e2e |
 | --- | --- |
-| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()` | the same, with `{ visible }`, `{ enabled }`, `{ checked }`, `{ attached }`, and `{ ignoreCase }` |
+| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()` | the same, with `{ visible }`, `{ enabled }`, `{ checked }`, `{ attached }`, and `{ ignoreCase }` |
 | `toHaveId(id)`, `toContainClass(name)` | `toHaveAttribute('id', id)`, `toHaveAttribute('class', RegExp)` |
 | `expect(page).toHaveURL()`, `toHaveTitle()` | `expect(browser).toHaveURL()`, `toHaveTitle()` |
 | `expect(page).toHaveScreenshot()`, `expect(locator).toHaveScreenshot()` | `expect(screen).toHaveScreenshot()` and the locator form, see [Visual comparison](/visual-testing) |
 | `expect(value)` with `toBe()`, `toEqual()`, `toMatchObject()`, `toContain()`, `toHaveLength()`, `toHaveProperty()`, `toMatch()`, and the truthiness and number matchers | the same, see [value matchers](/reference/expect#value-matchers) |
+| `expect(locator, 'message')`, `expect(page, 'message').toHaveScreenshot()`, `expect(value, 'message')` | the same, `expect(screen, 'message')` for the page; the message opens the failure, see [locator matchers](/reference/expect#locator-matchers) |
 | `expect.any()`, `anything()`, `objectContaining()`, `arrayContaining()`, `stringMatching()`, `stringContaining()`, `expect.poll()`, `expect.soft()` | the same; `poll` takes one `interval` |
 
 </Accordion>
@@ -255,9 +256,9 @@ purpose. Use the workaround, or keep the test in Playwright.
 | Playwright | Use today |
 | --- | --- |
 | `expect(fn).toPass()`, `expect.poll(fn, { intervals })` | `expect.poll(async () => { ...; return true }).toBe(true)` |
-| `toBeEmpty()`, `toBeEditable()`, `toBeInViewport()`, `toHaveRole()` | `toHaveValue('')` on a form control, `toHaveText('')` on other elements; `toBeEnabled()` and `.not.toHaveAttribute('readonly')`; `expect.poll` over `boundingBox()`; a `getByRole` query |
+| `toBeEmpty()`, `toBeEditable()`, `toBeInViewport()` | `toHaveValue('')` on a form control, `toHaveText('')` on other elements; `toBeEnabled()` and `.not.toHaveAttribute('readonly')`; `expect.poll` over `boundingBox()` |
 | `locator.screenshot()`, `{ fullPage, clip }`, `snapshotPathTemplate`, `ignoreSnapshots` | The viewport or one locator in `toHaveScreenshot`; a tag and `--exclude-tag` to skip visual tests |
-| `expect(locator, 'message')`, `expect.configure()` | Drop the message, the failure names the locator and the matcher; `{ timeout }` on each call |
+| `expect.configure()` | `{ timeout }` on each call |
 | `@axe-core/playwright` | axe-core through `browser.addInitScript({ path: 'node_modules/axe-core/axe.min.js' })`, then `axe.run()` in `browser.evaluate` |
 | `.resolves`, `.rejects`, `toThrow()`, `toStrictEqual()`, `toContainEqual()`, `toBeInstanceOf()`, `expect.closeTo()` | `await` first, or catch the error and assert on it; `toEqual`; `toContain`, which compares by deep equality; `toBeCloseTo` |
 | A `.not` locator matcher that passes on the first read | It passes after the condition holds for 1 s. The positive inverse passes on the first read: `toBeHidden()`, `toBeDisabled()`, `toBeChecked({ checked: false })` |
@@ -356,6 +357,10 @@ purpose. Use the workaround, or keep the test in Playwright.
 - Text reads are rendered text. `textContent()`, `toHaveText`, and
   `toContainText` read what `innerText` returns, so hidden text is left out
   and `text-transform` applies. See [locator reads](/reference/screen#locator-reads).
+- `toHaveRole` takes the `getByRole` vocabulary, so `paragraph`, `generic`,
+  and the other roles it leaves out are type errors, and `img` reads as
+  `image`. It compares the role the tree reads, where a `contenteditable`
+  editor is a `textbox`.
 - A locator is strict. An action, a read, or a positive matcher on several
   matches is `LOCATOR_AMBIGUOUS`, where Playwright's `page.click(selector)`
   and `isVisible()` take the first. Narrow with `filter` or `first()`.

@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findRegisteredMcpFiles, MCP_LOCATIONS, planMcpRegistration } from '../../src/cli/init/mcp-config.ts';
+import { MCP_LOCATIONS } from '../../src/cli/init/choices.ts';
+import { findRegisteredMcpFiles, planMcpRegistration } from '../../src/cli/init/mcp-config.ts';
 
 let dir: string;
 

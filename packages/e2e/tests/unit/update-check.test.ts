@@ -55,6 +55,15 @@ afterEach(() => {
 });
 
 describe('update check', () => {
+  it('leaves the star line out after e2e init, which asks for one itself', async () => {
+    const { options, output } = setup({ fetch: registry('0.22.0') });
+    const check = new UpdateCheck(options);
+    check.start('init');
+    await check.notify();
+    expect(output()).toContain('0.21.2 → 0.22.0');
+    expect(output()).not.toContain('Star us on GitHub');
+  });
+
   it('names the newer release and the install command for the project', async () => {
     const fetch = registry('0.22.0');
     const { options, output } = setup({ fetch });
@@ -65,6 +74,7 @@ describe('update check', () => {
     expect(fetch).toHaveBeenCalledOnce();
     expect(output()).toContain('0.21.2 → 0.22.0');
     expect(output()).toContain('Run pnpm exec e2e upgrade to update.');
+    expect(output()).toContain('\n\n★ Enjoying e2e? Star us on GitHub → github.com/e2e-inc/e2e\n\n');
     expect(record(options.configDir!)).toEqual({ checkedAt: NOW, latest: '0.22.0' });
   });
 

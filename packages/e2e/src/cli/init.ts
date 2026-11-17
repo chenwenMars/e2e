@@ -14,6 +14,7 @@ import {
 } from '../internal/package-manager.ts';
 import { CONFIG_NAMES, JS_CONFIG_NAMES } from '../config/names.ts';
 import { DOCS_URL } from './docs-url.ts';
+import { initStarStrip } from './star.ts';
 import {
   describeLinks,
   describeObstacles,
@@ -41,18 +42,19 @@ import {
   GITLAB_PIPELINE,
   posixRelative,
   readNodeMajor,
-  type CiChoice,
   type CiFile,
   type CiJobs,
   type CiService,
   type CiTarget,
 } from './init/ci.ts';
+import { MCP_LOCATIONS, type CiChoice } from './init/choices.ts';
 import { loadConfigModule } from '../config/load.ts';
 import { getEnginePreset, getEnginePresets, DEFAULT_ENGINE_IDS, type EngineId } from './init/engines.ts';
 import { copyExample, ExampleCopyCancelled, ExampleDownloadError, findExample, isEmptyDirectory, type ExampleCopy } from './init/examples.ts';
 import { DEFAULT_ENDPOINT, GATEWAYS, getGatewayPreset, validateEndpoint, type GatewayId } from './init/gateways.ts';
+import { isCiMode } from '@e2e-dev/core/lib/config/resolve';
 import { isLoopbackHost } from '@e2e-dev/core/lib/internal/urls';
-import { findRegisteredMcpFiles, linkOnPath, MCP_LOCATIONS, planMcpRegistration } from './init/mcp-config.ts';
+import { findRegisteredMcpFiles, linkOnPath, planMcpRegistration } from './init/mcp-config.ts';
 import { addDependencies, addScripts, declaresDependency, describeManifestError, readPackage, serializePackage } from './init/package.ts';
 import { createScaffold, type ScaffoldModel } from './init/scaffold.ts';
 import { MISSING_SKILL_MESSAGE, readSkillFiles } from './skill.ts';
@@ -537,21 +539,24 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
     example?.build === true ? `build and install the app as ${example.project === '.' ? '' : '../'}README.md describes` : undefined,
     ...(options.continueWith === undefined || existingConfig !== undefined ? [] : continueSteps(engines, model)),
   ].filter((step) => step !== undefined);
+  const finish = (outro: string, ready = false): InitRunOutcome => {
+    clack.outro(outro);
+    // Not when the run init was started for begins right under the outro.
+    if (!ready && process.stdout.isTTY === true && !isCiMode(process.env)) process.stdout.write(initStarStrip(process.stdout.columns));
+    return done('scaffolded', 0, ready);
+  };
   if (options.continueWith !== undefined) {
     const command = options.continueWith.map(shellArgument).join(' ');
     if (before.length === 0) {
       const target = scaffold.needsAppUrl ? ` on ${process.env['APP_URL'] ?? 'http://localhost:3000'} (set APP_URL for another URL)` : '';
-      clack.outro(`Starting ${command}${target}`);
-      return done('scaffolded', 0, true);
+      return finish(`Starting ${command}${target}`, true);
     }
     const appUrl = scaffold.needsAppUrl && process.env['APP_URL'] === undefined ? 'APP_URL=http://localhost:3000 ' : '';
-    clack.outro(`Next: ${[...before, `${appUrl}${execCommand(manager, command)}`].join(', then ')}`);
-    return done('scaffolded', 0);
+    return finish(`Next: ${[...before, `${appUrl}${execCommand(manager, command)}`].join(', then ')}`);
   }
   const last = example === undefined ? runCommand : runScriptCommand(manager, example.script);
   const appUrl = example === undefined && scaffold.needsAppUrl ? 'APP_URL=http://localhost:3000 ' : '';
-  clack.outro(`Next: ${[...before, `${appUrl}${last}`].join(', then ')}`);
-  return done('scaffolded', 0);
+  return finish(`Next: ${[...before, `${appUrl}${last}`].join(', then ')}`);
 }
 
 /** The pipeline init writes, and what the user still has to do for it to pass. */

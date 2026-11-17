@@ -132,6 +132,7 @@ const LOCATOR_MATCHERS = members({
   toHaveAttribute: matcher(1, 3),
   toHaveCount: matcher(1, 2),
   toHaveAccessibleName: matcher(1, 2),
+  toHaveRole: matcher(1, 2),
 } satisfies Covers<AsyncExpectation>);
 
 /** Every receiver's members. */

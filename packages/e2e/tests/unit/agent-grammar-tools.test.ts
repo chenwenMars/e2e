@@ -1,7 +1,9 @@
 /**
- * The vocabulary the model calls is closed: a field a tool's schema does not
- * declare fails validation instead of being stripped, so a call the model
- * decorated with `force` or `selector` is refused rather than run without it.
+ * The vocabulary the model calls is closed. On a tool that declares fields,
+ * a field the schema does not declare fails validation instead of being
+ * stripped, so a call the model decorated with `force` or `selector` is
+ * refused rather than run without it. A tool with no fields drops those
+ * keys and runs on `{}`.
  */
 
 import type { ToolSet } from 'ai';
@@ -62,6 +64,9 @@ const ACCEPTED: Readonly<Record<string, Record<string, unknown>>> = {
   dismiss_keyboard: {},
 };
 
+/** Tools whose schema declares no fields. A padded call is read as `{}`; every other tool stays closed. */
+const NO_INPUT = new Set(['observe', 'back', 'dismiss_keyboard', 'screenshot']);
+
 function schemaOf(tools: ToolSet, name: string): z.ZodType {
   const tool = tools[name];
   if (tool?.inputSchema === undefined) throw new Error(`no schema on ${name}`);
@@ -79,12 +84,39 @@ function expectClosed(schema: z.ZodType, accepted: Record<string, unknown>, name
 }
 
 describe('the grammar tools have closed schemas', () => {
-  it('offers the whole vocabulary over the full grammar, and every tool refuses a field it does not declare', () => {
+  it('offers the whole vocabulary over the full grammar; a tool with fields refuses one it does not declare, and a tool with none drops it', () => {
     const tools = createGrammarTools(fakeExecutorContext().context);
     expect(Object.keys(tools).toSorted()).toEqual([...GRAMMAR_TOOL_NAMES].toSorted());
     for (const name of Object.keys(tools)) {
-      expectClosed(schemaOf(tools, name), ACCEPTED[name]!, name);
+      const schema = schemaOf(tools, name);
+      const accepted = ACCEPTED[name]!;
+      if (!NO_INPUT.has(name)) {
+        expectClosed(schema, accepted, name);
+        continue;
+      }
+      expect(schema.safeParse(accepted).success, `${name} accepts ${JSON.stringify(accepted)}`).toBe(true);
+      const padded = schema.safeParse({ force: true, selector: '#x' });
+      expect(padded.success, `${name} drops undeclared fields`).toBe(true);
+      if (padded.success) expect(padded.data).toEqual({});
+      for (const value of ['nope', null, []]) {
+        const rejected = schema.safeParse(value);
+        expect(rejected.success, `${name} rejects ${JSON.stringify(value)}`).toBe(false);
+        if (!rejected.success) expect(rejected.error.issues.map((issue) => issue.code)).toEqual(['invalid_type']);
+      }
     }
+    const described = schemaOf(tools, 'screenshot').safeParse({ description: 'check the home screen' });
+    expect(described.success).toBe(true);
+    if (described.success) expect(described.data).toEqual({});
+  });
+
+  it('keeps screenshot strict once saveScreenshot adds a path field', () => {
+    const schema = schemaOf(grammarTools(fakeExecutorContext().context, { saveScreenshot: async (file) => file }), 'screenshot');
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ path: 'screenshots/home.png' }).success).toBe(true);
+    const padded = schema.safeParse({ path: 'screenshots/home.png', description: 'check' });
+    expect(padded.success).toBe(false);
+    if (padded.success) return;
+    expect(padded.error.issues.map((issue) => issue.code)).toEqual(['unrecognized_keys']);
   });
 
   it('scroll_to takes a listed node, a text to reach, or a text with the list to page, never nothing; a device gets the text form alone', () => {

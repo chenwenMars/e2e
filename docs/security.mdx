@@ -54,10 +54,12 @@ redacted URL, and records of earlier steps in the test. It gets a masked
 screenshot when it asks for one or a step sets `vision`.
 
 The model acts only through tools. The runner checks each call against a
-closed schema before it runs, and never evaluates model text as code. A call
-that breaks a rule, such as a navigation to `file:`, fails with
-`POLICY_DENIED`. There is no origin allowlist: the agent can follow the app
-to another site and use the step's secrets there.
+closed schema before it runs, and never evaluates model text as code. A
+built-in tool rejects a key it does not declare unless it has no fields, in
+which case it drops the keys and runs; a project tool follows its own
+`defineTool` schema. A call that breaks a rule, such as a navigation to
+`file:`, fails with `POLICY_DENIED`. There is no origin allowlist: the agent can
+follow the app to another site and use the step's secrets there.
 
 ## What runs with your permissions
 

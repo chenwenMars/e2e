@@ -1,0 +1,92 @@
+---
+title: フィクスチャを作る
+description: 各テストの前にテストデータやリソースを用意し、終了後に片付けます。
+"og:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+"twitter:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+---
+
+フィクスチャは、テストに渡す値です。テストの前に準備し、失敗した場合も含めてテストの後に後処理を行います。テストデータの作成に使ってください。ログインには、代わりに[保存済みセッション](/authentication)を使います。
+
+## フィクスチャをひとつのファイルに定義する
+
+エンジンの `test` を拡張してエクスポートします。フィクスチャでは `agent` を使えるため、[目標](/core-concepts#goals)を指定してアプリからデータを作成できます。
+
+```ts title="tests/fixtures.ts" expandable
+import { test as base } from '@e2e-dev/web';
+import { expect, unique } from 'e2e';
+
+/** A fresh project for each test, created and deleted through the app. */
+export const test = base.extend<{ project: string }>({
+  project: async ({ app, agent, screen }, use) => {
+    const name = `Launch plan ${Date.now()}`;
+    await app.open('/projects');
+    await agent.act('create a project named {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('heading', name)).toBeVisible();
+    await use(name);
+    await app.open('/projects');
+    await agent.act('delete the project {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('link', name)).toBeHidden();
+  },
+});
+
+/** One task in that project. Deleting the project deletes it too. */
+export const taskTest = test.extend<{ task: string }>({
+  task: async ({ agent, screen }, use) => {
+    const title = 'Write the announcement';
+    await agent.act('add a task {title}', { params: { title } });
+    await expect(screen.getByRole('checkbox', title)).toBeVisible();
+    await use(title);
+  },
+});
+```
+
+`await use(value)` より前がセットアップ、その後が後処理です。テストファイルでは、拡張した `test` をインポートします。
+
+```ts title="tests/tasks.e2e.ts"
+import { expect } from 'e2e';
+import { taskTest as test } from './fixtures.ts';
+
+test('completes a task', { session: 'admin' }, async ({ screen, task }) => {
+  await screen.getByRole('checkbox', task).check();
+  await expect(screen.getByRole('checkbox', task)).toBeChecked();
+});
+```
+
+保存済みセッションは、フィクスチャの実行前に復元されます。
+
+<Note>
+フィクスチャ内のエージェントステップは、それを使うテストごとに実行されます。アプリにテスト API がある場合は、`fetch` 呼び出しのほうが高速です。
+</Note>
+
+## 他のフィクスチャを使って組み立てる
+
+フィクスチャが参照できるのは、拡張元の `test` のフィクスチャだけです。そのため、`task` は 2 回目の `extend` を通して `project` を使います。後処理は逆順に実行されます。
+
+## セットアップごとに test を用意する
+
+拡張を連ねた場合、その中のすべてのフィクスチャが、それを通して登録した全テストで実行されます。テストが名前を指定して受け取るかどうかは関係ありません。上の `test` と `taskTest` のように、セットアップごとに別の `test` をエクスポートしてください。
+
+## フックからフィクスチャを参照する
+
+フィクスチャの型を使うには、拡張した `test` にフックを登録します。
+
+```ts
+taskTest.beforeEach(async ({ screen, project }) => {
+  await expect(screen.getByRole('heading', project)).toBeVisible();
+});
+```
+
+## フィクスチャが失敗した場合
+
+セットアップのエラーは `beforeEach` でテストを失敗させます。後処理のエラーは `afterEach` として報告されます。[エラーの一覧](/reference/test#your-own-fixtures)を参照してください。
+
+## 次のステップ
+
+<CardGroup cols={2}>
+  <Card title="テストリファレンス" icon="code" href="/reference/test#your-own-fixtures">
+    フィクスチャの契約、型、すべての失敗条件を確認します。
+  </Card>
+  <Card title="認証" icon="key" href="/authentication">
+    セッションを一度保存し、各テストで復元します。
+  </Card>
+</CardGroup>

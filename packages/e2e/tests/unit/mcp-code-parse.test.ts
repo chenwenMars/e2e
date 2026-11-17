@@ -221,7 +221,7 @@ describe('parseCode refuses', () => {
     ["expect(screen.getByText('a')).not.not.toBeVisible()", 'run_code: "not" at 1:35: a matcher is negated once'],
     [
       "expect(screen.getByText('a')).toBe('a')",
-      'run_code: "toBe" at 1:31 is not something run_code runs on expect(locator); expect(locator) takes toBeVisible, toBeHidden, toBeAttached, toBeEnabled, toBeDisabled, toBeChecked, toBeSelected, toBeExpanded, toBeFocused, toHaveText, toContainText, toHaveValue, toHaveAttribute, toHaveCount, toHaveAccessibleName',
+      'run_code: "toBe" at 1:31 is not something run_code runs on expect(locator); expect(locator) takes toBeVisible, toBeHidden, toBeAttached, toBeEnabled, toBeDisabled, toBeChecked, toBeSelected, toBeExpanded, toBeFocused, toHaveText, toContainText, toHaveValue, toHaveAttribute, toHaveCount, toHaveAccessibleName, toHaveRole',
     ],
     ["screen.getByLabel('Email').pressSequentially(credentials.user('admin').password)", `run_code: the secret at 1:46 ${SECRET_PLACE}`],
     ["expect(screen.getByLabel('Token')).toHaveValue(secrets.get('apiKey'))", `run_code: the secret at 1:48 ${SECRET_PLACE}`],

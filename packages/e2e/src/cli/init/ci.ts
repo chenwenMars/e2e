@@ -8,15 +8,13 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { isMap, isNode, isScalar, parseDocument, visit, type Document, type Scalar, type YAMLMap, type YAMLSeq } from 'yaml';
+import { isAlias, isMap, isNode, isScalar, isSeq, parseAllDocuments, parseDocument, visit, type Document, type Scalar, type YAMLMap, type YAMLSeq } from 'yaml';
 import { resolvePlatform, targetName } from '@e2e-dev/core/lib/config/targets';
 import { isLoopbackHost } from '@e2e-dev/core/lib/internal/urls';
 import type { PackageManager } from '../../internal/package-manager.ts';
 import type { E2EConfig } from '../../run-types.ts';
+import type { CiId } from './choices.ts';
 import { GATEWAYS, type GatewayPreset } from './gateways.ts';
-
-export type CiId = 'github-actions' | 'gitlab';
-export type CiChoice = CiId | 'none';
 
 /** Where a service's pipeline goes, relative to the repository root. */
 export interface CiFile {
@@ -145,15 +143,15 @@ function locateGitlabPipeline(root: string): CiFile {
 /** The jobs the GitLab template defines, which an existing pipeline's own jobs must not share names with. */
 const GITLAB_JOBS = ['e2e-web', '.e2e-mobile', 'e2e-ios', 'e2e-android'] as const;
 
-/** The names a pipeline's top-level `stages:` lists, flow (`[build, test]`) or block style; undefined without one. */
+/** The names a pipeline's top-level `stages:` lists, however the list is laid out; undefined without one. */
 function gitlabStages(pipeline: string): string[] | undefined {
-  const block = /^stages:[ \t]*(.*(?:\n[ \t]+-.*)*)/mu.exec(pipeline)?.[1];
-  if (block === undefined) return undefined;
-  return block
-    .replaceAll(/[[\]]/gu, '')
-    .split(/[,\n]/u)
-    .map((item) => item.replace(/^\s*-?\s*/u, '').replace(/#.*$/u, '').trim().replaceAll(/^['"]|['"]$/gu, ''))
-    .filter((item) => item !== '');
+  const stages = parseAllDocuments(pipeline)
+    .map((document) => {
+      const node = document.get('stages', true);
+      return isAlias(node) ? node.resolve(document) : node;
+    })
+    .find(isSeq);
+  return stages?.items.map((item) => String(isScalar(item) ? item.value : item));
 }
 
 /** The Node version a pipeline sets up when the project pins none. */

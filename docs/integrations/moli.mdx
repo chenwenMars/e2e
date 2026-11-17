@@ -1,0 +1,89 @@
+---
+title: Moli
+sidebarTitle: Moli
+description: Run web targets in local Moli browsers with automatic startup and cleanup through @e2e-dev/moli.
+---
+
+[Moli](https://github.com/lexmount/moli) is an open-source browser that speaks
+the Chrome DevTools Protocol. `moli()` from `@e2e-dev/moli` starts one local
+browser per worker slot and stops it with the run.
+
+## Start a Moli target
+
+Install the [Moli binary](https://github.com/lexmount/moli#direct-installation)
+and these packages:
+
+<CodeGroup>
+```bash npm
+npm install --save-dev e2e @e2e-dev/web @e2e-dev/moli
+```
+
+```bash pnpm
+pnpm add -D e2e @e2e-dev/web @e2e-dev/moli
+```
+
+```bash bun
+bun add -d e2e @e2e-dev/web @e2e-dev/moli
+```
+</CodeGroup>
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { moli } from '@e2e-dev/moli';
+
+export default {
+  targets: [
+    {
+      name: 'moli',
+      engine: web({ browser: moli() }),
+      app: { url: 'http://localhost:3000' },
+    },
+  ],
+} satisfies E2EConfig;
+```
+
+Run your tests with [`e2e run`](/reference/cli#e2e-run). Each worker uses a
+separate Moli process on an available loopback port. A server that does not
+expose CDP within ten seconds fails its lease.
+
+## Configure the browser
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `binary` | `MOLI_PATH`, then `PATH`, then `~/.local/bin/moli` | Executable path or name. Resolved from the run's environment when the browser starts. |
+| `layout` | `true` | Pass `--layout` for on-demand layout and screenshots. |
+| `loadResources` | `true` | Pass `--resource` to fetch optional images, fonts, audio, video, media, and text tracks. |
+| `args` | `[]` | Additional `moli serve` flags. |
+
+The provider supports worker scope. Per-attempt leases are not implemented.
+
+<Accordion title="Attach to a server you start yourself">
+Start Moli in a separate terminal:
+
+```bash
+moli serve --host 127.0.0.1 --port 19222 --layout --resource
+```
+
+Use the web engine's `connect` option to attach. The run leaves this server running:
+
+```ts
+web({ connect: { cdpEndpoint: () => process.env.MOLI_CDP_URL?.trim() || 'http://127.0.0.1:19222' } })
+```
+</Accordion>
+
+## Check browser compatibility
+
+Run your suite against the Moli build you deploy. Check
+[upstream issues](https://github.com/lexmount/moli/issues) for CDP compatibility gaps.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Browser APIs" icon="globe" href="/browser">
+    Navigation, network interception, downloads, and screenshots.
+  </Card>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Save and restore a signed-in session across tests.
+  </Card>
+</CardGroup>

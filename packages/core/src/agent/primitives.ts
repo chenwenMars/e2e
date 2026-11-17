@@ -17,6 +17,7 @@ import { KEY_MODIFIERS, type KeyModifier } from '../engine/contract.ts';
 import type { ViewportPoint } from '../engine/surface.ts';
 import { codedMessage, hasCause, TestError } from '../internal/errors.ts';
 import { VIEWPORT_LIMITS } from '../internal/geometry.ts';
+import { isPlainObject } from '../internal/options.ts';
 import type { AgentErrorCode } from '../types.ts';
 import { READ_ONLY_GRAMMAR } from './action-names.ts';
 import { isRuntimeHardStop, BLOCKABLE_CODES, type StepExecutorContext, type StepVerdict } from './executor.ts';
@@ -80,11 +81,10 @@ export const VERDICT_RULES = `Verdict rules:
 - "passed" means the application behaved as the step required. "failed" means it did not. "blocked" means credentials, the environment, or test setup prevented a product verdict — blocked says nothing about the product and requires an errorCode.`;
 
 /**
- * A plain AI SDK function tool with its input typed from the schema — what
- * `tool()` from `ai` does, without loading `ai` to do it. The schema is
- * closed here, once for every tool: a field it does not declare fails
- * validation, and the SDK hands the failure back to the model as the call's
- * result instead of stripping the field and running the call without it.
+ * A plain AI SDK function tool with its input typed from the schema; a tool
+ * that declares fields rejects any key it does not declare. A tool with no
+ * fields reads a plain object as `{}` first, because some models pad a
+ * no-input call and resend the refusal until the step budget ends.
  */
 function schemaTool<Schema extends z.ZodObject, Output = string>(definition: {
   readonly description: string;
@@ -93,7 +93,11 @@ function schemaTool<Schema extends z.ZodObject, Output = string>(definition: {
   /** Maps a structured result onto model content; a string result needs none. */
   readonly toModelOutput?: (options: { readonly output: Output }) => ModelOutput;
 }): Tool {
-  return { ...definition, inputSchema: definition.inputSchema.strict() } as Tool;
+  const strict = definition.inputSchema.strict();
+  const inputSchema = Object.keys(definition.inputSchema.shape).length === 0
+    ? z.preprocess((value) => (isPlainObject(value) ? {} : value), strict)
+    : strict;
+  return { ...definition, inputSchema } as Tool;
 }
 
 /** The model-facing shape of a tool result: text, or text with a screenshot attached. */

@@ -21,6 +21,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import picocolors from 'picocolors';
 import { z } from 'zod';
 import { classifyError, codedMessage, ConfigurationError, exitCodeForCategory } from '@e2e-dev/core/lib/internal/errors';
+import { bounded } from '../report/format.ts';
 import { stepLine, stepPromptText } from '../report/list-steps.ts';
 import type { RunEventSink } from '../run/events.ts';
 import { run, type RunOptions, type RunOutcome } from '../run/runner.ts';
@@ -367,7 +368,7 @@ export async function serveSteps(options: RunOptions, signals: SignalLadder, add
     if (event.type === 'step' && event.progress.phase === 'end' && event.progress.kind !== 'agent') {
       const { error } = event.progress;
       print(stepLine(plain, event.progress));
-      if (error !== undefined) print(`${error.code}: ${error.message}`.replace(/^/gm, '  '));
+      if (error !== undefined) print(bounded(`${error.code}: ${error.message}`).replace(/^/gm, '  '));
     }
     return options.onEvent?.(event);
   };

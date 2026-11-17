@@ -438,7 +438,7 @@ export function serializeError(
   const serialized: SerializedError = {
     category: error.category,
     code: error.code,
-    message: truncateUtf8(sanitizeText(redact(error.message)), MAX_MESSAGE_BYTES),
+    message: truncateUtf8(sanitizeRecordedText(redact(error.message)), MAX_MESSAGE_BYTES),
     retryable: error.retryable,
   };
   if (extras.phase !== undefined) serialized.phase = extras.phase;
@@ -449,7 +449,7 @@ export function serializeError(
     if (details !== undefined) serialized.details = details;
   }
   const stack = (error.cause instanceof Error ? error.cause.stack : undefined) ?? error.stack;
-  if (stack !== undefined) serialized.stack = truncateUtf8(sanitizeText(redact(stack)), 65536);
+  if (stack !== undefined) serialized.stack = truncateUtf8(sanitizeRecordedText(redact(stack)), 65536);
   const source = sourceLocation(stack, extras.projectRoot);
   if (source !== undefined) serialized.source = source;
   return serialized;
@@ -476,7 +476,7 @@ function boundedDetails(details: ErrorDetails, redact: (text: string) => string)
   const bounded: Record<string, string | number> = {};
   for (const key of DETAIL_TEXT_KEYS) {
     const text = details[key];
-    if (text !== undefined && text !== '') bounded[key] = truncateUtf8(sanitizeText(redact(text)), MAX_DETAIL_BYTES);
+    if (text !== undefined && text !== '') bounded[key] = truncateUtf8(sanitizeRecordedText(redact(text)), MAX_DETAIL_BYTES);
   }
   for (const key of DETAIL_NUMBER_KEYS) {
     const count = details[key];
@@ -498,6 +498,21 @@ const UTF8_DECODER = new TextDecoder();
  */
 export function sanitizeText(text: string): string {
   return stripVTControlCharacters(text).replace(CONTROL_PATTERN, '\uFFFD');
+}
+
+/** C0/C1 control characters except tab, newline, and a carriage return that starts a `\r\n`. */
+// oxlint-disable-next-line no-control-regex -- the control range is the point
+const RECORDED_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|\r(?!\n)/g;
+
+/**
+ * `sanitizeText` that keeps `\r\n` line breaks, for text the run records:
+ * serialized errors and skip reasons, which reach report files, reporter
+ * events, and `openHost` callers. A lone `\r` still becomes U+FFFD, since on
+ * a terminal it rewinds the line and the text after it overwrites the text
+ * before.
+ */
+export function sanitizeRecordedText(text: string): string {
+  return stripVTControlCharacters(text).replace(RECORDED_CONTROL_PATTERN, '\uFFFD');
 }
 
 /** Truncates a string so its UTF-8 encoding fits maxBytes without splitting a code point. */

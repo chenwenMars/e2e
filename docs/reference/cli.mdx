@@ -58,8 +58,8 @@ $ npx e2e --version
   logo in block characters. Piped output and
   narrower terminals get the text alone.
 - When a newer `e2e` is on npm, a command run on a terminal ends with the
-  version and the [`e2e upgrade`](#e2e-upgrade) command for the project's
-  package manager. The
+  version, the [`e2e upgrade`](#e2e-upgrade) command for the project's
+  package manager, and a link to star e2e on GitHub. The
   registry is checked once a day. Nothing prints in CI, when stderr is not a
   terminal, for `e2e mcp` and `e2e upgrade`, or with
   `E2E_UPDATE_CHECK_DISABLED=1`, `NO_UPDATE_NOTIFIER=1`,
@@ -141,6 +141,9 @@ On a terminal 52 or more columns wide, the wizard opens with the e2e logo,
 shading in from ░ to █, top rows first, in about half a second. With
 `--yes`, in CI, on a dumb terminal, or on a terminal under 7 rows, it prints
 at once. Piped output and narrower terminals never show it.
+
+On a terminal outside CI, a finished scaffold ends with a link to star e2e on
+GitHub, unless init goes straight on to the command it was started for.
 
 For a new project, the wizard asks for:
 
@@ -1226,6 +1229,8 @@ Updated the agent skill in .agents/skills/e2e/ (12 files)
 
 - **The project.** The nearest `package.json` from the working directory up
   that lists `e2e`.
+- **On a terminal.** After a new `e2e` installs, the e2e logo and a link to
+  star e2e on GitHub follow. Not in CI or piped output.
 - **Sibling versions.** Each `@e2e-dev/*` package gets its release under the
   same dist-tag (`latest` for a named version), when that release's peer
   ranges accept the new versions. Otherwise it gets its newest release that

@@ -2,6 +2,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/e2e"><img alt="npm version" src="https://img.shields.io/npm/v/e2e.svg?style=for-the-badge&labelColor=000000" /></a>
+  <a href="https://www.npmjs.com/package/e2e"><img alt="npm monthly downloads" src="https://img.shields.io/npm/dm/e2e.svg?style=for-the-badge&labelColor=000000" /></a>
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-green.svg?style=for-the-badge&labelColor=000000" /></a>
   <a href="https://e2e.com/discord"><img alt="Join the community on Discord" src="https://img.shields.io/badge/Join%20the%20community-5865F2.svg?style=for-the-badge&logo=discord&logoColor=white&labelColor=000000" /></a>
 </p>
@@ -48,6 +49,25 @@ To see a finished setup in your stack, open
 Vite, Next.js, Astro, Angular, Expo, SwiftUI, Jetpack Compose, Kotlin Multiplatform,
 Flutter, and .NET MAUI, each a standalone project with a passing suite.
 
+## MCP server
+
+`npx e2e mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio. It gives a coding agent such as Claude Code, Codex, or
+Cursor a live session on your app, on web, iOS, or Android: the agent sees
+the screen, acts on it, gets back the test line that repeats each action, and
+runs your suite. The server needs no model.
+
+```json
+{
+  "mcpServers": {
+    "e2e": { "command": "npx", "args": ["e2e", "mcp"] }
+  }
+}
+```
+
+See the [MCP server docs](https://e2e.com/docs/mcp-server) for setup and
+every tool.
+
 ## Packages
 
 ### Core
@@ -66,12 +86,15 @@ Flutter, and .NET MAUI, each a standalone project with a passing suite.
 | --- | --- |
 | [`@e2e-dev/browser-run`](https://www.npmjs.com/package/@e2e-dev/browser-run) | Cloudflare Browser Run hosted Chromium for the web engine. |
 | [`@e2e-dev/kernel`](https://www.npmjs.com/package/@e2e-dev/kernel) | Kernel hosted browsers for the web engine. |
+| [`@e2e-dev/notte`](https://www.npmjs.com/package/@e2e-dev/notte) | Notte cloud browsers for the web engine, one session per test attempt. |
 | [`@e2e-dev/lightpanda`](https://www.npmjs.com/package/@e2e-dev/lightpanda) | Lightpanda, the open-source headless browser, started per run for the web engine. |
+| [`@e2e-dev/moli`](https://www.npmjs.com/package/@e2e-dev/moli) | Local Moli browsers with on-demand layout and screenshots, started per worker slot for the web engine. |
 | [`@e2e-dev/smol`](https://www.npmjs.com/package/@e2e-dev/smol) | smol machines browsers for the web engine: by default, each attempt branches a warm Chromium microVM. |
 | [`@e2e-dev/testmu`](https://www.npmjs.com/package/@e2e-dev/testmu) | TestMu AI (formerly LambdaTest) hosted Android emulators, iOS simulators, and real devices for the mobile engine, and hosted Chrome and Edge for the web engine. |
 | [`@e2e-dev/e2b`](https://www.npmjs.com/package/@e2e-dev/e2b) | E2B sandboxes: Android 16 for the mobile engine, and Chromium for the web engine. |
 | [`@e2e-dev/browserstack`](https://www.npmjs.com/package/@e2e-dev/browserstack) | BrowserStack App Automate real Android and iOS devices for the mobile engine. |
 | [`@e2e-dev/limrun`](https://www.npmjs.com/package/@e2e-dev/limrun) | Limrun hosted iOS simulators and Android emulators for mobile tests. |
+| [`@e2e-dev/revyl`](https://www.npmjs.com/package/@e2e-dev/revyl) | Revyl hosted iOS simulators and Android emulators for the mobile engine. |
 | [`@e2e-dev/eas`](https://www.npmjs.com/package/@e2e-dev/eas) | Expo Simulators hosted iOS simulators and Android emulators for the mobile engine. |
 | [`@e2e-dev/github`](https://www.npmjs.com/package/@e2e-dev/github) | Reporter that posts results as a pull request comment. |
 | [`@e2e-dev/html-reporter`](https://www.npmjs.com/package/@e2e-dev/html-reporter) | Reporter that writes the run as one HTML page, with steps, screenshots, and video. |

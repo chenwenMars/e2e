@@ -159,6 +159,108 @@ describe('registration', () => {
     expect(registration.tests[2]!.options.skip).toBe('flaky upstream');
   });
 
+  it('registers test.skipIf and test.runIf tests skipped or normal by the condition read at the call', async () => {
+    const registration = await collectModule(async () => {
+      test.skipIf(true)('skipIf true', noop);
+      test.skipIf(false)('skipIf false', noop);
+      test.runIf(true)('runIf true', noop);
+      test.runIf(false)('runIf false', noop);
+      test.skipIf('linux')('truthy string', noop);
+      test.runIf(0)('falsy number', noop);
+      test.skipIf(undefined)('skipIf undefined', noop);
+      test.skipIf(0)('skipIf zero', noop);
+      test.skipIf('')('skipIf empty string', noop);
+      test.runIf('linux')('runIf truthy string', noop);
+      test.runIf(undefined)('runIf undefined', noop);
+    });
+    expect(registration.tests.map((item) => [item.title, item.mode, item.options.skip])).toEqual([
+      ['skipIf true', 'skip', true],
+      ['skipIf false', 'normal', undefined],
+      ['runIf true', 'normal', undefined],
+      ['runIf false', 'skip', true],
+      ['truthy string', 'skip', true],
+      ['falsy number', 'skip', true],
+      ['skipIf undefined', 'normal', undefined],
+      ['skipIf zero', 'normal', undefined],
+      ['skipIf empty string', 'normal', undefined],
+      ['runIf truthy string', 'normal', undefined],
+      ['runIf undefined', 'skip', true],
+    ]);
+    expect(() => test.skipIf(true)('outside', noop)).toThrow(/^test\.skipIf\(\) /);
+    expect(() => test.runIf(true)('outside', noop)).toThrow(/^test\.runIf\(\) /);
+  });
+
+  it('rejects a Promise condition, which would always read as truthy', async () => {
+    expect(() => test.skipIf(Promise.resolve(false) as unknown)).toThrow(
+      'test.skipIf() got a Promise as its condition; await it before the call',
+    );
+    expect(() => test.runIf(Promise.resolve(true) as unknown)).toThrow(
+      'test.runIf() got a Promise as its condition; await it before the call',
+    );
+    // oxlint-disable-next-line unicorn/no-thenable -- a thenable that is not a Promise is the case under test
+    const thenable = { then: (resolve: (value: boolean) => void) => resolve(false) };
+    expect(() => test.skipIf(thenable)).toThrow(
+      'test.skipIf() got a Promise as its condition; await it before the call',
+    );
+  });
+
+  it('keeps the options of a test.skipIf test, its skip reason included', async () => {
+    const registration = await collectModule(async () => {
+      test.skipIf(true)('tagged', { tags: ['@fs'], timeout: 5000 }, noop);
+      test.skipIf(true)('with reason', { skip: 'no inotify on macOS' }, noop);
+      test.skipIf(true)('empty reason', { skip: '' }, noop);
+      test.skipIf(true)('skip false', { skip: false }, noop);
+      test.skipIf(true)('focused', { only: true }, noop);
+      test.skipIf(false)('not skipped', { tags: ['@fs'] }, noop);
+      test.skipIf(false)('option reason, falsy skipIf', { skip: 'tracked in #42' }, noop);
+      test.runIf(true)('option reason, truthy runIf', { skip: 'tracked in #42' }, noop);
+      test.skipIf(false)('option true, falsy skipIf', { skip: true }, noop);
+      test.runIf(true)('option true, truthy runIf', { skip: true }, noop);
+    });
+    expect(registration.tests.map((item) => [item.mode, item.options, item.tags])).toEqual([
+      ['skip', { tags: ['@fs'], timeout: 5000, skip: true }, ['@fs']],
+      ['skip', { skip: 'no inotify on macOS' }, []],
+      ['skip', { skip: '' }, []],
+      ['skip', { skip: true }, []],
+      ['only', { only: true, skip: true }, []],
+      ['normal', { tags: ['@fs'] }, ['@fs']],
+      ['skip', { skip: 'tracked in #42' }, []],
+      ['skip', { skip: 'tracked in #42' }, []],
+      ['skip', { skip: true }, []],
+      ['skip', { skip: true }, []],
+    ]);
+    await expect(collectModule(async () => test.skipIf(true)('bad', { retry: 1 } as never, noop))).rejects.toThrow(
+      /test options has unknown key "retry"/,
+    );
+    await expect(collectModule(async () => test.skipIf(true)('no body', {} as never))).rejects.toThrow(
+      'test body function is required',
+    );
+  });
+
+  it('rejects test.skipIf and test.runIf in a serial group whatever the condition', async () => {
+    const calls: Array<[string, () => void]> = [
+      ['test.skipIf()', () => test.skipIf(true)('member', noop)],
+      ['test.skipIf()', () => test.skipIf(false)('member', noop)],
+      ['test.runIf()', () => test.runIf(true)('member', noop)],
+      ['test.runIf()', () => test.runIf(false)('member', noop)],
+    ];
+    for (const [api, call] of calls) {
+      await expect(
+        collectModule(async () => {
+          test.describe('unit', { serial: true }, () => {
+            test.describe('nested', call);
+          });
+        }),
+      ).rejects.toThrow(`${api} cannot be used inside a serial group, which skips as one unit; set skip on the serial describe instead`);
+    }
+    const registration = await collectModule(async () => {
+      test.describe('plain group', () => {
+        test.runIf(true)('member', noop);
+      });
+    });
+    expect(registration.tests.map((item) => item.mode)).toEqual(['normal']);
+  });
+
   it('registers expected failures by test.fail(title, fn) and the fail option, and checks the option', async () => {
     const registration = await collectModule(async () => {
       test.fail('registered', noop);
@@ -362,6 +464,18 @@ describe('test.extend', () => {
         : hook.kind,
     );
     expect(hookChains).toEqual([['one', 'two'], ['one', 'two'], 'afterAll']);
+  });
+
+  it('carries the chain through skipIf and runIf on an extended test', async () => {
+    const extended = test.extend<{ one: string }>({ one: fixture });
+    const registration = await collectModule(async () => {
+      extended.skipIf(true)('skipped', noop);
+      extended.runIf(true)('runs', noop);
+    });
+    expect(registration.tests.map((item) => [item.mode, item.fixtures.map((definition) => definition.name)])).toEqual([
+      ['skip', ['one']],
+      ['normal', ['one']],
+    ]);
   });
 
   it('rejects anything but a plain object of functions', () => {

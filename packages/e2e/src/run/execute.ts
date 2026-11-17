@@ -3,7 +3,7 @@
 import path from 'node:path';
 import type { TargetSession } from '@e2e-dev/core/lib/engine/surface';
 import type { ResolvedConfig } from '@e2e-dev/core/lib/config/resolve';
-import { classifyError, ConfigurationError, E2EError, serializeError, sanitizeText, truncateUtf8, TestError, TestTimeoutError, type SerializedError } from '@e2e-dev/core/lib/internal/errors';
+import { classifyError, ConfigurationError, E2EError, serializeError, sanitizeRecordedText, truncateUtf8, TestError, TestTimeoutError, type SerializedError } from '@e2e-dev/core/lib/internal/errors';
 import { isRuntimeSkip, type RuntimeSkip } from '../internal/skip.ts';
 import { lateExpectedFailureError } from '@e2e-dev/core/lib/internal/expected-failure';
 import { settleExpectedFailure } from './expected-failure.ts';
@@ -108,6 +108,8 @@ export interface TargetExecutorOptions extends EngineSessionsOptions {
   readonly holdStep?: ((step: HeldStep, signal: AbortSignal) => Promise<void>) | undefined;
   /** Whether each hold reads the screen it starts on into `HeldStep.screen`. */
   readonly heldScreens?: boolean | undefined;
+  /** Awaited before each pair starts, before the interrupt check. */
+  readonly beforePair?: (() => Promise<void>) | undefined;
   readonly events?: ExecutionEvents;
   /** The virtual file of tests registered in memory, and the agents they run as; see `InMemoryAttempts`. */
   readonly inMemory?: InMemoryAttempts | undefined;
@@ -271,6 +273,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       const serialUnitKey =
         pair.test.serialId === undefined ? undefined : pairKey(pair.test.serialId, pair.agent, pair.repeat);
       if (serialUnitKey !== undefined && executedSerialUnits.has(serialUnitKey)) continue;
+      await this.options.beforePair?.();
       if (this.interruptSignal.aborted) {
         this.emit(unstartedResult(pair, interruptedSkip(this.interruptSignal)));
         continue;
@@ -962,14 +965,14 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       // recording is worth.
       if (failure === undefined && skipped !== undefined) {
         record.status = 'skipped';
-        record.skip = { cause: 'explicit', reason: truncateUtf8(sanitizeText(redact(skipped.reason)), 8192) };
+        record.skip = { cause: 'explicit', reason: truncateUtf8(sanitizeRecordedText(redact(skipped.reason)), 8192) };
       } else if (failure === undefined) {
         record.status = 'passed';
       } else {
         record.status = classifyAttemptStatus(failure, timedOut, this.interruptSignal.aborted);
         record.error = serializeError(failure, { phase: failurePhase ?? phase, projectRoot: this.config.projectRoot, redact });
         // A failure outranks the skip; the reason stays beside it.
-        if (skipped !== undefined) record.skip = { cause: 'explicit', reason: truncateUtf8(sanitizeText(redact(skipped.reason)), 8192) };
+        if (skipped !== undefined) record.skip = { cause: 'explicit', reason: truncateUtf8(sanitizeRecordedText(redact(skipped.reason)), 8192) };
         // A failure that first landed in teardown has had no look yet.
         await captureEvidence();
       }

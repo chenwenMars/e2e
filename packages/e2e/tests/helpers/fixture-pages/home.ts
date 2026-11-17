@@ -313,6 +313,21 @@ line2  </textarea>
   <input aria-label="Blank" type="text" />
 </body>
 </html>`),
+  // What toHaveRole reads: roles from markup and from ARIA, and the one the
+  // vocabulary spells its own way (ARIA's img is image).
+  '/role-matcher': constant(`<!doctype html>
+<html>
+<head><title>Role matcher</title></head>
+<body>
+  <input aria-label="Name" />
+  <input aria-label="Secret" type="password" value="marker-7c1f" />
+  <button role="switch" aria-checked="true">Wi-Fi</button>
+  <img data-testid="logo" alt="Logo" src="/fixture.png" />
+  <h2 data-testid="title">Title</h2>
+  <h1 contenteditable="true" data-testid="doc">Untitled</h1>
+  <div data-testid="plain">Plain</div>
+</body>
+</html>`),
   '/downloads': constant(
     '<!doctype html><html><head><title>Downloads</title></head><body><h1>Downloads</h1>' +
       '<a href="/report.csv" download>Download report</a></body></html>',

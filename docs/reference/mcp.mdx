@@ -152,8 +152,9 @@ call {tool: "tap", args: {target: "n42"}, session: "<id>"}
 | `session` | string | while several are open | The session id. |
 
 - Arguments are validated against the tool's closed schema first. A wrong
-  type or an argument the tool does not declare is `INVALID_ARGUMENT`, and
-  nothing runs.
+  type, or an argument a tool that declares arguments does not declare, is
+  `INVALID_ARGUMENT`, and nothing runs. `back` and `dismiss_keyboard` take no
+  arguments; they drop any they are given and run.
 - An action that fails is an error result that still carries the screen it
   re-observed. It leads with the tool, its target, and the code:
   `navigate file:///etc/passwd failed: POLICY_DENIED: forbidden URL scheme: file:`.

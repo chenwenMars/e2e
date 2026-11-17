@@ -4,11 +4,10 @@ import { InvalidArgumentError, Option, type Command } from 'commander';
 import type { InitOptions } from '../init.ts';
 import { parseNames } from '../parse-names.ts';
 import { SKILL_LOCATIONS } from './agent-skill.ts';
-import { CI_SERVICES } from './ci.ts';
+import { CI_IDS, MCP_LOCATIONS } from './choices.ts';
 import { getEnginePresets, type EngineId } from './engines.ts';
 import { EXAMPLES, findExample } from './examples.ts';
 import { GATEWAYS, validateEndpoint } from './gateways.ts';
-import { MCP_LOCATIONS } from './mcp-config.ts';
 
 /** The values commander parses the init flags to, before {@link checkInitFlags}. */
 export type InitFlagValues = Omit<InitOptions, 'directory' | 'interactive' | 'engines' | 'skills' | 'mcp'> & {
@@ -43,10 +42,7 @@ export function addInitOptions(command: Command): Command {
     .option('--skills <dirs>', `where to install the agent skill, comma-separated: ${SKILL_DIRS.join(', ')}, or none`, parseNames('skill directory'))
     .option('--mcp <files>', `where to register the MCP server, comma-separated: ${MCP_FILES.join(', ')}, or none`, parseNames('MCP config file'))
     .addOption(
-      new Option('--ci <id>', 'CI pipeline that runs the tests, one job per platform; none writes none, and --yes alone writes none').choices([
-        ...CI_SERVICES.map((service) => service.id),
-        'none',
-      ]),
+      new Option('--ci <id>', 'CI pipeline that runs the tests, one job per platform; none writes none, and --yes alone writes none').choices([...CI_IDS, 'none']),
     )
     .option('--install', 'install dependencies after scaffolding')
     .option('--no-install', 'do not install dependencies');

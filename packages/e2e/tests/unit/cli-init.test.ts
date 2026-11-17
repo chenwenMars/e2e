@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -145,6 +146,8 @@ describe('e2e init', () => {
     expect(output()).toContain('Add scripts: test:e2e (e2e run)');
     expect(output()).toContain('No tsconfig.json');
     expect(output()).toContain('Next: npm install, then APP_URL=http://localhost:3000 npm run test:e2e');
+    // Off a terminal, as when an agent runs init, there is no star strip.
+    expect(output()).not.toContain('Star e2e on GitHub');
   });
 
   it('registers the MCP server through bunx in a Bun project', async () => {
@@ -565,6 +568,45 @@ describe('e2e init', () => {
       vi.mocked(spawnSync).mockReturnValueOnce(spawnResult(0));
       expect(await init(dir, { continueWith: explore })).toMatchObject({ exitCode: 0, result: 'scaffolded', ready: false });
       expect(output()).toContain(next);
+    });
+  });
+
+  describe('on a terminal', () => {
+    let tty: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+      vi.stubEnv('CI', undefined);
+    });
+
+    afterEach(() => {
+      if (tty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+      else Object.defineProperty(process.stdout, 'isTTY', tty);
+    });
+
+    it('ends with the star strip, and not in CI', async () => {
+      await init(dir, { yes: true });
+      expect(stripVTControlCharacters(output())).toMatch(/Next: [^\n]*\n[\s\S]*★ {2}You're all set! {2}Star e2e on GitHub → github\.com\/e2e-inc\/e2e/u);
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir);
+      stdoutSpy.mockClear();
+      vi.stubEnv('CI', 'true');
+      await init(dir, { yes: true });
+      expect(output()).toContain('Next: ');
+      expect(output()).not.toContain('Star e2e on GitHub');
+    });
+
+    it.skipIf(process.platform === 'win32')('leaves the strip out when the command init was started for begins right away', async () => {
+      vi.stubEnv('AI_GATEWAY_API_KEY', 'key');
+      vi.stubEnv('APP_URL', undefined);
+      answers.engines = ['web'];
+      vi.mocked(clack.select).mockResolvedValueOnce('vercel');
+      vi.mocked(clack.confirm).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+      vi.mocked(spawnSync).mockReturnValueOnce(spawnResult(0));
+      expect(await init(dir, { continueWith: ['e2e', 'explore', 'Check out'] })).toMatchObject({ ready: true });
+      expect(output()).toContain('Starting ');
+      expect(output()).not.toContain('Star e2e on GitHub');
     });
   });
 

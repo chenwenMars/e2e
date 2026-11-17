@@ -7,6 +7,7 @@ import {
   exitCodeForCategory,
   InfrastructureError,
   messageWithCauses,
+  sanitizeRecordedText,
   sanitizeText,
   setErrorRedactor,
   withHint,
@@ -147,6 +148,15 @@ describe('serializeError', () => {
     const colored = serializeError(new ConfigurationError('X', '\u001b[1m\u001b[31mUnauthenticated\u001b[0m request'));
     expect(colored.message).toBe('Unauthenticated request');
   });
+
+  it('keeps carriage returns in the message, the stack, and the details', () => {
+    const error = new TestError('ASSERTION_FAILED', 'line one\r\nline two', { details: { observed: 'a\r\nb' } });
+    error.stack = 'TestError: line one\r\nline two\r\n    at test (tests/a.e2e.ts:1:1)';
+    const serialized = serializeError(error);
+    expect(serialized.message).toBe('line one\r\nline two');
+    expect(serialized.stack).toBe('TestError: line one\r\nline two\r\n    at test (tests/a.e2e.ts:1:1)');
+    expect(serialized.details).toEqual({ observed: 'a\r\nb' });
+  });
 });
 
 describe('sanitizeText', () => {
@@ -155,6 +165,12 @@ describe('sanitizeText', () => {
     expect(sanitizeText('\u0001\u0001')).toBe('\uFFFD\uFFFD');
     expect(sanitizeText('a\tb\nc')).toBe('a\tb\nc');
     expect(sanitizeText('ok 😀 fine')).toBe('ok 😀 fine');
+  });
+
+  it('replaces carriage returns; sanitizeRecordedText keeps the one in a \\r\\n', () => {
+    expect(sanitizeText('a\r\nb')).toBe('a\uFFFD\nb');
+    expect(sanitizeRecordedText('a\r\nb\u0007\u000c\u000e\u001b[31mc')).toBe('a\r\nb\uFFFD\uFFFD\uFFFDc');
+    expect(sanitizeRecordedText('failed\rpassed\r\r\nend\r')).toBe('failed\uFFFDpassed\uFFFD\r\nend\uFFFD');
   });
 });
 

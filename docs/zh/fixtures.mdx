@@ -1,0 +1,92 @@
+---
+title: 编写测试夹具
+description: 在每个测试前创建测试数据和其他资源，并在测试后清理。
+"og:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+"twitter:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+---
+
+测试夹具是测试接收的一个值，在测试前准备、测试后清理，即使测试失败也会清理。你可以用它创建测试数据。登录则应使用[已保存的会话](/authentication)。
+
+## 在一个文件中定义测试夹具
+
+扩展并导出你的引擎的 `test`。测试夹具可以使用 `agent`，因此可以通过[目标](/core-concepts#goals)在应用中创建数据：
+
+```ts title="tests/fixtures.ts" expandable
+import { test as base } from '@e2e-dev/web';
+import { expect, unique } from 'e2e';
+
+/** A fresh project for each test, created and deleted through the app. */
+export const test = base.extend<{ project: string }>({
+  project: async ({ app, agent, screen }, use) => {
+    const name = `Launch plan ${Date.now()}`;
+    await app.open('/projects');
+    await agent.act('create a project named {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('heading', name)).toBeVisible();
+    await use(name);
+    await app.open('/projects');
+    await agent.act('delete the project {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('link', name)).toBeHidden();
+  },
+});
+
+/** One task in that project. Deleting the project deletes it too. */
+export const taskTest = test.extend<{ task: string }>({
+  task: async ({ agent, screen }, use) => {
+    const title = 'Write the announcement';
+    await agent.act('add a task {title}', { params: { title } });
+    await expect(screen.getByRole('checkbox', title)).toBeVisible();
+    await use(title);
+  },
+});
+```
+
+`await use(value)` 之前的代码负责准备，之后的代码负责清理。在测试文件中导入扩展后的 `test`：
+
+```ts title="tests/tasks.e2e.ts"
+import { expect } from 'e2e';
+import { taskTest as test } from './fixtures.ts';
+
+test('completes a task', { session: 'admin' }, async ({ screen, task }) => {
+  await screen.getByRole('checkbox', task).check();
+  await expect(screen.getByRole('checkbox', task)).toBeChecked();
+});
+```
+
+已保存的会话会在测试夹具运行前恢复。
+
+<Note>
+测试夹具中的智能体步骤会为每个使用它的测试执行一次。如果你的应用提供测试 API，调用 `fetch` 会更快。
+</Note>
+
+## 基于一个测试夹具构建另一个
+
+测试夹具只能读取其所扩展的 `test` 中的测试夹具。因此，`task` 通过第二次 `extend` 使用 `project`。清理按相反的顺序执行。
+
+## 为每种准备流程提供独立的 test
+
+无论是否在参数中列出，链中的每个测试夹具都会为通过它注册的每个测试运行。为每种准备流程导出一个 `test`，例如上面的 `test` 和 `taskTest`。
+
+## 在钩子中读取测试夹具
+
+在扩展后的 `test` 上注册钩子，以获取测试夹具类型：
+
+```ts
+taskTest.beforeEach(async ({ screen, project }) => {
+  await expect(screen.getByRole('heading', project)).toBeVisible();
+});
+```
+
+## 测试夹具失败时
+
+准备阶段的错误会使测试在 `beforeEach` 中失败。清理阶段的错误会在 `afterEach` 中报告。参阅[完整错误列表](/reference/test#your-own-fixtures)。
+
+## 下一步
+
+<CardGroup cols={2}>
+  <Card title="测试参考" icon="code" href="/reference/test#your-own-fixtures">
+    测试夹具的契约、类型和所有失败情况。
+  </Card>
+  <Card title="身份验证" icon="key" href="/authentication">
+    保存一次会话，在每个测试中恢复。
+  </Card>
+</CardGroup>

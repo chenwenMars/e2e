@@ -438,8 +438,9 @@ type RunEventFact =
   in the final result.
 
 <Note>
-Secrets are redacted before events are built. Error messages are only
-stripped of control characters, so treat them as untrusted.
+Secrets are redacted before events are built. Error messages and skip
+reasons are only stripped of ANSI escapes and control characters other than
+tab, newline, and the `\r` of a `\r\n` line break, so treat them as untrusted.
 </Note>
 
 ### Step progress

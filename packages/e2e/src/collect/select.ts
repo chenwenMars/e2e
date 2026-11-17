@@ -1,7 +1,7 @@
 /** Option resolution and test-target selection. */
 
 import { staticSecretLedger } from '@e2e-dev/core/lib/run/secrecy';
-import { ConfigurationError, CollectionError, sanitizeText, truncateUtf8 } from '@e2e-dev/core/lib/internal/errors';
+import { ConfigurationError, CollectionError, sanitizeRecordedText, truncateUtf8 } from '@e2e-dev/core/lib/internal/errors';
 import { resultId } from '@e2e-dev/core/lib/internal/ids';
 import { expectedFailureOption } from '@e2e-dev/core/lib/internal/expected-failure';
 import { didYouMean, suggestionNote } from '@e2e-dev/core/lib/internal/suggest';
@@ -196,7 +196,7 @@ export function resolveOptions(test: CollectedTest, config: ResolvedConfig): Res
     session,
     agents: effectiveAgents(test, pin, config.agentNames),
     agentContext: agentContextParts.length === 0 ? undefined : agentContextParts.join('\n'),
-    skipReason: skipReason === undefined ? undefined : truncateUtf8(sanitizeText(staticSecretLedger(config.allSecrets).redact(skipReason)), 8192),
+    skipReason: skipReason === undefined ? undefined : truncateUtf8(sanitizeRecordedText(staticSecretLedger(config.allSecrets).redact(skipReason)), 8192),
     expectedFailure: expectedFailureOption(test.options.fail),
     serial: serialRoot !== undefined,
     trace,

@@ -15,6 +15,7 @@ import path from 'node:path';
 import picocolors from 'picocolors';
 import { z } from 'zod';
 import { detectWorkspacePackageManager, execCommand, LOCKFILE_NAMES, type PackageManager } from '../internal/package-manager.ts';
+import { isCiMode } from '@e2e-dev/core/lib/config/resolve';
 import { insideProjectRoot, realpathOfExisting } from '@e2e-dev/core/lib/internal/paths';
 import { compareVersions, parseVersion, satisfies } from '../internal/semver.ts';
 import type { UpgradeOutcome, UpgradeResult } from '../telemetry/events.ts';
@@ -22,6 +23,7 @@ import { describeLinks, describeObstacles, findInstalledSkillDirs, planSkillInst
 import { describeManifestError, readPackage, serializePackage } from './init/package.ts';
 import { readSkillFiles, SKILL_NAME } from './skill.ts';
 import type { UpgradeTarget } from './upgrade-target.ts';
+import { upgradeCelebration } from './star.ts';
 
 export interface UpgradeOptions {
   readonly target: UpgradeTarget;
@@ -210,7 +212,17 @@ async function upgradeOrThrow(options: UpgradeOptions, facts: UpgradeFacts): Pro
     out(`Release notes: ${RELEASES_URL}${encodeURIComponent(`${RUNNER}@${runnerVersion}`)}`);
   }
   refreshSkills(project.dir, manager, out);
+  if (movedUp(runner.installed, runnerVersion) && process.stdout.isTTY === true && !isCiMode(env)) {
+    process.stdout.write(upgradeCelebration(process.stdout, runnerVersion, env));
+  }
   return { result: 'upgraded', exitCode: 0 };
+}
+
+/** Whether e2e went from `before` to a newer `after`: not a downgrade, not a reinstall. */
+function movedUp(before: string | undefined, after: string): boolean {
+  const from = before === undefined ? undefined : parseVersion(before);
+  const to = parseVersion(after);
+  return from !== undefined && to !== undefined && compareVersions(to, from) > 0;
 }
 
 type Manifest = ReturnType<typeof readPackage>['manifest'];

@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import { envValue } from '@e2e-dev/core/lib/internal/env';
-import { sanitizeText } from '@e2e-dev/core/lib/internal/errors';
+import { sanitizeRecordedText } from '@e2e-dev/core/lib/internal/errors';
 import { realpathOfExisting, relativeToProjectRoot } from '@e2e-dev/core/lib/internal/paths';
 import type { FinishedRun } from '../run-types.ts';
 import type { Report1Document, ReportError, ReportResult, ReportSerialGroup } from './build.ts';
@@ -26,25 +26,30 @@ interface RenderedCase {
 }
 
 /**
- * Code units XML 1.0 forbids beyond the control range `sanitizeText` already
- * replaces: the two noncharacters U+FFFE and U+FFFF, and a surrogate half
- * without its partner. One of them makes a parser reject the whole document.
+ * Code units XML 1.0 forbids beyond the control range `sanitizeRecordedText`
+ * already replaces: the two noncharacters U+FFFE and U+FFFF, and a surrogate
+ * half without its partner. One of them makes a parser reject the whole
+ * document.
  */
 const XML_FORBIDDEN = /[\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
-/** Escapes text content; every character XML 1.0 forbids becomes U+FFFD. */
+/**
+ * Escapes text content; every character XML 1.0 forbids becomes U+FFFD. A
+ * carriage return is a reference, since a parser reads a raw one as a newline.
+ */
 function text(value: string): string {
-  return sanitizeText(value)
+  return sanitizeRecordedText(value)
     .replace(XML_FORBIDDEN, '\uFFFD')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
+    .replaceAll('\r', '&#13;');
 }
 
 /** Escapes an attribute value; whitespace is entity-encoded so parsers keep it verbatim. */
 function attribute(value: string): string {
-  return text(value).replaceAll('\n', '&#10;').replaceAll('\r', '&#13;').replaceAll('\t', '&#9;');
+  return text(value).replaceAll('\n', '&#10;').replaceAll('\t', '&#9;');
 }
 
 /** JUnit durations are seconds; three decimals keep millisecond precision. */

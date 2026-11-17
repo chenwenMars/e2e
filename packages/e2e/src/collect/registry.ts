@@ -25,6 +25,7 @@ import type {
   TestFn,
   TestHookFn,
   TestOptions,
+  TestRegistrar,
 } from '@e2e-dev/core/lib/types';
 
 export interface GroupNode {
@@ -135,6 +136,11 @@ class Collector {
     }
   }
 
+  /** Whether registration is inside a serial group, at any depth. */
+  get inSerialGroup(): boolean {
+    return insideSerial(this.currentGroup);
+  }
+
   registerTest(
     kind: 'test' | 'setup',
     mode: TestMode,
@@ -228,6 +234,17 @@ class Collector {
     });
     this.declarationCounter += 1;
   }
+}
+
+/**
+ * The truthiness of a `skipIf` or `runIf` condition. A Promise is always
+ * truthy, so an unawaited async check would decide nothing; it throws.
+ */
+function readCondition(api: string, condition: unknown): boolean {
+  if (isPromiseLike(condition)) {
+    throw new CollectionError(`${api} got a Promise as its condition; await it before the call`);
+  }
+  return Boolean(condition);
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -623,15 +640,32 @@ function validateFixtureDefinitions(
  * shared `test` is the empty chain.
  */
 function createTestAPI(chain: readonly FixtureDefinition[]): TestAPI {
-  const testFunction = (
+  /**
+   * The `test()` call forms. `api` names the caller in errors. A `skip`
+   * condition comes from `skipIf` or `runIf`: when true, the test is
+   * skipped, keeping any reason its `skip` option gives. Either way a serial
+   * group rejects it, so a file collects the same on every platform.
+   */
+  const registrar = (api: string, skip?: boolean): TestRegistrar => (
     title: string,
     optionsOrFn: TestOptions | TestFn,
     maybeFn?: TestFn,
   ): TestCase => {
-    const { options, fn } = normalizeArgs(optionsOrFn, maybeFn);
+    const collector = requireCollector(api);
+    if (skip !== undefined && collector.inSerialGroup) {
+      throw new CollectionError(
+        `${api} cannot be used inside a serial group, which skips as one unit; ` +
+          'set skip on the serial describe instead',
+      );
+    }
+    const { options: given, fn } = normalizeArgs(optionsOrFn, maybeFn);
+    const options = skip === true
+      ? { ...given, skip: typeof given.skip === 'string' ? given.skip : true }
+      : given;
     const mode: TestMode = options.only === true ? 'only' : options.skip !== undefined && options.skip !== false ? 'skip' : 'normal';
-    return requireCollector('test()').registerTest('test', mode, title, options, [], fn, chain);
+    return collector.registerTest('test', mode, title, options, [], fn, chain);
   };
+  const testFunction = registrar('test()');
 
   const api: TestAPI = Object.assign(testFunction, {
     skip(first?: string | boolean, second?: TestFn | string): TestCase | undefined {
@@ -649,6 +683,12 @@ function createTestAPI(chain: readonly FixtureDefinition[]): TestAPI {
       }
       markRunningTestExpectedToFail(call.condition, call.reason);
       return undefined;
+    },
+    skipIf(condition: unknown): TestRegistrar {
+      return registrar('test.skipIf()', readCondition('test.skipIf()', condition));
+    },
+    runIf(condition: unknown): TestRegistrar {
+      return registrar('test.runIf()', !readCondition('test.runIf()', condition));
     },
     only(title: string, fn: TestFn): TestCase {
       return requireCollector('test.only()').registerTest('test', 'only', title, { only: true }, [], fn, chain);

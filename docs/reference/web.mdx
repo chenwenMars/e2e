@@ -88,7 +88,7 @@ web({ browser: 'firefox' }); // default: 'chromium'
 - A `BrowserProvider` leases hosted browsers instead: one per worker slot for
   the run, or one per attempt ([`WebOptions`](#weboptions)). The engine
   drives each one as chromium over CDP, whether it is Chromium or another CDP
-  server such as [Lightpanda](/integrations/lightpanda).
+  server such as [Lightpanda](/integrations/lightpanda) or [Moli](/integrations/moli).
 - A provider with `scope: 'attempt'` rides a persistent context, with the
   limits under [Recovering a CDP transport](#recovering-a-cdp-transport).
 - [Hosted browsers](/browser#hosted-browsers) has the `BrowserProvider`

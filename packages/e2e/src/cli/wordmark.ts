@@ -1,7 +1,8 @@
 /**
  * The e2e wordmark: the logotype from the e2e design system, six rows of
  * horizontal bars, drawn in full blocks in the terminal's own foreground the
- * way the logo pack's black and white files fill it. On a terminal that
+ * way the logo pack's black and white files fill it, or in colors a caller
+ * paints each row with (the gold after `e2e upgrade`). On a terminal that
  * can show it the logo shades in, ░ to ▒ to ▓ to █, each row starting a beat
  * after the one above it.
  * Where motion does not belong it is printed at rest, and output that is not
@@ -93,12 +94,12 @@ function animates(stream: WordmarkStream, env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * The wordmark at rest as text to print above the help; empty when `stream`
- * is not a terminal wide enough for it.
+ * The wordmark at rest as text, each row through `paint` when given; empty
+ * when `stream` is not a terminal wide enough for it.
  */
-export function wordmarkBanner(stream: WordmarkStream): string {
+export function wordmarkBanner(stream: WordmarkStream, paint?: (row: string, index: number) => string): string {
   if (!fits(stream)) return '';
-  return `${rest().join('\n')}\n`;
+  return `${rest().map((row, index) => (paint === undefined ? row : paint(row, index))).join('\n')}\n`;
 }
 
 export interface PlayWordmarkOptions {

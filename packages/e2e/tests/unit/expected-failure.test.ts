@@ -81,6 +81,10 @@ describe('settleExpectedFailure', () => {
     expect(Buffer.byteLength(settle({ status: 'passed', secondaryErrors: [] }, 'x'.repeat(9000)).expectedFailure!.reason)).toBe(8192);
   });
 
+  it('keeps a \\r\\n line break in the reason and replaces a lone carriage return', () => {
+    expect(settle({ status: 'failed', error: failure('test'), secondaryErrors: [] }, 'known\r\ngap\rhere').expectedFailure?.reason).toBe('known\r\ngap\uFFFDhere');
+  });
+
   it('lets a skip win, also beside a failure', () => {
     expect(settle({ status: 'skipped', secondaryErrors: [] }, 'gap')).toEqual({ status: 'skipped', secondaryErrors: [] });
     const skip = { cause: 'explicit' as const, reason: 'n/a' };

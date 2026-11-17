@@ -10,6 +10,7 @@
   },
   "include": [
     "e2e.config.ts",
+    "e2e.moli.config.ts",
     "e2e.scroll.config.ts",
     "fixtures/**/*.ts",
     "tests/**/*.ts",

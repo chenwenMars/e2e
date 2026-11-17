@@ -820,16 +820,25 @@ export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> exte
   ? () => Result
   : never;
 
+/** A `test.skipIf` or `test.runIf` condition. A Promise is a type error. */
+export type SynchronousCondition<Condition> = Extract<Condition, PromiseLike<unknown>> extends never
+  ? Condition
+  : never;
+
 /** Opaque handle of a registered test. */
 export interface TestCase {
   readonly [testCaseBrand]: true;
 }
 
-export interface TestAPI<Fixtures = TestFixtures> {
+/** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
+export interface TestRegistrar<Fixtures = TestFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
   /** Registers one configured test synchronously during module evaluation. */
   (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
+}
+
+export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures> {
   /** Registers one skipped test. */
   skip(title: string, fn: TestFn<Fixtures>): TestCase;
   /**
@@ -843,6 +852,24 @@ export interface TestAPI<Fixtures = TestFixtures> {
    */
   skip(condition: boolean, reason?: string): void;
   skip(reason?: string): void;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is truthy, as if it had the `skip` option. The
+   * condition is read once, at this call, so it can only depend on what is
+   * known while the file is collected (`process.platform`, `process.env.CI`):
+   *
+   *   test.skipIf(process.platform === 'win32')('file watcher', async () => {});
+   *
+   * A `skip` option skips the test whatever the condition. A serial group
+   * rejects the call: set `skip` on the serial `describe` instead. A Promise
+   * condition also fails the call: await it first.
+   */
+  skipIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is falsy, `test.skipIf(!condition)`.
+   */
+  runIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
   /** Registers one test that is expected to fail. */
   fail(title: string, fn: TestFn<Fixtures>): TestCase;
   /**
@@ -942,6 +969,8 @@ export interface AsyncExpectation {
   toHaveCount(expected: number, options?: { timeout?: number }): Promise<void>;
   /** Waits for an accessible name. */
   toHaveAccessibleName(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
+  /** Waits for the role; `img` is read as `image`, as `getByRole` reads it. */
+  toHaveRole(role: Role | RoleAlias, options?: { timeout?: number }): Promise<void>;
   /**
    * Waits for the one match to look like its stored screenshot, `name` or
    * one named after the test. A missing one is written and the matcher fails;
@@ -1132,8 +1161,10 @@ type NotAny<T> = 0 extends 1 & T ? never : T;
  * land on the value overload.
  */
 export interface ExpectCall {
-  <L extends Locator>(actual: NotAny<L>): AsyncExpectation;
-  <S extends Screen>(actual: NotAny<S>): ScreenExpectation;
+  /** `message` opens each assertion failure and an ambiguous locator's error, before the matcher and the locator it names. */
+  <L extends Locator>(actual: NotAny<L>, message?: string): AsyncExpectation;
+  /** `message` opens each assertion failure, before the matcher. */
+  <S extends Screen>(actual: NotAny<S>, message?: string): ScreenExpectation;
   <E extends object>(actual: Expectable<E>): E;
   /** `message` opens the failure text, so a bare `expected false to be true` says which check it was. */
   <T>(actual: T, message?: string): ValueExpectation<T>;
@@ -1141,8 +1172,10 @@ export interface ExpectCall {
 
 /** The `expect.soft(actual)` call: `expect(actual)` whose failures are kept instead of thrown. */
 export interface SoftExpectCall {
-  <L extends Locator>(actual: NotAny<L>): AsyncExpectation;
-  <S extends Screen>(actual: NotAny<S>): ScreenExpectation;
+  /** `message` opens each assertion failure and an ambiguous locator's error, before the matcher and the locator it names. */
+  <L extends Locator>(actual: NotAny<L>, message?: string): AsyncExpectation;
+  /** `message` opens each assertion failure, before the matcher. */
+  <S extends Screen>(actual: NotAny<S>, message?: string): ScreenExpectation;
   <E extends object>(actual: Expectable<E>): E;
   /** `message` opens the failure text, so a bare `expected false to be true` says which check it was. */
   <T>(actual: T, message?: string): SoftValueExpectation<T>;

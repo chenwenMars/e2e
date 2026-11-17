@@ -39,11 +39,18 @@ here.
   CI runs them on every pull request.
   `tests/helpers.ts` holds the shared `failure`, `boxOf`, and `centerOf`,
   and the ported tests' `content`, `asset`, `PREFIX`, and `CROSS`.
+- `e2e.notte.config.ts`: the local suite on `@e2e-dev/notte` cloud
+  browsers, run by hand with `NOTTE_API_KEY` and `E2E_NOTTE_APP_URL`, a
+  public tunnel to the playground (`pnpm app`). Tests that open `127.0.0.1`
+  or `localhost` directly fail there, since the browser runs in Notte's cloud.
 - `e2e.lightpanda.config.ts` and `e2e.lightpanda-agent.config.ts`: the
   local suite and the agent suite on `@e2e-dev/lightpanda`, which starts
   [Lightpanda](https://lightpanda.io) from `LIGHTPANDA_PATH` (or `PATH`),
   run by hand to see which features its nightly covers; the docs page
   `integrations/lightpanda` lists the result.
+- `e2e.moli.config.ts`: the full local suite on `@e2e-dev/moli`, which
+  starts and stops Moli for the run, with one worker. Reports and artifacts
+  land in `.e2e-moli/`.
 - `e2e.scroll.config.ts` + `tests-scroll/` — `scroll_to` by text over the
   windowed `/scroll` page, driven by a scripted executor, so it needs no model.
   Its own config, since it makes the default agent the scripted executor; it
@@ -104,6 +111,29 @@ History navigation currently fails on Browser Run while waiting for `load`
 after `browser.back()`. To check the supported flows separately, add
 `--grep-invert 'navigation verbs'`; keep the unfiltered result when reporting
 compatibility.
+
+## Run on Moli
+
+Install the [Moli binary](https://github.com/lexmount/moli#direct-installation)
+on `PATH`, or set `MOLI_PATH`. From the repository root:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+CI=1 pnpm --filter @e2e-dev/testbed test:moli
+```
+
+For a smoke check:
+
+```bash
+cd apps/testbed
+node node_modules/e2e/dist/cli/bin.js run tests/smoke.e2e.ts tests/dashboard.e2e.ts --config e2e.moli.config.ts --output .e2e-moli-smoke
+```
+
+Set `MOLI_CDP_URL` to attach to an existing server, which the run leaves running.
+Reports and artifacts land in `.e2e-moli/`. The config uses 5-second action
+and 30-second test timeouts, with no retries. Compare runs with the same limits.
+`CI=1` prevents creating screenshot baselines.
 
 ## Agentic suites
 

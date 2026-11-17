@@ -199,6 +199,10 @@
       {
         "id": "drag-and-drop",
         "label": "Drag and drop"
+      },
+      {
+        "id": "custom-executors",
+        "label": "Custom executors"
       }
     ],
     "platform": [
@@ -1925,6 +1929,57 @@
         ],
         "useCase": [
           "mcp"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
+      "slug": "ui-sdk-agent-bridge",
+      "title": "Driving a UI SDK app through its agent bridge with e2e",
+      "shortTitle": "UI SDK agent bridge",
+      "description": "A music app built with UI SDK, tested by the built-in agent and by a custom executor that uses the UI SDK agent bridge, with both runs measured.",
+      "source": "community",
+      "repository": "https://github.com/forever8896/ricochet/tree/ed7b9073c532b6ffef18528a7722e4e28e8c5800",
+      "author": {
+        "name": "Kilian Valdman",
+        "github": "forever8896"
+      },
+      "license": "MIT",
+      "licenseUrl": "https://github.com/forever8896/ricochet/blob/ed7b9073c532b6ffef18528a7722e4e28e8c5800/LICENSE",
+      "tags": {
+        "framework": [
+          "vite",
+          "react"
+        ],
+        "useCase": [
+          "custom-executors"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
+      "slug": "boat-sandbox-browsers",
+      "title": "Running e2e web tests in Chrome on Boat sandboxes",
+      "shortTitle": "Boat sandbox browsers",
+      "description": "A browser provider that leases Chrome on a Boat sandbox per worker and forwards localhost ports into it, with an example app and three tests run on three sandboxes.",
+      "source": "community",
+      "repository": "https://github.com/forever8896/e2e-boat/tree/30ab227cb8bb183ddffeb97dec5069e3c891d8af",
+      "author": {
+        "name": "Kilian Valdman",
+        "github": "forever8896"
+      },
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/forever8896/e2e-boat/blob/30ab227cb8bb183ddffeb97dec5069e3c891d8af/LICENSE",
+      "tags": {
+        "framework": [
+          "nodejs"
+        ],
+        "useCase": [
+          "cloud-browsers"
         ],
         "platform": [
           "web"

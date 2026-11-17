@@ -32,6 +32,8 @@ describe('checkout', { tags: ['billing'] }, () => {
 | --- | --- |
 | [`test`](#test) | `TestCase` |
 | [`test.skip`](#test-skip) | `TestCase \| void` |
+| [`test.skipIf`](#test-skipif) | `TestRegistrar` |
+| [`test.runIf`](#test-runif) | `TestRegistrar` |
 | [`test.fail`](#test-fail) | `TestCase \| void` |
 | [`test.only`](#test-only) | `TestCase` |
 | [`test.setup`](#test-setup) | `TestCase` |
@@ -123,6 +125,47 @@ test('switches organizations', { session: 'admin' }, async ({ app, agent }) => {
 | --- | --- |
 | `INVALID_ARGUMENT` | Called in a setup test. A setup test cannot skip because other tests depend on its sessions. |
 | `COLLECTION_ERROR` | The conditional form, outside a test body. |
+
+#### `test.skipIf`
+
+Returns a function that registers one test, like `test(title, fn)`, skipped
+when the condition is truthy.
+
+```ts
+test.skipIf(process.platform === 'win32')('watches files', async ({ app }) => {});
+test.skipIf(process.env.CI)('opens the system dialog', async ({ app }) => {});
+```
+
+- The condition is read one time, at the call, while the file is collected.
+  Use a value known then, such as `process.platform` or an environment
+  variable. For a condition you learn at runtime, call
+  [`test.skip(condition, reason)`](#test-skip) inside the body.
+- Any truthy value skips, as in Vitest.
+- A skipped test is the same as `test(title, { skip: true }, fn)`: its body
+  never runs, and its other options are kept.
+- A [`skip`](#skip) option skips the test whatever the condition, and its
+  reason string is the reported reason.
+- Outside a serial group, a falsy condition registers the test as `test`
+  would.
+- It takes the same two forms as [`test`](#test) and has the same fixtures,
+  on an extended `test` too.
+
+| Throws | When |
+| --- | --- |
+| `COLLECTION_ERROR` | Called inside a serial group, whatever the condition. Set [`skip`](#skip) on the serial `describe` instead. |
+| `COLLECTION_ERROR` | The condition is a Promise, which is also a type error. Await it before the call. |
+
+#### `test.runIf`
+
+Returns a function that registers one test, like `test(title, fn)`, skipped
+when the condition is falsy.
+
+```ts
+test.runIf(process.platform === 'linux')('reads inotify events', async ({ app }) => {});
+```
+
+`test.runIf(condition)` is `test.skipIf(!condition)`.
+Everything in [`test.skipIf`](#test-skipif) applies.
 
 #### `test.fail`
 
@@ -552,6 +595,7 @@ describe('checkout', { serial: true }, () => {
 | Throws | When |
 | --- | --- |
 | `COLLECTION_ERROR` | A member sets `retries`, `trace`, `video`, `session`, `platforms`, `requires`, `skip`, `only`, or a nested `serial`. |
+| `COLLECTION_ERROR` | A member registers through `test.skipIf` or `test.runIf`. |
 
 #### `sessions`
 
@@ -663,11 +707,15 @@ hook finishes.
 ### `TestAPI`
 
 ```ts
-export interface TestAPI<Fixtures = TestFixtures> {
+/** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
+export interface TestRegistrar<Fixtures = TestFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
   /** Registers one configured test synchronously during module evaluation. */
   (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
+}
+
+export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures> {
   /** Registers one skipped test. */
   skip(title: string, fn: TestFn<Fixtures>): TestCase;
   /**
@@ -681,6 +729,24 @@ export interface TestAPI<Fixtures = TestFixtures> {
    */
   skip(condition: boolean, reason?: string): void;
   skip(reason?: string): void;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is truthy, as if it had the `skip` option. The
+   * condition is read once, at this call, so it can only depend on what is
+   * known while the file is collected (`process.platform`, `process.env.CI`):
+   *
+   *   test.skipIf(process.platform === 'win32')('file watcher', async () => {});
+   *
+   * A `skip` option skips the test whatever the condition. A serial group
+   * rejects the call: set `skip` on the serial `describe` instead. A Promise
+   * condition also fails the call: await it first.
+   */
+  skipIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is falsy, `test.skipIf(!condition)`.
+   */
+  runIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
   /** Registers one test that is expected to fail. */
   fail(title: string, fn: TestFn<Fixtures>): TestCase;
   /**
@@ -883,6 +949,11 @@ export type SuiteHookFn = (fixtures: SuiteFixtures) => void | Promise<void>;
 /** A `describe` body. An async body is a type error. */
 export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
   ? () => Result
+  : never;
+
+/** A `test.skipIf` or `test.runIf` condition. A Promise is a type error. */
+export type SynchronousCondition<Condition> = Extract<Condition, PromiseLike<unknown>> extends never
+  ? Condition
   : never;
 
 /** Opaque handle of a registered test. */
