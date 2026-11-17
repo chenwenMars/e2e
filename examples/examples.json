@@ -971,6 +971,35 @@
       }
     },
     {
+      "slug": "vercel-previews",
+      "title": "Testing Vercel Previews with e2e",
+      "shortTitle": "Vercel Previews",
+      "description": "A Next.js app tested against every Vercel preview and production deployment, with a Deployment Check that holds back a failing production deployment.",
+      "icon": "vercel.svg",
+      "invertIcon": true,
+      "source": "official",
+      "repository": "https://github.com/e2e-inc/e2e-vercel",
+      "author": {
+        "name": "e2e",
+        "github": "e2e-inc"
+      },
+      "license": "MIT",
+      "licenseUrl": "https://github.com/e2e-inc/e2e-vercel/blob/main/LICENSE",
+      "tags": {
+        "framework": [
+          "nextjs",
+          "react"
+        ],
+        "useCase": [
+          "preview-deployments",
+          "ci"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
       "slug": "smolmachines",
       "title": "Testing in smol machines with e2e",
       "shortTitle": "smol machines",
@@ -1845,6 +1874,57 @@
         ],
         "useCase": [
           "drag-and-drop"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
+      "slug": "langgraph-mcp-isolation",
+      "title": "Running isolated e2e MCP sessions from LangGraph",
+      "shortTitle": "LangGraph + MCP",
+      "description": "Two isolated browser sessions coordinated by a compiled Python LangGraph, with exception and cancellation cleanup over stdio MCP.",
+      "source": "community",
+      "repository": "https://github.com/jxnxts/e2e-langgraph-mcp-example/tree/ab80514b5d35c47124e06efc48a7ab658062403c",
+      "author": {
+        "name": "Jonatas Soares",
+        "github": "jxnxts"
+      },
+      "license": "Apache-2.0",
+      "tags": {
+        "framework": [
+          "python",
+          "nodejs"
+        ],
+        "useCase": [
+          "test-isolation",
+          "mcp"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
+      "slug": "remote-mcp-http",
+      "title": "Serving e2e MCP over Streamable HTTP for trusted runs",
+      "shortTitle": "Remote MCP over HTTP",
+      "description": "Experimental bridge from MCP Streamable HTTP to the e2e mcp stdio server for trusted runs, with per-principal sessions, run_tests and Docker Compose. No TLS, OAuth, or tenant isolation.",
+      "source": "community",
+      "repository": "https://github.com/jxnxts/e2e-remote-mcp-example/tree/a8d437c3869ac17520c81cce8111d24f3067c8be/contrib/community/docker-remote-mcp",
+      "author": {
+        "name": "Jonatas Soares",
+        "github": "jxnxts"
+      },
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/jxnxts/e2e-remote-mcp-example/blob/a8d437c3869ac17520c81cce8111d24f3067c8be/contrib/community/docker-remote-mcp/LICENSE",
+      "tags": {
+        "framework": [
+          "nodejs"
+        ],
+        "useCase": [
+          "mcp"
         ],
         "platform": [
           "web"

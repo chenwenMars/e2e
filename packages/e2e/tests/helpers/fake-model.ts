@@ -73,6 +73,7 @@ export interface FakeImage {
   readonly bytes: number;
 }
 
+/** Answers one call; a promise answers late, the way a slow model does. */
 export type FakeResponder = (call: FakeCall) => unknown;
 
 /** Recorded calls, newest last. Cleared by every installFakeModel call. */
@@ -133,7 +134,7 @@ export function installFakeModel(
         },
       };
       fakeCalls.push(parsed);
-      const raw = enforceRequestSchema(responder(parsed), request.responseFormat?.schema);
+      const raw = enforceRequestSchema(await responder(parsed), request.responseFormat?.schema);
       const reasoning =
         options.reasoning === undefined ? [] : [{ type: 'reasoning' as const, text: options.reasoning }];
       return scriptedResult([...reasoning, { type: 'text' as const, text: JSON.stringify(raw) }], 'stop');

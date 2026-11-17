@@ -1,7 +1,7 @@
 /**
  * One attempt on a prepared standalone worker: reservation, launch, fixtures,
- * deadline, and close. What differs by kind (the runner's hosted and one-shot
- * attempts) comes in through `AttemptPolicy`.
+ * deadline, and close. What differs by kind (an `@e2e-dev/core` session, the
+ * runner's hosted and one-shot attempts) comes in through `AttemptPolicy`.
  */
 
 import path from 'node:path';
@@ -11,14 +11,14 @@ import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
 import type { TargetSession } from '../engine/surface.ts';
 import { PollScope } from '../expect/poll-scope.ts';
 import type { DebugTrace } from '../internal/debug.ts';
-import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type SerializedError } from '../internal/errors.ts';
+import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type E2EError, type SerializedError } from '../internal/errors.ts';
 import { timestamp, uuidv7 } from '../internal/ids.ts';
 import { Deadline, MAX_TIMER_MS, withTimeout } from '../internal/time.ts';
 import { attemptVideo } from '../internal/recording-modes.ts';
 import type { TestFixtures } from '../types.ts';
 import { createAttemptArtifacts, type AttemptArtifacts } from './artifacts.ts';
 import { AttemptBudget } from './budget.ts';
-import { classifyAttemptStatus, type ClosingRecord, type EngineSessions } from './engine-sessions.ts';
+import { classifyAttemptStatus, type ClosingRecord, type EngineSessions, type RestoredState } from './engine-sessions.ts';
 import { createFixtures, type AttemptEnvironment } from './fixtures.ts';
 import type { AttemptRecord } from './records.ts';
 import { redactForSession, sessionLedger } from './secrecy.ts';
@@ -31,8 +31,16 @@ export interface StandaloneSessionOptions {
   readonly timeoutMs: number;
   readonly agent?: string | undefined;
   readonly onProgress?: (progress: StepProgress) => void;
+  /** What an operation fails with once the session has closed; a bare cancellation when absent. */
+  readonly closed?: () => E2EError;
+  /** Classifies and redacts the errors the session's operations throw; see `StepRecorderOptions.redactThrown`. */
+  readonly redactThrown?: boolean;
+  /** How many finished steps the session keeps; see `StepRecorderOptions.retainSteps`. */
+  readonly retainSteps?: number;
   /** The test title of a hosted attempt; its policy decides whether the attempt reads it. */
   readonly name?: string;
+  /** A state an earlier session captured, restored at launch. */
+  readonly state?: RestoredState | undefined;
 }
 
 export interface StandaloneAttempt<Extra = unknown> {
@@ -93,8 +101,8 @@ export interface ClosedAttempt<Sessions extends EngineSessions, Extra> {
 
 /**
  * What one kind of attempt adds to the shared lifecycle. Every hook but
- * `identity` is optional, so a kind that publishes nothing, runs no test, and
- * writes no trace needs none of them.
+ * `identity` is optional: an `@e2e-dev/core` session publishes nothing, runs no
+ * test, and writes no trace.
  */
 export interface AttemptPolicy<Sessions extends EngineSessions = EngineSessions, Extra = undefined> {
   /** The attempt's test id and results directory. */
@@ -182,6 +190,8 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
   const steps = new StepRecorder(attemptId, {
     maxEventsPerStep: config.limits.maxEventsPerStep, projectRoot: config.projectRoot, redact, signal: attemptSignal,
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+    ...(options.redactThrown === true ? { redactThrown: true } : {}),
+    ...(options.retainSteps === undefined ? {} : { retainSteps: options.retainSteps }),
   });
   const artifacts = createAttemptArtifacts({
     artifactsRoot: worker.resultsDir, segments: identity.segments, attemptId, currentStepId: () => steps.currentStepId,
@@ -201,7 +211,7 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
     return { status: classifyAttemptStatus(error, step?.status === 'timed-out', error.code === 'CANCELLED'), error };
   };
   const video = attemptVideo(target.video, 0);
-  session = await executor.launchSession({ session: undefined, recordings: { trace: undefined, video } }, attemptId, artifacts.dir, attemptSignal);
+  session = await executor.launchSession({ session: options.state, recordings: { trace: undefined, video } }, attemptId, artifacts.dir, attemptSignal);
   const opened = session;
   const closeOpened = (record: ClosingRecord): Promise<void> =>
     executor.closeSession(opened, { attemptId, video }, record, artifacts.sink, attemptErrors);
@@ -258,7 +268,7 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
       if (deadline.expired()) expire();
       const abandonedPoll = polls.close();
       const abandonedStep = steps.abandonRunning();
-      end.abort();
+      end.abort(options.closed?.());
       for (const error of [abandonedStep, abandonedPoll, reservation.publication?.close()]) if (error !== undefined) recordFailure(error, 'body');
       try {
         await withTimeout(steps.settleAbandoned(), config.cleanupTimeout, () => new InfrastructureError('CLEANUP_TIMEOUT', 'abandoned session steps did not settle'));

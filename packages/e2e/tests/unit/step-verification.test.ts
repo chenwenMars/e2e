@@ -30,6 +30,26 @@ describe('StepRecorder.lastVerifiedStepIndex', () => {
     expect(steps.lastVerifiedStepIndex).toBe(4);
   });
 
+  it('keeps counting step indexes when it retains only the newest steps', async () => {
+    const steps = new StepRecorder('attempt', { retainSteps: 2 });
+    for (let index = 0; index < 5; index += 1) await steps.run('locator', 'locator.textContent', `row ${index}`, pass);
+    await steps.run('locator', 'locator.waitFor', 'toast → visible', pass, { verifies: true });
+    expect(steps.all().map((step) => step.index)).toEqual([4, 5]);
+    expect(steps.lastVerifiedStepIndex).toBe(5);
+  });
+
+  it('throws a failed step\'s error classified and redacted when asked to', async () => {
+    const redact = (text: string): string => text.replaceAll('hunter2', '[SECRET]');
+    const thrown = new Error('the page printed hunter2', { cause: new Error('driver saw hunter2') });
+    const steps = new StepRecorder('attempt', { redact, redactThrown: true });
+    const caught = await steps.run('app', 'app.open', '/', () => Promise.reject(thrown)).then(() => undefined, (cause: Error) => cause);
+    expect(caught).toMatchObject({ code: 'ERROR', cause: thrown });
+    expect(`${thrown.message} ${thrown.stack} ${(thrown.cause as Error).message}`).not.toContain('hunter2');
+    const kept = new Error('the page printed hunter2');
+    await new StepRecorder('attempt', { redact }).run('app', 'app.open', '/', () => Promise.reject(kept)).catch(() => undefined);
+    expect(kept.message).toContain('hunter2');
+  });
+
   it('does not advance on a verification step that failed', async () => {
     const steps = new StepRecorder('attempt');
     await steps.run('assertion', 'expect.toBeVisible', 'the row', pass, { verifies: true });

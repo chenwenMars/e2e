@@ -154,6 +154,12 @@ describe('LocatorEngine read retry contract', () => {
     expect(calls).toMatchObject({ resolve: 3, read: 1 });
   });
 
+  it('reads zero matches again at 20 and 50 ms, then every poll tick from the start', async () => {
+    const { engine, resolveTimeouts } = makeEngine({ resolve: [() => [], () => [], () => [], () => [], () => [REF]] });
+    await engine.resolveExactlyOne(EXPRESSION, engine.deadline());
+    expect(resolveTimeouts).toEqual([1_000, 980, 950, 900, 800]);
+  });
+
   it('gives zero matches the action timeout, then LOCATOR_NOT_FOUND', async () => {
     const { engine, calls } = makeEngine(
       { resolve: Array.from({ length: 50 }, () => () => []) },
@@ -256,7 +262,8 @@ describe('LocatorEngine resolve retry contract', () => {
   it('gives each retry of a resolve what is left of its budget, not the whole budget again', async () => {
     const { engine, resolveTimeouts } = makeEngine({ resolve: ['stale', 'stale', () => [REF]] }, { actionTimeout: 1_000 });
     await engine.resolveNow(EXPRESSION, engine.reads(engine.deadline()));
-    expect(resolveTimeouts).toEqual([1_000, 900, 800]);
+    // Retries read at 20 and 50 ms.
+    expect(resolveTimeouts).toEqual([1_000, 980, 950]);
   });
 
   it('ends a frame wait the deadline cut off on the missing frame, as LOCATOR_NOT_FOUND', async () => {

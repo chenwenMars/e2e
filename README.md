@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/e2e"><img alt="npm version" src="https://img.shields.io/npm/v/e2e.svg?style=for-the-badge&labelColor=000000" /></a>
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-green.svg?style=for-the-badge&labelColor=000000" /></a>
-  <a href="https://tester.army/discord"><img alt="Join the community on Discord" src="https://img.shields.io/badge/Join%20the%20community-5865F2.svg?style=for-the-badge&logo=discord&logoColor=white&labelColor=000000" /></a>
+  <a href="https://e2e.com/discord"><img alt="Join the community on Discord" src="https://img.shields.io/badge/Join%20the%20community-5865F2.svg?style=for-the-badge&logo=discord&logoColor=white&labelColor=000000" /></a>
 </p>
 
 <p align="center">
@@ -90,7 +90,7 @@ every page, so coding agents can read them offline in `node_modules/e2e/docs`.
 Join us in changing how software gets tested.
 [We are hiring.](https://e2e.com/careers?utm_source=e2e&utm_medium=github&utm_campaign=readme_hiring)
 
-Questions? Ask on [Discord](https://tester.army/discord). Issues are for bugs
+Questions? Ask on [Discord](https://e2e.com/discord). Issues are for bugs
 and feature requests.
 
 Want to hack on e2e? See [Contributing](./CONTRIBUTING.md). We prefer an issue

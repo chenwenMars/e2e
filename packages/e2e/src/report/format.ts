@@ -95,7 +95,8 @@ export function formatClock(date: Date): string {
 /** Compact token count: plain under a thousand, `12.4k`, then `4.2M`. */
 export function formatTokens(count: number): string {
   if (count < 1_000) return `${count}`;
-  if (count < 1_000_000) return `${(count / 1_000).toFixed(1)}k`;
+  const hundreds = Math.round(count / 100);
+  if (hundreds < 10_000) return `${(hundreds / 10).toFixed(1)}k`;
   return `${(count / 1_000_000).toFixed(1)}M`;
 }
 

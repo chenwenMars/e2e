@@ -42,9 +42,10 @@ export function buildSystem(task: string, context: string | undefined): string {
 
 /**
  * The line naming the test a step runs in, `Test: billing > upgrades the tier`,
- * or `undefined` outside one. It opens the user message, never the system
- * message: the system message stays the same across tests, so a provider's
- * prompt cache serves every test of a run.
+ * or `undefined` outside one. It goes in the user message, never the system
+ * message, so the prefix a provider's prompt cache serves stays the same
+ * across tests. A provider caches a prefix only past a minimum length, which
+ * a judgment's fixed part can fall short of without project context.
  */
 export function testTitleLine(titlePath: readonly string[]): string | undefined {
   return titlePath.length === 0 ? undefined : `Test: ${titlePath.join(' > ')}`;
@@ -79,13 +80,17 @@ export interface PromptInput {
     | undefined;
 }
 
-/** Builds the user message: the test's title, the request, then clearly fenced untrusted evidence. */
+/**
+ * Builds the user message: the request, the test's title, then clearly fenced
+ * untrusted evidence. The request is the same for every call of a kind, so it
+ * comes first and extends the prefix a provider can cache.
+ */
 export function buildPrompt(input: PromptInput): string {
   const title = testTitleLine(input.titlePath ?? []);
   const sections: string[] = [
-    ...(title === undefined ? [] : [title, '']),
     input.request,
     '',
+    ...(title === undefined ? [] : [title, '']),
     '<instruction>',
     input.instruction,
     ...(input.params === undefined ? [] : [`Parameters: ${JSON.stringify(input.params)}`]),

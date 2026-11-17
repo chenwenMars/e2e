@@ -174,6 +174,7 @@ export function createAgentFixture(runtime: AgentContext): Agent {
         condition,
         async (invocation) => {
           let observation = await invocation.observe();
+          const screen: ScreenChanges = { changedAt: undefined, observedAt: Date.now() };
           for (let round = 1; ; round += 1) {
             invocation.recordPoll('waitFor', round);
             const judgment = await askJudgment(invocation, condition, observation);
@@ -183,6 +184,7 @@ export function createAgentFixture(runtime: AgentContext): Agent {
             if (judgment.verdict === 'holds') return;
             observation = await waitForNextJudgment(invocation, {
               since: observation,
+              screen,
               intervalMs,
               lastExplanation: explain(judgment, vision),
               signal: runtime.engine.signal,
@@ -325,6 +327,14 @@ export function createAgentFixture(runtime: AgentContext): Agent {
   return agent;
 }
 
+/** What `waitFor` has seen the screen do, kept across its rounds. */
+interface ScreenChanges {
+  /** When an observation last differed from the one before it; undefined until one does. */
+  changedAt: number | undefined;
+  /** When the newest observation was taken. */
+  observedAt: number;
+}
+
 /**
  * Waits until the next judgment is worth spending, and returns the observation
  * to spend it on.
@@ -332,18 +342,23 @@ export function createAgentFixture(runtime: AgentContext): Agent {
  * A judgment reads the observation and nothing else, so while the screen looks the
  * same at the same location the answer is the same and re-asking is a model call
  * that can only repeat itself. So a false judgment is followed by engine-only
- * observations until one of them changes, which is also what makes a condition that
- * came true two seconds ago cost two seconds rather than a full interval.
+ * observations until one of them changes.
+ *
+ * A change is judged as soon as it is seen when the screen was seen holding
+ * still for `interval` before it, or had not changed since the wait began:
+ * that is the condition coming true, and waiting longer only delays the step.
+ * Only stillness an observation saw counts. Nothing is observed while a
+ * judgment runs, so a slow model call is no proof the screen held still. A change
+ * inside a run of changes (a spinner, a countdown, a clock) is judged at most
+ * once per `interval` after the previous judgment returned, the rate limit
+ * `interval` always was, so a screen that never holds still cannot spend the
+ * budget in a second.
  *
  * The screen and the location the judge is shown are compared with
  * `judgmentShape`. The location is not part of `observationShape`, because the
  * settles after an action wait on that and must not treat an address change as
  * the screen moving. Under `vision: 'only'` the judge is not shown the location,
  * so it is not compared there either.
- *
- * `interval` stays the rate limit it always was: at most one judgment per
- * interval, so a screen that changes continuously — a spinner, a countdown —
- * cannot spend the budget in a second.
  *
  * A vision call compares the pixels too: the observation shape digests the
  * screenshot, so an animation the tree cannot see still counts as a change
@@ -357,14 +372,20 @@ async function waitForNextJudgment(
   invocation: Invocation,
   options: {
     readonly since: AgentObservation;
+    readonly screen: ScreenChanges;
     readonly intervalMs: number;
     readonly lastExplanation: string;
     readonly signal: AbortSignal;
   },
 ): Promise<AgentObservation> {
+  const { screen } = options;
   const tickMs = Math.min(options.intervalMs, CHANGE_POLL_MS);
   const judgedAt = Date.now();
-  const judgedShape = judgmentShape(options.since, { treeWithheld: invocation.treeWithheld });
+  const shapeOf = (observation: AgentObservation): string | undefined =>
+    judgmentShape(observation, { treeWithheld: invocation.treeWithheld });
+  const judgedShape = shapeOf(options.since);
+  let shape = judgedShape;
+  let judgeAtOnce = false;
   const timedOut = (cause?: unknown): AgentError =>
     new AgentError(
       'STEP_TIMEOUT',
@@ -379,12 +400,7 @@ async function waitForNextJudgment(
         `waitFor exhausted its model-call budget; last judgment: ${options.lastExplanation}`,
       );
     }
-    // Nothing is judged before the interval elapses, so nothing is observed
-    // before it either: the first wait covers what remains of the interval,
-    // and only then does the loop poll the tree at the change cadence.
-    const untilInterval = options.intervalMs - (Date.now() - judgedAt);
-    const wait = untilInterval > 0 ? untilInterval : tickMs;
-    const remainder = Math.min(wait, invocation.deadline.remaining());
+    const remainder = Math.min(tickMs, invocation.deadline.remaining());
     if (remainder > 0) await sleep(remainder, options.signal);
     // An observation can outlive the deadline it was bounded by, and the bare
     // timeout it then reports would drop the judgment the author needs. The
@@ -394,8 +410,16 @@ async function waitForNextJudgment(
       if (isAgentError(cause) && cause.code === 'STEP_TIMEOUT') throw timedOut(cause);
       throw cause;
     });
-    if (Date.now() - judgedAt < options.intervalMs) continue;
-    if (judgmentShape(observation, { treeWithheld: invocation.treeWithheld }) !== judgedShape) return observation;
+    const next = shapeOf(observation);
+    const now = Date.now();
+    if (next !== shape) {
+      judgeAtOnce = screen.changedAt === undefined || screen.observedAt - screen.changedAt >= options.intervalMs;
+      screen.changedAt = now;
+      shape = next;
+    }
+    screen.observedAt = now;
+    if (shape === judgedShape) continue;
+    if (judgeAtOnce || now - judgedAt >= options.intervalMs) return observation;
   }
 }
 

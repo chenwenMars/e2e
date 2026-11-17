@@ -8,12 +8,14 @@ import type { ToolSet } from 'ai';
 import { z } from 'zod';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { aiSdk, loadAiSdk } from '@e2e-dev/core/lib/agent/ai-sdk';
+import { AgentError } from '@e2e-dev/core/lib/agent/error';
+import { isFailedResult } from '@e2e-dev/core/lib/agent/loop-guards';
 import { GRAMMAR_TOOL_NAMES } from '@e2e-dev/core/lib/agent/action-names';
-import { createGrammarTools, createVerdictTool } from '@e2e-dev/core/lib/agent/primitives';
+import { createGrammarTools, createVerdictTool, grammarTools } from '@e2e-dev/core/lib/agent/primitives';
 import { createBuiltInAgent, projectTools } from '@e2e-dev/core/lib/agent/default-agent';
 import { defineTool } from '@e2e-dev/core/lib/agent/tool';
 import { fakeExecutorContext } from '../helpers/fake-executor-context.ts';
-import { installFakeLoopModel } from '../helpers/fake-loop-model.ts';
+import { installFakeLoopModel, loopCalls } from '../helpers/fake-loop-model.ts';
 
 it('does not repeat a static assertion opening to request pixels it cannot use', async () => {
   const { context } = fakeExecutorContext({ verbs: [], secrets: [] });
@@ -233,4 +235,49 @@ it('drops an inconclusive code from an act verdict and keeps it on an assertion'
   const assertion = createVerdictTool('assert');
   expect(await assertion.tool.execute!(input, options)).toBe('Step concluded.');
   expect(assertion.verdict()).toEqual(input);
+});
+
+describe('type_secret leaves the act tool set the same across steps', () => {
+  it('describes it the same with the secrets listed by the caller, and fails a call on a step that declares none', async () => {
+    const bare = fakeExecutorContext({ secrets: [] });
+    const declared = fakeExecutorContext();
+    const without = grammarTools(bare.context, { secretsListedByCaller: true })['type_secret'];
+    const listed = grammarTools(declared.context, { secretsListedByCaller: true })['type_secret'];
+    expect(without?.description).toBe(listed?.description);
+    expect(listed?.description).not.toContain('admin');
+    // The public grammar keeps naming the secrets, and offers none to a step without them.
+    expect(createGrammarTools(bare.context)).not.toHaveProperty('type_secret');
+    expect(createGrammarTools(declared.context)['type_secret']?.description).toContain('"admin" (password)');
+  });
+
+  it('sends a call on a step that declares no secrets to the dispatcher, whose refusal reads as a failed action', async () => {
+    const { context } = fakeExecutorContext({ secrets: [] });
+    const typeSecret = vi.fn(async () => {
+      throw new AgentError('POLICY_DENIED', 'secret "admin" was not declared in this step\'s params; only declared secrets can be filled');
+    });
+    const observe = async () => ({ revision: '1', text: '#n1 textbox "Password"', truncated: false, viewport: { width: 800, height: 600 } });
+    const tool = grammarTools({ ...context, observe, actions: { ...context.actions, typeSecret } }, { secretsListedByCaller: true })['type_secret'];
+    const result = await tool!.execute!({ target: 'n1', name: 'admin' }, { toolCallId: 'fill', messages: [], context: undefined });
+    const text = typeof result === 'string' ? result : result.text;
+    expect(typeSecret).toHaveBeenCalledExactlyOnceWith({ id: 'n1' }, 'admin');
+    expect(text).toMatch(/^type_secret "admin" into #n1 failed: POLICY_DENIED: secret "admin" was not declared/u);
+    expect(isFailedResult('type_secret', text)).toBe(true);
+  });
+
+  it('offers the built-in act loop the same tools with and without a secret, and lists the secret in the opening message', async () => {
+    const observe = async () => ({
+      revision: '1', text: '#n1 textbox "Password"', truncated: false,
+      viewport: { width: 800, height: 600 },
+    });
+    const model = installFakeLoopModel(() => [{ toolName: 'complete_step', input: { status: 'passed', summary: 'done' } }]);
+    for (const secrets of [[], [{ name: 'admin', purpose: 'password' }]] as const) {
+      const { context } = fakeExecutorContext({ secrets });
+      await expect(createBuiltInAgent().runStep({ ...context, model, observe })).resolves.toMatchObject({ status: 'passed' });
+    }
+    expect(loopCalls).toHaveLength(2);
+    expect(loopCalls[0]!.toolNames).toContain('type_secret');
+    expect(loopCalls[1]!.toolNames).toEqual(loopCalls[0]!.toolNames);
+    expect(loopCalls[0]!.prompt).not.toContain('Secrets to fill');
+    expect(loopCalls[1]!.prompt).toContain('Secrets to fill with type_secret, by name: "admin" (password).');
+  });
 });

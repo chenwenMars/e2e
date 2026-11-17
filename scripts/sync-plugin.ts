@@ -1,10 +1,11 @@
 /**
- * Copy the maintained skills into the shared Claude, Codex, and Cursor plugin.
- * Each skill's agents/openai.yaml and the plugin's assets belong to the plugin;
- * every other skill file, the license, every manifest's version (the runner's,
- * so plugin installs update with each release), the Claude and Cursor manifests
- * (from Codex's), and .mcp.json, which pins the MCP server's `npx` launcher to
- * that version, are generated here. `version-packages`
+ * Copy the maintained skills into the shared Claude, Codex, Cursor, and GitHub
+ * Copilot plugin. Each skill's agents/openai.yaml and the plugin's assets belong
+ * to the plugin; every other skill file, the license, every manifest's version
+ * (the runner's, so plugin installs update with each release), the Claude,
+ * Cursor, and Agent Plugins manifests (from Codex's), and .mcp.json and
+ * mcp.json, which pin the MCP server's `npx` launcher to that version, are
+ * generated here. `version-packages`
  * runs it after `changeset version`. Use --check in CI to report missing,
  * stale, or removed generated files.
  */
@@ -23,6 +24,27 @@ const problems: string[] = [];
 
 /** The per-skill Codex UI metadata, maintained in the plugin rather than generated. */
 const OPENAI_YAML = 'agents/openai.yaml';
+
+/**
+ * Drop ClawHub's `metadata.openclaw` block from a SKILL.md's frontmatter, and
+ * `metadata` with it once empty. The Agent Skills spec allows only string
+ * metadata values, which awesome-copilot's `vally lint` enforces on the plugin;
+ * ClawHub publishes from skills/, so the plugin copy does not need it.
+ */
+function withoutOpenclaw(markdown: string): string {
+  const end = markdown.indexOf('\n---\n', 4);
+  const lines = markdown.slice(0, end).split('\n');
+  const indent = (line: string) => line.search(/\S/);
+  const start = lines.findIndex((line) => /^\s+openclaw:\s*$/.test(line));
+  if (start !== -1) {
+    let stop = start + 1;
+    while (stop < lines.length && (lines[stop]!.trim() === '' || indent(lines[stop]!) > indent(lines[start]!))) stop++;
+    lines.splice(start, stop - start);
+  }
+  const metadata = lines.indexOf('metadata:');
+  if (metadata !== -1 && !(indent(lines[metadata + 1] ?? '') > 0)) lines.splice(metadata, 1);
+  return lines.join('\n') + markdown.slice(end);
+}
 
 /** List files recursively. */
 function files(directory: string): string[] {
@@ -51,7 +73,15 @@ const skills = readdirSync(join(root, 'skills'), { withFileTypes: true })
 for (const skill of skills) {
   const source = join(root, 'skills', skill);
   for (const path of files(source)) {
-    generated.set(join(plugin, 'skills', skill, relative(source, path)), readFileSync(path));
+    let content = readFileSync(path);
+    if (relative(source, path) === 'SKILL.md') {
+      const stripped = withoutOpenclaw(content.toString('utf8'));
+      if (/^\s*openclaw:/m.test(stripped.slice(0, stripped.indexOf('\n---\n', 4)))) {
+        problems.push(`skills/${skill}/SKILL.md: could not strip metadata.openclaw from the plugin copy`);
+      }
+      content = Buffer.from(stripped);
+    }
+    generated.set(join(plugin, 'skills', skill, relative(source, path)), content);
   }
   const yaml = join(plugin, 'skills', skill, OPENAI_YAML);
   maintained.add(yaml);
@@ -88,11 +118,33 @@ generated.set(
     logo: codexManifest.interface.logo,
   }),
 );
+// GitHub Copilot reads the Agent Plugins v1.0.0 manifest, which allows only these fields
+// and finds skills/ and mcp.json by convention (https://agent-plugins.org/specification).
+generated.set(
+  join(plugin, 'plugin.json'),
+  json({
+    $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+    name: versioned.name,
+    version: versioned.version,
+    description: versioned.description,
+    author: versioned.author,
+    homepage: versioned.homepage,
+    repository: versioned.repository,
+    license: versioned.license,
+    keywords: versioned.keywords,
+  }),
+);
 generated.set(join(plugin, 'LICENSE'), readFileSync(join(root, 'LICENSE')));
 // Claude's plugin directory refuses a launcher that fetches an unpinned package.
+const server = { command: 'npx', args: ['-y', `e2e@${runner.version}`, 'mcp'] };
+generated.set(join(plugin, '.mcp.json'), json({ mcpServers: { e2e: server } }));
+// The Agent Plugins MCP config Copilot reads: its own $schema and an explicit transport type.
 generated.set(
-  join(plugin, '.mcp.json'),
-  json({ mcpServers: { e2e: { command: 'npx', args: ['-y', `e2e@${runner.version}`, 'mcp'] } } }),
+  join(plugin, 'mcp.json'),
+  json({
+    $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+    mcpServers: { e2e: { type: 'stdio', ...server } },
+  }),
 );
 
 const stale: string[] = [];

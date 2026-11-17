@@ -745,6 +745,8 @@ describe('agent.act with the default ToolLoopAgent executor', () => {
       'tap_at',
       'type',
       'type_at',
+      // Offered on a step without secrets too, so every step sends the same tools.
+      'type_secret',
       'upload',
     ]);
     expect(loopCalls[0]!.prompt).toContain('increment the counter once');

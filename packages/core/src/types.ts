@@ -166,7 +166,7 @@ export interface AssertOptions extends VisionOption, AgentOption {
   screenshot?: boolean;
 }
 
-/** `waitFor` options: a judgment at most once per `interval` until `timeout`. */
+/** `waitFor` options: a judgment on each screen change, at most once per `interval` while it keeps changing, until `timeout`. */
 export interface WaitForOptions extends VisionOption, AgentOption {
   /**
    * Values the condition refers to as `{name}`, with the same rules as `act`
@@ -175,7 +175,7 @@ export interface WaitForOptions extends VisionOption, AgentOption {
   params?: AgentParams;
   /** Deadline in milliseconds; defaults to the agent's `judgmentTimeout`, 30000. */
   timeout?: number;
-  /** Least time between two judgments, in milliseconds; 100 through 60000, default 3000. */
+  /** Least time between two judgments of a screen that keeps changing, in milliseconds; 100 through 60000, default 3000. */
   interval?: number;
   /** Judgment budget; defaults to `agents.<name>.maxModelCalls` and can only lower it. */
   maxModelCalls?: number;
@@ -1233,6 +1233,15 @@ export interface TargetApp {
    */
   bundleId?: string | undefined;
   /**
+   * Where `app.open(path)` opens on a device target: the link base a path
+   * joins, so `app.open('/orders/42')` opens `https://shop.example.com/orders/42`
+   * (a universal or App Link) or, with `shopapp://`, `shopapp://orders/42`
+   * (a custom scheme), in the pinned app. Only a target whose engine opens
+   * links takes it; `file:`, `data:`, `javascript:`, `view-source:`, `blob:`,
+   * and `filesystem:` are refused.
+   */
+  linkBase?: string | undefined;
+  /**
    * The build a device target runs against, an iOS `.app` bundle or an
    * Android `.apk`, resolved against the project root. Without `bundleId`,
    * the app it installs is the one launched.
@@ -1548,8 +1557,8 @@ export type AgentConfig = AgentOptions &
 
 /**
  * The project half of `E2EConfig`: targets, agents, the replay cache,
- * secrets, budgets, and output, which `resolveProjectConfig` resolves;
- * `E2EConfig` adds the runner's reporters and test filters.
+ * secrets, budgets, and output. The test runner and `@e2e-dev/core` both resolve
+ * it; `E2EConfig` adds the runner's reporters and test filters.
  */
 export interface ProjectConfig {
   /** Stable project id, 1 through 256 characters; defaults to the root `package.json` name. */

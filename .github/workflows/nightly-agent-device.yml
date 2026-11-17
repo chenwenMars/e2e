@@ -96,5 +96,6 @@ jobs:
           echo '| --- | --- |' >> "$GITHUB_STEP_SUMMARY"
           jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$RESULTS" >> "$GITHUB_STEP_SUMMARY"
           # Include individual matrix failures, not only the reusable workflow's result.
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100"             --jq '.jobs[] | select(.conclusion == "failure" || .conclusion == "cancelled") | "- [\(.name)](\(.html_url)): \(.conclusion)"' >> "$GITHUB_STEP_SUMMARY"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url)): \(.conclusion)"' >> "$GITHUB_STEP_SUMMARY"
           jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"

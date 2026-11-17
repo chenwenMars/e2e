@@ -84,11 +84,16 @@ describe('the built-in agent from its agents entry', () => {
     expect(JSON.stringify(loopCalls)).not.toContain('hunter2-probe-value');
   });
 
-  it('opens a judgment prompt with the title too, outside its system message', async () => {
+  it('puts the title in a judgment prompt after its fixed request, outside its system message', async () => {
     const judge = installFakeModel(() => judgment(true, 'shown'));
-    const fixtures = runtime({ agents: { default: { model: judge } } }, undefined, ['billing', 'upgrades the plan']);
-    await fixtures.agent.assert('the plan is upgraded');
-    expect(fakeCalls[0]!.prompt).toMatch(/^Test: billing > upgrades the plan\n\n/u);
+    const config = { agents: { default: { model: judge } } };
+    await runtime(config, undefined, ['billing', 'upgrades the plan']).agent.assert('the plan is upgraded');
+    await runtime(config, undefined, ['billing', 'downgrades the plan']).agent.assert('the plan is downgraded');
+    const [first, second] = [fakeCalls[0]!.prompt, fakeCalls[1]!.prompt];
+    expect(first).toMatch(/\n\nTest: billing > upgrades the plan\n\n<instruction>\n/u);
+    // Two tests share every line before their titles, so a provider can cache them.
+    expect(first.slice(0, first.indexOf('Test:'))).toBe(second.slice(0, second.indexOf('Test:')));
+    expect(first.indexOf('Test:')).toBeGreaterThan(1000);
     expect(fakeCalls[0]!.system).not.toContain('Test:');
   });
 

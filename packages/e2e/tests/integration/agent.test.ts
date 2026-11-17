@@ -6,6 +6,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
@@ -99,6 +100,24 @@ test('judges again when only the URL changed', async ({ app, agent, screen }) =>
   await agent.waitFor('the URL path is /moved', { interval: 100, timeout: 3000, maxModelCalls: 4 });
 });
 
+test('judges a change at once instead of waiting out the interval', async ({ app, agent, screen }) => {
+  await app.open('/moves?key=prompt');
+  await expect(screen.getByRole('heading')).toHaveText('Moves');
+  await agent.waitFor('the address reads /moved', { interval: 60_000, timeout: 5000, maxModelCalls: 4 });
+});
+
+test('judges a screen that keeps changing at most once per interval', async ({ app, agent, screen }) => {
+  await app.open('/ticking');
+  await expect(screen.getByRole('heading')).toHaveText('Ticking');
+  await agent.waitFor('the clock reads stop', { interval: 1500, timeout: 2500 });
+});
+
+test('a slow judgment does not count as the screen holding still', async ({ app, agent, screen }) => {
+  await app.open('/ticking');
+  await expect(screen.getByRole('heading')).toHaveText('Ticking');
+  await agent.waitFor('the slow clock reads stop', { interval: 1500, timeout: 6000 });
+});
+
 test('a vision-only wait does not judge again on a URL it is not shown', async ({ app, agent, screen }) => {
   await app.open('/moves?key=pixels');
   await expect(screen.getByRole('heading')).toHaveText('Moves');
@@ -136,6 +155,9 @@ const NEVER_CONDITION = 'a checkout button is on the About page';
 const PATH_ASSERTION = 'the URL path is /about';
 const MOVED_CONDITION = 'the URL path is /moved';
 const PIXEL_MOVED_CONDITION = 'the chart moved';
+const PROMPT_MOVED_CONDITION = 'the address reads /moved';
+const TICKING_CONDITION = 'the clock reads stop';
+const SLOW_TICKING_CONDITION = 'the slow clock reads stop';
 const REPAIRED_ASSERTION = 'the Home heading is visible after a malformed first answer';
 const RETIRED_SHAPE_ONCE = 'the Home heading is visible, answered in the retired shape first';
 const RETIRED_SHAPE_TWICE = 'the Home heading is visible, answered in the retired shape twice';
@@ -178,6 +200,14 @@ function respond(call: FakeCall): unknown {
       if (call.instruction === MOVED_CONDITION) {
         fixture.releaseMove('tree');
         return judgment(call.prompt.includes(' location="/moved" '), 'read the location');
+      }
+      if (call.instruction === PROMPT_MOVED_CONDITION) {
+        fixture.releaseMove('prompt');
+        return judgment(call.prompt.includes(' location="/moved" '), 'read the location');
+      }
+      if (call.instruction === TICKING_CONDITION) return judgment(false, 'the clock shows a number');
+      if (call.instruction === SLOW_TICKING_CONDITION) {
+        return delay(1200).then(() => judgment(false, 'the clock shows a number'));
       }
       if (call.instruction === PIXEL_MOVED_CONDITION) {
         fixture.releaseMove('pixels');
@@ -283,6 +313,38 @@ describe('agent judgment tier', () => {
     expect(result.status).toBe('passed');
     const step = result.attempts.at(-1)!.steps.find((candidate) => candidate.api === 'agent.waitFor')!;
     expect(step.metrics!.modelCalls).toBe(2);
+  });
+
+  it('judges a change as soon as it is seen, not after the interval', () => {
+    // The interval outlasts the timeout: a wait that sat it out before judging
+    // the move would time out instead.
+    const result = resultByTitle(outcome, 'judges a change at once instead of waiting out the interval');
+    expect(result.status).toBe('passed');
+    const step = result.attempts.at(-1)!.steps.find((candidate) => candidate.api === 'agent.waitFor')!;
+    expect(step.metrics!.modelCalls).toBe(2);
+  });
+
+  it('judges a screen that never holds still at most once per interval', () => {
+    // The clock ticks every 200 ms. Its first tick after the opening judgment
+    // is judged at once (0.5 s); every later one waits out the 1.5 s interval
+    // (2 s), so the 2.5 s wait fits three judgments, not one per poll.
+    const result = resultByTitle(outcome, 'judges a screen that keeps changing at most once per interval');
+    expect(result.status).toBe('failed');
+    expect(result.attempts.at(-1)!.error?.code).toBe('STEP_TIMEOUT');
+    const step = result.attempts.at(-1)!.steps.find((candidate) => candidate.api === 'agent.waitFor')!;
+    expect(step.metrics!.modelCalls).toBe(3);
+  });
+
+  it('keeps the interval on a screen that changed while a slow judgment ran', () => {
+    // Each judgment takes 1.2 s, during which nothing is observed. Counting
+    // that as the clock holding still would judge every tick at once (0, 1.7,
+    // 3.4, 5.1 s). Only the first tick is judged at once; the next waits out
+    // the interval after the judgment returns (0, 1.7, 4.4 s).
+    const result = resultByTitle(outcome, 'a slow judgment does not count as the screen holding still');
+    expect(result.status).toBe('failed');
+    expect(result.attempts.at(-1)!.error?.code).toBe('STEP_TIMEOUT');
+    const step = result.attempts.at(-1)!.steps.find((candidate) => candidate.api === 'agent.waitFor')!;
+    expect(step.metrics!.modelCalls).toBe(3);
   });
 
   it('spends no judgment on a URL a vision-only wait is not shown', () => {

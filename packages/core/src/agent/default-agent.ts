@@ -100,6 +100,8 @@ function createActLoop(options: BuiltInAgentOptions): StepExecutor {
         observation = await context.observe({ pixels: true });
       }
       const extra: string[] = [];
+      const secrets = secretsLine(context);
+      if (secrets !== undefined) extra.push(secrets);
       if (context.replayedPrefix !== undefined) extra.push(formatReplayedPrefix(context.replayedPrefix));
       if (context.ledger !== '') extra.push(`Previously completed steps:\n${context.ledger}`);
       return openingPrompt(context, `Execute this test step: ${context.step.instruction}`, extra, observation);
@@ -155,8 +157,18 @@ function loopTools(
 ): ToolSet {
   return {
     ...guardedTools(helpers, projectTools(context, tools)),
-    ...grammarTools(context, { guard: helpers.guard, screen: presenterFor(context) }),
+    ...grammarTools(context, { guard: helpers.guard, screen: presenterFor(context), secretsListedByCaller: true }),
   };
+}
+
+/**
+ * The step's declared secrets, which `type_secret` fills, when the surface can
+ * fill one. They are listed here rather than in the tool's description, so
+ * the tools stay the same across steps and a provider's prompt cache serves them.
+ */
+function secretsLine(context: StepExecutorContext): string | undefined {
+  if (!context.target.verbs.has('typeSecret') || context.step.secrets.length === 0) return undefined;
+  return `Secrets to fill with type_secret, by name: ${context.step.secrets.map((secret) => `"${secret.name}" (${secret.purpose})`).join(', ')}.`;
 }
 
 /** The opening message: the test title, the step's lead line and params, what else the loop adds, then the first screen. */

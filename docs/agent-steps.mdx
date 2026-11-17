@@ -48,7 +48,7 @@ snapshot can't describe a control, pixel tools let it take a screenshot and
 act at a point. See the
 [tool reference](/reference/agent#pixel-tools-screenshot-and-the-point-verbs).
 
-A step with a `Secret` param also gets `type_secret`. The model sees only
+To fill a `Secret` param, the model calls `type_secret`. The model sees only
 the secret's name and purpose. The runner checks the field the model
 picked, then fills the value itself. The value never enters prompts,
 transcripts, reports, or AI traces.

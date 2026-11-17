@@ -220,10 +220,12 @@ export function videoPosition(step: Step, videos: readonly TimedVideo[]): { read
 }
 
 export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  const rounded = Math.round(ms);
+  if (rounded < 1000) return `${rounded}ms`;
+  const tenths = Math.round(ms / 100);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 /** A position in a video, to the tenth of a second: steps are often under one apart. `1:04.2`. */
@@ -237,5 +239,8 @@ export function formatCost(usd: number): string {
 }
 
 export function formatTokens(tokens: number): string {
-  return tokens < 1000 ? String(tokens) : `${(tokens / 1000).toFixed(1)}k`;
+  if (tokens < 1000) return String(tokens);
+  const hundreds = Math.round(tokens / 100);
+  if (hundreds < 10_000) return `${(hundreds / 10).toFixed(1)}k`;
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
 }

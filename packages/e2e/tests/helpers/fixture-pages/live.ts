@@ -34,6 +34,19 @@ export const LIVE_PAGES: Record<string, PageRenderer> = {
     history.replaceState({}, '', '/moved');
   }, 50);
 </script>`,
+  // A clock that never holds still: every observation of it differs from the
+  // one before, the way a progress counter or a live timestamp does.
+  '/ticking': constant(`<!doctype html>
+<title>Ticking</title>
+<h1>Ticking</h1>
+<output role="status" aria-label="Clock">0</output>
+<script>
+  let ticks = 0;
+  setInterval(() => {
+    ticks += 1;
+    document.querySelector('output').textContent = String(ticks);
+  }, 200);
+</script>`),
   // Two identically named fields on a page whose layout keeps moving, the way a
   // lazily-loaded banner or an expanding summary shifts a booking form under the
   // cursor. Every node keeps its identity while its rectangle drifts between the

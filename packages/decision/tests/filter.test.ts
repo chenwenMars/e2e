@@ -555,6 +555,12 @@ describe('decisionFilter', () => {
     expect(result).toEqual({ exclude: {}, relevance: scored([ADDS, SIGNS_IN, FINDS], 0.9), note: '3 calls, 37.2k tokens, $0.0063' });
   });
 
+  it('reads a token count that rounds up to a million as millions', async () => {
+    const { model } = scriptedJudge(() => 0.9, undefined, { inputTokens: 999_950 });
+    const result = await decisionFilter({ model }).filter([SIGNS_IN], filterContext(cartRepo()).context);
+    expect(result.note).toBe('1 call, 1.0M tokens');
+  });
+
   it('counts the list price when the AI Gateway bills a route on your own provider key', async () => {
     const { model } = scriptedJudge(() => 0.9, undefined, { providerMetadata: { gateway: { cost: '0', marketCost: '0.25' } } });
     const result = await decisionFilter({ model }).filter([SIGNS_IN], filterContext(cartRepo()).context);

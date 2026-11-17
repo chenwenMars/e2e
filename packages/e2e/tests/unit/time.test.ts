@@ -142,6 +142,41 @@ describe('pollCondition', () => {
     expect(calls).toBe(3);
   });
 
+  it('sees a state that arrives between poll ticks no later than a poll every tick would', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const readsAt: number[] = [];
+    const promise = pollCondition(
+      makeOptions({
+        evaluate: async () => {
+          readsAt.push(Date.now() - startedAt);
+          return Date.now() - startedAt >= 290;
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await promise;
+    expect(readsAt).toEqual([0, 20, 50, 100, 200, 300]);
+  });
+
+  it('reads a poll tick apart when every read outlasts the early reads', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const readsAt: number[] = [];
+    const promise = pollCondition(
+      makeOptions({
+        evaluate: async () => {
+          readsAt.push(Date.now() - startedAt);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return readsAt.length === 3;
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+    expect(readsAt).toEqual([0, 400, 800]);
+  });
+
   it('throws the caller error at the deadline', async () => {
     vi.useFakeTimers();
     const promise = pollCondition(
@@ -168,7 +203,8 @@ describe('pollCondition', () => {
     const assertion = expect(promise).rejects.toThrow('poll timed out');
     await vi.advanceTimersByTimeAsync(1000);
     await assertion;
-    expect(readsAt).toEqual([0, 100, 200, 300, 350]);
+    // Early reads at 20 and 50 ms, then every poll tick from the start.
+    expect(readsAt).toEqual([0, 20, 50, 100, 200, 300, 350]);
   });
 
   it('negated: a budget shorter than the grace window is still satisfiable', async () => {
@@ -339,8 +375,8 @@ describe('pollCondition', () => {
     const assertion = expect(promise).rejects.toThrow('poll timed out');
     await vi.advanceTimersByTimeAsync(1000);
     await assertion;
-    // It decided at the deadline instead of reading past it.
-    expect(calls).toBe(5);
+    // It decided at the deadline instead of reading past it: reads at 0, 20, 50, 100, 200, 300, and 400 ms.
+    expect(calls).toBe(7);
   });
 
   it('stops polling when the signal aborts between evaluations', async () => {

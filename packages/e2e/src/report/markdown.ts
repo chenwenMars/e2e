@@ -415,7 +415,9 @@ function fileGroups(entries: readonly Entry[]): FileGroup[] {
   const groups = new Map<string, Map<string, Entry[]>>();
   for (const entry of entries) {
     const byFile = groups.get(entry.result.targetId) ?? new Map<string, Entry[]>();
-    byFile.set(entry.result.file, [...(byFile.get(entry.result.file) ?? []), entry]);
+    const grouped = byFile.get(entry.result.file);
+    if (grouped) grouped.push(entry);
+    else byFile.set(entry.result.file, [entry]);
     groups.set(entry.result.targetId, byFile);
   }
   const rows = [...groups].flatMap(([target, byFile]) => [...byFile].map(([file, grouped]) => ({ file, target, entries: grouped })));

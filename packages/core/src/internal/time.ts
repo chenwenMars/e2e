@@ -91,8 +91,34 @@ export function budgetText(ms: number): string {
   return `${ms}ms`;
 }
 
-/** Canonical polling cadence for locator and assertion loops. */
+/** Canonical polling cadence for locator and assertion loops, and the longest pause between two reads of a wait. */
 export const POLL_INTERVAL_MS = 100;
+
+/**
+ * When a wait reads again after its first read, in ms from its start, before
+ * it settles on every `POLL_INTERVAL_MS`. Most waits end within a frame or
+ * two of their first miss (a render, a state update, a request settling), so
+ * these come sooner.
+ */
+const EARLY_READS_MS: readonly number[] = [20, 50];
+
+/** The least pause between two reads of one wait. */
+const MIN_POLL_GAP_MS = 10;
+
+/**
+ * The pause before a wait's next read, `elapsedMs` after the wait started:
+ * until the next time on the wait's timeline (20 ms, 50 ms, then every
+ * multiple of `POLL_INTERVAL_MS`) at least `MIN_POLL_GAP_MS` away, and never
+ * longer than `POLL_INTERVAL_MS`. The timeline holds every multiple of the
+ * interval, so a state that arrives late is seen no later than a wait reading
+ * every `POLL_INTERVAL_MS` would see it; an engine whose reads outlast the
+ * early times reads as one did.
+ */
+export function pollDelay(elapsedMs: number): number {
+  const earliest = elapsedMs + MIN_POLL_GAP_MS;
+  const next = EARLY_READS_MS.find((at) => at >= earliest) ?? Math.ceil(earliest / POLL_INTERVAL_MS) * POLL_INTERVAL_MS;
+  return Math.min(next - elapsedMs, POLL_INTERVAL_MS);
+}
 
 /**
  * The reads of one wait. Each engine read runs until the wait's deadline
@@ -230,7 +256,7 @@ export async function pollReads(options: PollReadsOptions): Promise<void> {
     const now = Date.now();
     if (holds(Math.min(now, deadline.endsAt))) return;
     if (deadline.expired(now)) throw await options.onTimeout();
-    await sleep(Math.min(POLL_INTERVAL_MS, deadline.remaining(now)), options.signal);
+    await sleep(Math.min(pollDelay(now - startedAt), deadline.remaining(now)), options.signal);
     readAt = Date.now();
     if (negated && deadline.expired(readAt)) {
       if (holds(readAt)) return;

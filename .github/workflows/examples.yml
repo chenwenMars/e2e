@@ -240,6 +240,7 @@ jobs:
         if: ${{ matrix.toolchain == 'flutter' }}
         with:
           channel: stable
+          flutter-version: '3.50.0'
           cache: true
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: ${{ matrix.toolchain == 'dotnet' }}
@@ -439,6 +440,7 @@ jobs:
         if: ${{ matrix.toolchain == 'flutter' }}
         with:
           channel: stable
+          flutter-version: '3.50.0'
           cache: true
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: ${{ matrix.toolchain == 'dotnet' }}

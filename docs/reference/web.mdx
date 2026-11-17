@@ -542,8 +542,8 @@ const title = await browser.title();
 
 #### `waitForURL`
 
-Waits for the current URL to match, polling every 100 ms. It is the same poll
-as `expect(browser).toHaveURL`.
+Waits for the current URL to match. It reads the URL at 0, 20, and 50 ms, then
+every 100 ms from the start, the same poll as `expect(browser).toHaveURL`.
 
 ```ts
 await browser.waitForURL(/\/orders\/\d+$/, { timeout: 15_000 });

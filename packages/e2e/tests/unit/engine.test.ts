@@ -87,7 +87,7 @@ describe('defineEngine', () => {
     );
     expect(() =>
       defineEngine(observingEngine({ session: { navigate: async () => undefined } as never })),
-    ).toThrow(/session has unknown key "navigate"; expected one of open, back, resize, switchTab, closeTab, restart, reset/);
+    ).toThrow(/session has unknown key "navigate"; expected one of open, openLink, back, resize, switchTab, closeTab, restart, reset/);
     expect(() =>
       defineEngine(observingEngine({ session: { open: 'https://example.test/' } as never })),
     ).toThrow(/session.open must be a function/);
@@ -163,6 +163,13 @@ describe('defineEngine', () => {
     expect(() =>
       defineEngine(observingEngine({ state: { capture: async () => ({}) } as never })),
     ).toThrow(/state.restore must be a function/);
+  });
+
+  it('refuses a fixture named like a method of an @e2e-dev/core session', () => {
+    for (const fixture of ['close', 'saveState', 'setDefaultTimeout']) {
+      expect(() => defineEngine(observingEngine({ fixtures: { [fixture]: () => ({}) } as never })), fixture)
+        .toThrow(expect.objectContaining({ code: 'INVALID_CONFIG', message: expect.stringContaining('is a method of every @e2e-dev/core session') }));
+    }
   });
 
   it('binds validateApp, prepare, finish, and fixture factories to the spec', async () => {

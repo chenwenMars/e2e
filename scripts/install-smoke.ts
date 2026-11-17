@@ -7,6 +7,9 @@
  * project only through `e2e`'s dependency and the engines' peer, as it does
  * for a user, and the install must hold one copy of it: two would split the
  * error classes and the engine registry between the runner and the engines.
+ * A second project installs `@e2e-dev/core` and the engines without `e2e`,
+ * as a program that drives a browser or device with core alone does, and
+ * imports each engine's main entry there.
  *
  * pnpm 11 and later fail an install on any dependency build script the
  * project has not decided on (`ERR_PNPM_IGNORED_BUILDS`), and write a
@@ -37,8 +40,10 @@ const PACKAGES = ['core', 'e2e', 'web', 'mobile'] as const;
 const root = mkdtempSync(join(tmpdir(), 'e2e-install-smoke-'));
 const tarballs = join(root, 'tarballs');
 const project = join(root, 'project');
+const coreOnly = join(root, 'core-only');
 mkdirSync(tarballs);
 mkdirSync(join(project, 'tests'), { recursive: true });
+mkdirSync(coreOnly);
 
 /** Runs `command` in `cwd`; returns its exit code and combined output. */
 function run(cwd: string, command: string, args: readonly string[]): { status: number; output: string } {
@@ -49,7 +54,7 @@ function run(cwd: string, command: string, args: readonly string[]): { status: n
 }
 
 const driverVersion = process.env['AGENT_DEVICE_VERSION'];
-const pnpm = (args: readonly string[]) => run(project, 'npx', ['--yes', `pnpm@${pnpmVersion}`, ...args]);
+const pnpm = (args: readonly string[], cwd = project) => run(cwd, 'npx', ['--yes', `pnpm@${pnpmVersion}`, ...args]);
 
 const mobileManifest = JSON.parse(readFileSync(join(REPO_ROOT, 'packages/mobile/package.json'), 'utf8')) as {
   dependencies: Record<string, string>;
@@ -160,6 +165,40 @@ export async function checkFixture(device: Device) {
       }
     }
   }
+
+  if (problems.length === 0) {
+    writeFileSync(join(coreOnly, 'pnpm-workspace.yaml'), workspaceYaml);
+    writeFileSync(
+      join(coreOnly, 'package.json'),
+      JSON.stringify({
+        name: 'install-smoke-core-only',
+        private: true,
+        type: 'module',
+        dependencies: { '@e2e-dev/core': tarball('e2e-dev-core-'), '@e2e-dev/web': tarball('e2e-dev-web-'), '@e2e-dev/mobile': tarball('e2e-dev-mobile-') },
+      }),
+    );
+    writeFileSync(join(coreOnly, 'main-entries.mjs'), `
+for (const [name, factory, options] of [['@e2e-dev/web', 'web', undefined], ['@e2e-dev/mobile', 'mobile', { platform: 'ios' }]]) {
+  const entry = await import(name);
+  entry[factory](options);
+  try {
+    entry.test('needs the runner', () => {});
+    throw new Error(name + ': test() ran without e2e installed');
+  } catch (error) {
+    if (error.code !== 'RUNNER_NOT_INSTALLED') throw error;
+  }
+}
+`);
+    for (const [step, args] of [
+      ['core-only pnpm install', ['install']],
+      ['core-only main entries', ['exec', 'node', 'main-entries.mjs']],
+    ] as const) {
+      const { status, output } = pnpm(args, coreOnly);
+      process.stdout.write(`$ ${step}: exit ${status}\n`);
+      if (status !== 0) problems.push(`${step} exited ${status}:\n${output}`);
+      if (problems.length > 0) break;
+    }
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
@@ -168,5 +207,5 @@ if (problems.length > 0) {
   process.stderr.write(`${problems.join('\n\n')}\n`);
   process.exitCode = 1;
 } else {
-  process.stdout.write(`install smoke: pnpm ${pnpmVersion} installs ${PACKAGES.join(', ')} with no build scripts, typechecks a mobile tool, and runs a TypeScript test\n`);
+  process.stdout.write(`install smoke: pnpm ${pnpmVersion} installs ${PACKAGES.join(', ')} with no build scripts, typechecks a mobile tool, runs a TypeScript test, and loads the engines' main entries without e2e\n`);
 }

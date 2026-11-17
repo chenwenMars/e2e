@@ -211,7 +211,7 @@ function readRecordedAction(document: unknown): RecordedAction | undefined {
     }
     case 'press': {
       const target = readDescriptor(raw['target']);
-      const key = readBoundedText(raw['key'], 64);
+      const key = readKey(raw['key'], 64);
       if (target === undefined || key === undefined) return undefined;
       return { name: 'press', summary, target, key };
     }
@@ -313,7 +313,7 @@ function readRecordedAction(document: unknown): RecordedAction | undefined {
       return { name: 'typeText', summary, value, replace: raw['replace'] };
     }
     case 'pressKey': {
-      const key = readBoundedText(raw['key'], 64);
+      const key = readKey(raw['key'], 64);
       return key === undefined ? undefined : { name: 'pressKey', summary, key };
     }
     case 'dismissKeyboard':
@@ -440,6 +440,11 @@ function readProvenance(document: unknown): TraceProvenance | undefined {
 function readInputPaths(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_TRACE_UPLOAD_PATHS) return undefined;
   return each(value, readInputText);
+}
+
+/** A recorded key: any non-empty key name up to `maxChars`, a space press's `' '` included, which the grammar takes as a single character. */
+function readKey(value: unknown, maxChars: number): string | undefined {
+  return typeof value === 'string' && value !== '' && value.length <= maxChars ? value : undefined;
 }
 
 /** Verbatim replay input: bounded but never trimmed — whitespace can be the value. */

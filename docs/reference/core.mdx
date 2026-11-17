@@ -1,0 +1,277 @@
+---
+title: "@e2e-dev/core"
+description: launch, hosts, sessions, saved state, and createAgent, the API of a program that drives a browser or a device without the test runner.
+---
+
+`@e2e-dev/core` is the API of a program that drives a browser or a device
+with no test runner around it. `launch` returns a host, a host opens
+sessions, and `createAgent` puts an agent over a session. The
+[guide](/core) shows each of them in use.
+
+```ts title="prices.ts"
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+await using shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+await using session = await shop.newSession();
+await session.app.open('/products/A-1001');
+console.log(await session.screen.getByTestId('sale-price').textContent());
+```
+
+## Reference
+
+### Entries
+
+| Import | From |
+| --- | --- |
+| [`launch`](#launch), [`SessionState`](#sessionstate), `isE2EError` | `@e2e-dev/core` |
+| [`createAgent`](#createagent), `defineTool` | `@e2e-dev/core/agent` |
+| `web` | `@e2e-dev/web/engine` |
+| `mobile` | `@e2e-dev/mobile/engine` |
+| `defineEngine` | `@e2e-dev/core/engine` |
+
+`@e2e-dev/core/lib/*` is private. Its modules can change in any release.
+
+### Launching
+
+| Function | Returns |
+| --- | --- |
+| [`launch`](#launch) | `Promise<Host>` |
+
+#### `launch`
+
+Prepares an engine and returns the host that opens sessions on it. The first
+launch of `web()` downloads a browser.
+
+```ts
+const shop = await launch(web(), {
+  app: { url: 'https://shop.example.com' },
+  timeout: 10_000,
+  artifactsDir: 'artifacts',
+});
+```
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`app`](#app) | `LaunchApp` | - |
+| `secrets` | `Record<string, string>` | - |
+| `headed` | `boolean` | `false` |
+| [`timeout`](#timeout) | `number` | per operation |
+| `signal` | `AbortSignal` | - |
+| `handleSignals` | `boolean` | `true` |
+| `artifactsDir` | `string` | a temp directory |
+| `cwd` | `string` | `process.cwd()` |
+| `env` | `NodeJS.ProcessEnv` | `process.env` |
+| `onNotice` | `(message: string) => void` | - |
+
+- `secrets`: values by name, 6 characters or more each. See
+  [Pass secrets](/core#pass-secrets).
+- `headed`: shows the browser window. A device ignores it.
+- `signal`: cancels the launch, and every session and operation on the host.
+- `handleSignals`: closes the host on SIGINT, SIGTERM, and SIGHUP, then lets
+  the signal end the program, unless the program listens for it itself.
+- `artifactsDir`: where screenshots, downloads, and recordings go, from
+  `cwd`. The default directory is deleted when the host closes.
+- `cwd`: what upload paths, `artifactsDir`, and an agent's cache directory
+  resolve from.
+- `onNotice`: progress outside operations, such as a browser download or a
+  device lease.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | The first argument is not an engine, or an option or `app` key is unknown. |
+| `INVALID_CONFIG` | The engine refuses the app: `web()` without `app.url`, `mobile()` without `app.bundleId` or `app.appPath`. |
+| `WORKER_PROTOCOL` | Another host owns this engine instance. Call the factory again: `launch(web())`. |
+
+<a id="app" />
+
+##### `app`
+
+What `app.open()` opens on a browser, or launches on a device.
+
+| Field | For | Meaning |
+| --- | --- | --- |
+| `url` | `web()` | The app's URL. `app.open(path)` resolves against it. |
+| `bundleId` | `mobile()` | The installed app to launch. |
+| `appPath` | `mobile()` | The app build the program runs against, a `.app` or an `.apk`. See [config](/reference/config#apppath). |
+| `linkBase` | `mobile()` | What `app.open(path)` joins the path to and opens as a link. See [config](/reference/config#linkbase). |
+| `identity` | both | The app's name for saved states and recordings. Default: the URL or the bundle id. |
+| `launchArguments` | `mobile()` | Arguments the app launches with. |
+| `permissions` | both | Permissions to grant or deny. |
+
+<a id="timeout" />
+
+##### `timeout`
+
+The default timeout of one operation, in milliseconds. Without it:
+
+| Operation | Default |
+| --- | --- |
+| An action, a wait, or a read | 30000 |
+| `app.open()`, `app.restart()`, `app.clearState()` | 120000 |
+| An agent step | 120000, or the call's own `timeout` |
+
+`timeout` sets the first two rows. There is no session deadline.
+
+### Host
+
+| Member | Returns |
+| --- | --- |
+| `platform` | `string` |
+| [`newSession`](#newsession) | `Promise<Session>` |
+| [`secret`](#secret) | `Secret` |
+| [`close`](#close) | `Promise<void>` |
+
+`platform` is `web`, `ios`, `android`, or a custom engine's own label.
+
+#### `newSession`
+
+Opens a session: one isolated browser context, or the app on the device. A
+host holds one session at a time.
+
+```ts
+const session = await shop.newSession({ state, signal: AbortSignal.timeout(60_000) });
+```
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `state` | [`SessionState`](#sessionstate) | - |
+| `signal` | `AbortSignal` | - |
+
+| Throws | When |
+| --- | --- |
+| `WORKER_PROTOCOL` | A session is open on the host, or the host is closed. |
+| `SESSION_MISMATCH` | `state` was saved on another engine, platform, or app. |
+| `SESSION_EXPIRED` | `state` is past its expiry. |
+
+#### `secret`
+
+Returns the handle of a secret passed to `launch`, for `fill` or an agent's
+params. An unknown name throws `SECRET_UNAVAILABLE`.
+
+```ts
+await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
+```
+
+#### `close`
+
+Closes the open session, then the engine. A second call does nothing. A host
+is also disposable: `await using` closes it. A cleanup that fails throws an
+`AggregateError` of the failures.
+
+### Session
+
+| Member | Returns |
+| --- | --- |
+| `screen` | [`Screen`](/reference/screen) |
+| `app` | [`App`](/reference/app) |
+| `platform` | `string` |
+| `browser` | [`Browser`](/reference/web), with `web()` |
+| `device` | [`Device`](/reference/mobile), with `mobile()` |
+| [`saveState`](#savestate) | `Promise<SessionState>` |
+| [`setDefaultTimeout`](#setdefaulttimeout) | `void` |
+| `close` | `Promise<void>` |
+
+`close` ends the session, as `await using` does. After it, every operation
+fails with `CANCELLED`.
+
+#### `saveState`
+
+Captures the session's cookies and storage in memory. An engine with no
+state to capture, such as `mobile()`, throws `UNSUPPORTED_CAPABILITY`.
+
+```ts
+const state = await session.saveState();
+```
+
+#### `setDefaultTimeout`
+
+Sets the default timeout of the operations that start from now on, in
+milliseconds: actions, waits, reads, and app opens and restarts.
+
+```ts
+session.setDefaultTimeout(5_000);
+```
+
+### SessionState
+
+| Member | Returns |
+| --- | --- |
+| `engine` | `string` |
+| `platform` | `string` |
+| [`export`](#export) | `Promise<Uint8Array>` |
+| [`SessionState.import`](#sessionstate-import) | `Promise<SessionState>` |
+
+#### `export`
+
+Encrypts the state with a 32-byte key (AES-256-GCM) into bytes you can
+write to disk. There is no plaintext export.
+
+```ts
+const bytes = await state.export({ key });
+```
+
+The bytes name the engine, the platform, and the names of the secrets in the
+clear. The cookies, the storage, and the secret values are encrypted.
+
+#### `SessionState.import`
+
+Decrypts bytes that `export` wrote.
+
+```ts
+const state = await SessionState.import(bytes, { key });
+```
+
+| Throws | When |
+| --- | --- |
+| `SESSION_INVALID` | Another key, a changed byte, or bytes that `export` did not write. |
+| `SESSION_EXPIRED` | The state is past its expiry. |
+| `INVALID_ARGUMENT` | The key is not 32 bytes. |
+
+### Agent
+
+| Function | Returns |
+| --- | --- |
+| [`createAgent`](#createagent) | an agent |
+
+#### `createAgent`
+
+Creates an agent over one session. `assert`, `waitFor`, and `extract` are
+the [agent fixture's](/reference/agent). `act` differs in one way: with
+`cache` it takes a `cacheKey`.
+
+```ts
+const agent = createAgent(session, {
+  model: gateway('anthropic/claude-sonnet-5-5'),
+  cache: { dir: '.shop-bot/cache' },
+});
+const step = await agent.act('Add the item to the cart', { cacheKey: 'add-to-cart' });
+```
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `model`, `judge`, `context`, and the rest | an [`agents` entry](/reference/config#agents) | - |
+| [`cache`](#cache) | `AgentCacheOptions` | no cache |
+
+<a id="cache" />
+
+##### `cache`
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `dir` | `string` | `.e2e/cache` |
+| `mode` | `'read-write' \| 'read-only'` | `'read-write'` |
+| `strict` | `boolean` | `false` |
+| `store` | [`CacheStore`](/cache) | the file store |
+
+With `cache`, each `act` passes `{ cacheKey: '<name>' }`, or `{ cache: false }`
+to run live. [Replay recorded steps](/core#replay-recorded-steps) says when a
+recording is saved.
+
+## Related
+
+- [@e2e-dev/core guide](/core)
+- [screen](/reference/screen), [app](/reference/app), and
+  [agent](/reference/agent): what a session and an agent hold.
+- [Errors](/reference/errors): every error code.
+- [Engines](/engines): write an engine of your own.

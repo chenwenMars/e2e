@@ -32,3 +32,4 @@ list its source below.
 - `kernel.svg`: the green KERNEL wordmark from https://www.kernel.sh/brand-assets,
   https://www.kernel.sh/rebrand/logos/logo-kernel-green.svg
 - `limrun.svg`: a copy of `docs/images/integrations/limrun.svg`
+- `vercel.svg`: a copy of `docs/images/integrations/vercel.svg`

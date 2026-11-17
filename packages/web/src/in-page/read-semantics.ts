@@ -394,13 +394,17 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * contribute once. `accessible` is set for an accessible name, which reads
    * CSS generated content (`::before`, `::after`) and an embedded control's
    * value as accname does, and unset for label text, which Playwright's
-   * `getByLabel` reads without either.
+   * `getByLabel` reads without either. `fromContent` is set while reading
+   * the content of an element accname names from content, where a
+   * descendant adds its own content only when its role allows it
+   * (`addsContentToName`).
    */
   interface NameWalk {
     readonly inReference: boolean;
     readonly hiddenAllowed: boolean;
     readonly visited: Set<Element>;
     readonly accessible: boolean;
+    readonly fromContent: boolean;
   }
 
   /** Computed style of any element, SVG included, or undefined in a document with no view. */
@@ -408,11 +412,12 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     el.ownerDocument.defaultView?.getComputedStyle(el);
 
   /** A walk from the top, with the elements that may not contribute again already visited. */
-  const nameWalk = (visited: readonly Element[], accessible: boolean): NameWalk => ({
+  const nameWalk = (visited: readonly Element[], accessible: boolean, fromContent = false): NameWalk => ({
     inReference: false,
     hiddenAllowed: false,
     visited: new Set(visited),
     accessible,
+    fromContent,
   });
 
   /**
@@ -565,6 +570,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
           hiddenAllowed: isReferenceHidden(target),
           visited: walk.visited,
           accessible: walk.accessible,
+          fromContent: false,
         }),
       );
     }
@@ -657,10 +663,48 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     const alternative = altOf(el) ?? svgTitleOf(el);
     if (alternative !== null) return alternative;
     if (NAME_OPAQUE_TAGS.has(el.tagName)) return '';
+    if (walk.fromContent && !addsContentToName(el)) return excludedDescendantNameOf(el, walk);
     const content = childrenNameOf(el, walk);
     if (content !== '') return content;
     const title = el.getAttribute('title');
     return title === null ? '' : title.trim();
+  };
+
+  /**
+   * True when a descendant adds its own content to a name from content, as
+   * Playwright's `allowsNameFromContent` reads it: no role, a role named from
+   * content, or a text or structure role. So a tree item holding its child
+   * `group` is named by its own label, and a tab by its text without its
+   * `status` badge.
+   */
+  const addsContentToName = (el: Element): boolean => {
+    const tag = el.tagName.toLowerCase();
+    const role = explicitRole(el) === null && tag in PLAYWRIGHT_TAG_ROLES ? PLAYWRIGHT_TAG_ROLES[tag] ?? null : implicitRole(el);
+    return role === null || ACCNAME_CONTENT_ROLES.has(role) || CONTENT_DESCENDANT_ROLES.has(role);
+  };
+
+  /**
+   * Tags whose role Playwright reads differently from `implicitRole` in a way
+   * that decides whether they add their content: an `<address>` has none, so
+   * its text counts, and a `<blockquote>`, `<math>`, or `<search>` has one
+   * that is not named from content.
+   */
+  const PLAYWRIGHT_TAG_ROLES: Readonly<Record<string, string | null>> = {
+    address: null,
+    blockquote: 'blockquote',
+    math: 'math',
+    search: 'search',
+  };
+
+  /**
+   * What a descendant that adds no content of its own adds to a name from
+   * content instead: a fieldset its legend, a figure its figcaption, read
+   * whole, and anything else its title.
+   */
+  const excludedDescendantNameOf = (el: Element, walk: NameWalk): string => {
+    const caption = namingChildOf(el);
+    if (caption !== undefined) return contentNameOf(caption, styleOf(caption), { ...walk, fromContent: false });
+    return el.getAttribute('title')?.trim() ?? '';
   };
 
   /**
@@ -722,21 +766,19 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * controls' values too, as an accessible name does and label text does not.
    * `named` is the element the text names when that is not `el` (a control
    * read through its `<label>`), which never contributes to its own name.
+   * `fromContent` when accname names `el` from its content, so each
+   * descendant's role decides whether its content counts.
    */
-  const nameTextOf = (el: Element, accessible: boolean, named: Element = el): string => {
+  const nameTextOf = (el: Element, accessible: boolean, named: Element = el, fromContent = false): string => {
     if (isNameHidden(el, styleOf(el))) return '';
     if (NAME_OPAQUE_TAGS.has(el.tagName)) return '';
-    return childrenNameOf(el, nameWalk([el, named], accessible)).replace(/\s+/g, ' ').trim();
+    return childrenNameOf(el, nameWalk([el, named], accessible, fromContent)).replace(/\s+/g, ' ').trim();
   };
 
   const NAME_OPAQUE_TAGS: ReadonlySet<string> = new Set(['TEXTAREA', 'SELECT', 'INPUT', 'SCRIPT', 'STYLE']);
 
-  /**
-   * Roles named from their content (accname 2F, the list Playwright's role
-   * selector uses), plus `listitem`, `status`, and `alert`, which the tree
-   * has always named so a list row or a message reads as one line.
-   */
-  const NAME_FROM_CONTENT_ROLES: ReadonlySet<string> = new Set([
+  /** Roles accname names from their content (2F), the list Playwright's role selector uses. */
+  const ACCNAME_CONTENT_ROLES: ReadonlySet<string> = new Set([
     'button',
     'cell',
     'checkbox',
@@ -755,13 +797,34 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     'tab',
     'tooltip',
     'treeitem',
-    'listitem',
-    'status',
-    'alert',
+  ]);
+
+  /**
+   * Roles named from their content: accname's, plus `listitem`, `status`,
+   * and `alert`, which the tree has always named so a list row or a message
+   * reads as one line.
+   */
+  const NAME_FROM_CONTENT_ROLES: ReadonlySet<string> = new Set([...ACCNAME_CONTENT_ROLES, 'listitem', 'status', 'alert']);
+
+  /**
+   * Text and structure roles whose content a descendant adds to a name from
+   * content, besides `ACCNAME_CONTENT_ROLES` (Playwright's
+   * `allowsNameFromContent`).
+   */
+  const CONTENT_DESCENDANT_ROLES: ReadonlySet<string> = new Set([
+    'caption', 'code', 'contentinfo', 'definition', 'deletion', 'emphasis', 'insertion', 'list', 'listitem',
+    'mark', 'none', 'paragraph', 'presentation', 'region', 'row', 'rowgroup', 'section', 'strong',
+    'subscript', 'superscript', 'table', 'term', 'time',
   ]);
 
   /** HTML-AAM: the child element that names its parent when nothing ARIA does. */
   const NAMING_CHILD_TAGS: Readonly<Record<string, string>> = { fieldset: 'legend', figure: 'figcaption', table: 'caption' };
+
+  /** The `<legend>`, `<figcaption>`, or `<caption>` child that names a fieldset, figure, or table (`NAMING_CHILD_TAGS`). */
+  const namingChildOf = (el: Element): Element | undefined => {
+    const captionTag = NAMING_CHILD_TAGS[el.tagName.toLowerCase()];
+    return captionTag === undefined ? undefined : Array.from(el.children).find((child) => child.tagName.toLowerCase() === captionTag);
+  };
 
   /** The `<label>` elements associated with a labelable element (button, input, meter, output, progress, select, textarea). */
   const associatedLabels = (el: Element): readonly HTMLLabelElement[] => {
@@ -926,12 +989,9 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     }
     const alternative = altOf(el) ?? (isPresentational(el) ? null : svgTitleOf(el));
     if (alternative !== null) return alternative;
-    const captionTag = NAMING_CHILD_TAGS[el.tagName.toLowerCase()];
-    if (captionTag !== undefined) {
-      const caption = Array.from(el.children).find((child) => child.tagName.toLowerCase() === captionTag);
-      const text = caption === undefined ? '' : nameTextOf(caption, true);
-      if (text !== '') return text;
-    }
+    const caption = namingChildOf(el);
+    const captionText = caption === undefined ? '' : nameTextOf(caption, true);
+    if (captionText !== '') return captionText;
     if (el instanceof HTMLInputElement && (el.type === 'button' || el.type === 'submit' || el.type === 'reset')) {
       if (el.value.trim() !== '') return el.value.trim();
       // HTML-AAM: a submit or reset button with no value reads its default label.
@@ -940,7 +1000,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     }
     const role = implicitRole(el);
     if (role !== null && NAME_FROM_CONTENT_ROLES.has(role)) {
-      const text = nameTextOf(el, true);
+      const text = nameTextOf(el, true, el, ACCNAME_CONTENT_ROLES.has(role));
       if (text !== '') return text;
     }
     const title = el.getAttribute('title');
@@ -1151,10 +1211,135 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * `interactivity: inert`, which follows the flat tree, so a light child
    * slotted into an inert slot of a closed root counts; the attribute covers a
    * browser that does not compute it. A modal dialog's inertness of the rest
-   * of the page is not in the style and stays listed.
+   * of the page is not in the style; the walk reads it from the dialog
+   * (`modalScopeOf`).
    */
   const isInert = (el: Element, style: CSSStyleDeclaration | undefined): boolean =>
     el.hasAttribute('inert') || style?.getPropertyValue('interactivity') === 'inert';
+
+  /**
+   * The order the context's init script saw each modal dialog shown in, when
+   * it ran in this document. Same literal as `MODAL_ORDER_KEY`; the reader
+   * cannot import it.
+   */
+  const modalOrder = (globalThis as Record<symbol, WeakMap<Element, number> | undefined>)[
+    Symbol.for('e2e.modalDialogOrder')
+  ];
+
+  /**
+   * Whether `el` is an open modal `<dialog>`. `dialog:modal`, not `:modal`,
+   * which a fullscreen element matches too; a browser that cannot parse the
+   * selector has no modal to read, rather than a reader that throws.
+   */
+  const isOpenModalDialog = (el: Element): boolean => {
+    if (el.localName !== 'dialog') return false;
+    try {
+      return el.matches('dialog:modal');
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Every open modal dialog under `root`, in tree order, through open and
+   * closed shadow roots alike: `querySelectorAll` stops at a shadow boundary,
+   * so each host's root is searched on its own.
+   */
+  const openModalDialogsIn = (root: Document | ShadowRoot, found: Element[] = []): Element[] => {
+    for (const el of Array.from(root.querySelectorAll('*'))) {
+      if (isOpenModalDialog(el)) found.push(el);
+      const shadow = shadowRootOf(el);
+      if (shadow !== null) openModalDialogsIn(shadow, found);
+    }
+    return found;
+  };
+
+  /**
+   * The slot an element is assigned to: `assignedSlot`, which a closed root
+   * hides from the outside, else the tracked closed root's own slots, read
+   * the way `contentChildrenOf` reads them.
+   */
+  const slotOf = (el: Element): Element | null => {
+    if (el.assignedSlot !== null) return el.assignedSlot;
+    const host = el.parentElement;
+    const shadow = host === null ? undefined : closedShadowRoots?.get(host);
+    if (shadow === undefined) return null;
+    for (const slot of Array.from(shadow.querySelectorAll('slot'))) {
+      if (slot.assignedElements().indexOf(el) !== -1) return slot;
+    }
+    return null;
+  };
+
+  /** An element's parent in the flat tree: its slot, the tree parent, or the host at a shadow root. */
+  const flatParentOf = memoized((el: Element): Element | null => slotOf(el) ?? parentOrHostOf(el));
+
+  /** Whether `el` is `container` or under it in the flat tree. */
+  const isInFlatTree = (el: Element, container: Element): boolean => {
+    for (let current: Element | null = el; current !== null; current = flatParentOf(current)) {
+      if (current === container) return true;
+    }
+    return false;
+  };
+
+  /**
+   * The modal dialog on top of several open ones, the only one left live: the
+   * innermost one holding focus, since `showModal()` moves focus into the
+   * dialog it shows and inert content cannot take focus back, and a modal
+   * nested in another leaves the outer one's own controls inert; else the
+   * one the init script saw shown last (`modalOrder`), for a page that
+   * blurred. Tree order alone is wrong: `showModal()` on a later dialog, then
+   * an earlier one, leaves the earlier one on top. When the record never saw
+   * one of them (opened by a `show-modal` command, or before the script ran),
+   * nothing tells which is on top, and none is picked: a guess can drop the
+   * one dialog that takes input, which is worse than listing the page.
+   */
+  const topModalOf = (dialogs: readonly Element[]): Element | undefined => {
+    if (dialogs.length <= 1) return dialogs[0];
+    const open = new Set(dialogs);
+    for (let current = focusedElement; current !== null; current = flatParentOf(current)) {
+      if (open.has(current)) return current;
+    }
+    let top: Element | undefined;
+    let topOrder = 0;
+    for (const dialog of dialogs) {
+      const order = modalOrder?.get(dialog);
+      if (order === undefined) return undefined;
+      if (order > topOrder) {
+        top = dialog;
+        topOrder = order;
+      }
+    }
+    return top;
+  };
+
+  /** What an open modal dialog leaves of the page for the walk (`modalScopeOf`). */
+  interface ModalScope {
+    /**
+     * Where an element sits: `inside` the dialog's flat tree, which stays
+     * live; an `ancestor` the dialog sits under, through shadow hosts, walked
+     * to reach it and never listed; or `outside`, which is inert.
+     */
+    readonly placeOf: (el: Element) => 'inside' | 'ancestor' | 'outside';
+  }
+
+  /**
+   * Everything outside the modal dialog on top is inert (HTML's "blocked by a
+   * modal dialog"), as Chrome's tree drops it, though it still paints: the
+   * page behind, a lower modal dialog, a popover opened outside the dialog,
+   * and a frame's whole document, which the engine then never enters. What
+   * stays is the dialog and its flat-tree descendants, light children slotted
+   * into it from outside its shadow root included. Its ancestors drop out of
+   * the tree too, but are walked, since the dialog and those slotted children
+   * are reached through them. Undefined when no modal dialog is open, or when
+   * none can be told to be on top (`topModalOf`).
+   */
+  const modalScopeOf = (doc: Document): ModalScope | undefined => {
+    const dialog = topModalOf(openModalDialogsIn(doc));
+    if (dialog === undefined) return undefined;
+    const ancestors = new Set<Element>();
+    for (let up = parentOrHostOf(dialog); up !== null; up = parentOrHostOf(up)) ancestors.add(up);
+    return { placeOf: (el) => (ancestors.has(el) ? 'ancestor' : isInFlatTree(el, dialog) ? 'inside' : 'outside') };
+  };
 
   /** A closed select has no option boxes; explicit exclusions still remove choices it does not offer. */
   const isOfferedOption = (option: HTMLOptionElement): boolean => {
@@ -1571,6 +1756,10 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     // this walk already pays one `getComputedStyle` per node.
     const style = styleOf(el);
     if (hidesSubtree(el, style)) return;
+    // Outside an open modal dialog everything is inert (`modalScopeOf`); the
+    // dialog's ancestors are walked to reach it and list nothing of their own.
+    const place = modal === undefined ? 'inside' : modal.placeOf(el);
+    if (place === 'outside') return;
     const hidden = isHidden(el, style);
     // The two elements listed by a rule of their own carry nothing a person
     // sees past their edges: a frame with no box shows none of its document,
@@ -1599,7 +1788,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     const drawnByLabel = hidden && isDrawnByLabel(el, style);
     // An empty painted rectangle carries no semantics to be "interesting" by and
     // is still something a person sees and aims at; `roleOf` names it `box`.
-    if ((!hidden || drawnByLabel) && (isInteresting(el) || isVisibleEmptyBox(el))) {
+    if (place !== 'ancestor' && (!hidden || drawnByLabel) && (isInteresting(el) || isVisibleEmptyBox(el))) {
       if (nodes.length >= maxNodes) {
         truncated = true;
         return;
@@ -1647,6 +1836,9 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     }
   };
 
+  // Read before the walk: the page behind a modal dialog comes first in tree
+  // order, and would otherwise spend the node budget the dialog needs.
+  const modal = modalScopeOf(element.ownerDocument);
   // The root is the document the screen shows, listed whatever its own box: a
   // page of fixed controls leaves `<html>` with no height of its own.
   nodes[include(element, -1)]!.states.hidden = false;

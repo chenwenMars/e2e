@@ -162,6 +162,23 @@ export interface AttemptSettlement {
    * exactly as they are, neither written nor evicted.
    */
   readonly implicatesUnconfirmed: boolean;
+  /**
+   * Failures the attempt went on after, which only a program without a test
+   * around it does: each settles the entries it found unconfirmed as that
+   * failure does, whatever passed later. Entries staged after it are judged
+   * by the checks that follow them.
+   */
+  readonly survived?: readonly SurvivedFailure[];
+}
+
+/** One failed step an attempt went on after, and the staged entries it found unconfirmed. */
+export interface SurvivedFailure {
+  /** The first step index no verification had confirmed when the step failed. */
+  readonly from: number;
+  /** The failed step's index, the last the failure covers. */
+  readonly through: number;
+  /** Whether the failure implicates those entries; see `AttemptSettlement.implicatesUnconfirmed`. */
+  readonly implicates: boolean;
 }
 
 /**
@@ -194,12 +211,13 @@ export async function settleStagedTraces(context: AgentCacheContext, settlement:
       continue;
     }
     if (settlement === undefined || context.mode !== 'read-write') continue;
-    const confirmed = entry.stepIndex < settlement.lastVerifiedStepIndex;
+    const failure = settlement.survived?.find((survived) => entry.stepIndex >= survived.from && entry.stepIndex <= survived.through);
+    const confirmed = failure === undefined && entry.stepIndex < settlement.lastVerifiedStepIndex;
     try {
       if (!confirmed) {
         // A kept entry existed for certain, so deleting it is an eviction; a
         // new recording's delete only clears what an earlier run may have left.
-        const deletes = settlement.implicatesUnconfirmed && context.store.delete !== undefined;
+        const deletes = (failure?.implicates ?? settlement.implicatesUnconfirmed) && context.store.delete !== undefined;
         const deleted = deletes && await context.store.delete!(entry.keyHash).then(() => true, () => false);
         outcomes.set(entry.stepIndex, entry.kind === 'keep' && deleted ? 'evicted' : 'unconfirmed');
         continue;

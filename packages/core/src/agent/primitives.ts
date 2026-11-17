@@ -238,6 +238,15 @@ interface GrammarToolSetup extends GrammarToolOptions {
    * mcp` sets it, the testing agent does not.
    */
   readonly saveScreenshot?: ((file: string) => Promise<string>) | undefined;
+  /**
+   * Offers `type_secret` on every step the surface can fill a secret on, with
+   * a description that names no secret, so every act step of a target sends
+   * the same tools and a provider's prompt cache serves them. The caller lists
+   * the step's secrets in its own message; a call on a step that declares none
+   * fails like any undeclared name. Without it the tool is offered only to a
+   * step that declares secrets, and its description names them.
+   */
+  readonly secretsListedByCaller?: boolean | undefined;
 }
 
 /**
@@ -648,14 +657,19 @@ export function grammarTools(
             ),
         });
   Object.assign(tools, createPointTools(context, { screen, inOrder, perform }));
-  // Offered only when the step declared secrets and the surface can fill: an
-  // empty vocabulary is better than a tool the model can only be rejected on.
-  if (verbs.has('typeSecret') && context.step.secrets.length > 0) {
+  // Offered only when the surface can fill, and otherwise only when the step
+  // declared secrets: an empty vocabulary is better than a tool the model can
+  // only be rejected on. A caller that lists the secrets itself takes the
+  // refusal for a tool set that stays the same across steps.
+  const secrets = context.step.secrets;
+  const listedByCaller = options.secretsListedByCaller === true;
+  if (verbs.has('typeSecret') && (listedByCaller || secrets.length > 0)) {
     tools['type_secret'] = screenTool({
       description:
-        'Fill one declared secret into an input by its name; the plaintext never passes through you. A password fills only a password field; a generic-secret fills any editable input. Available: ' +
-        context.step.secrets.map((secret) => `"${secret.name}" (${secret.purpose})`).join(', ') +
-        '.',
+        'Fill one declared secret into an input by its name; the plaintext never passes through you. A password fills only a password field; a generic-secret fills any editable input. ' +
+        (listedByCaller
+          ? 'The step message lists the secrets it declares.'
+          : `Available: ${secrets.map((secret) => `"${secret.name}" (${secret.purpose})`).join(', ')}.`),
       inputSchema: z.object({ target, name: z.string().min(1) }),
       execute: ({ target: id, name }) =>
         acting(

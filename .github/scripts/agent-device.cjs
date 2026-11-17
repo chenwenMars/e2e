@@ -17,7 +17,7 @@ if (mode === 'override') {
     fs.writeFileSync('package.json', `${JSON.stringify(manifest, null, 2)}\n`);
   }
 } else if (mode === 'verify') {
-  const args = manager === 'pnpm' ? ['list', '-r', '--depth', 'Infinity', '--json'] : ['ls', 'agent-device', '--all', '--json'];
+  const args = manager === 'pnpm' ? ['list', '-r', '--depth', 'Infinity', '--json'] : ['ls', '--all', '--json'];
   const graph = JSON.parse(execFileSync(manager, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
   let count = 0;
   /** Checks every occurrence, including nested copies and workspace links. */

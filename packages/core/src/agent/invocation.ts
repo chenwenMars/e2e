@@ -419,7 +419,7 @@ export class Invocation {
    * hung observation cannot consume the invocation's whole clock.
    */
   operation(): ReturnType<LocatorEngine['operation']> {
-    return boundedOperation(this.runtime.engine, this.runtime.config.actionTimeout, this.deadline);
+    return boundedOperation(this.runtime.engine, this.runtime.engine.actionTimeout, this.deadline);
   }
 
   /** Fails when the invocation deadline has elapsed (see checkStepClock). */

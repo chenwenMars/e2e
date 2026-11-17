@@ -14,13 +14,14 @@ import {
   asEngineError,
   ConfigurationError,
   E2EError,
+  isE2EError,
   TestError,
   translateEngineError,
   type ErrorDetails,
 } from '../internal/errors.ts';
 import { requireKey } from '../internal/keys.ts';
 import { describeExpression, expressionHints, filterSpine } from './expression.ts';
-import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, ReadWindow, sleep, stepTimeout } from '../internal/time.ts';
+import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, pollDelay, ReadWindow, sleep, stepTimeout } from '../internal/time.ts';
 import { timestamp } from '../internal/ids.ts';
 import { obj } from '../internal/objects.ts';
 import { targetLabel } from '../cache/trace.ts';
@@ -77,6 +78,12 @@ interface LocatorEngineOptions {
   readonly attemptId: string;
   readonly actionTimeout: number;
   readonly assertionTimeout: number;
+  /**
+   * How long an app open, restart, or link open may take, once a program has
+   * set a default timeout; absent in a run, where the test's timeout bounds
+   * them.
+   */
+  readonly lifecycleTimeout?: number;
   /** Records what an action did under the running step; omitted where no step records (`e2e mcp`). */
   readonly recordEvent?: (event: StepEvent) => void;
   /** Replaces secret values in text an event quotes from the screen, before it is clipped; identity when omitted. */
@@ -98,7 +105,21 @@ interface Resolved {
 
 /** Per-attempt locator execution engine. */
 export class LocatorEngine {
-  constructor(private readonly options: LocatorEngineOptions) {}
+  constructor(private options: LocatorEngineOptions) {}
+
+  /**
+   * Replaces the default timeouts of the operations that start from now on,
+   * for an `@e2e-dev/core` session's `setDefaultTimeout`. A running operation keeps
+   * the deadline it started with.
+   */
+  setDefaultTimeouts(timeouts: { readonly action: number; readonly assertion: number; readonly lifecycle: number }): void {
+    this.options = { ...this.options, actionTimeout: timeouts.action, assertionTimeout: timeouts.assertion, lifecycleTimeout: timeouts.lifecycle };
+  }
+
+  /** The default timeout of an app open, restart, or link open, when a program set one. */
+  get lifecycleTimeout(): number | undefined {
+    return this.options.lifecycleTimeout;
+  }
 
   get session(): TargetSession {
     return this.options.session;
@@ -111,6 +132,10 @@ export class LocatorEngine {
 
   get assertionTimeout(): number {
     return this.options.assertionTimeout;
+  }
+
+  get actionTimeout(): number {
+    return this.options.actionTimeout;
   }
 
   /** Records an event under the running step; a no-op where no step records. */
@@ -154,6 +179,9 @@ export class LocatorEngine {
 
   /** An operation context on `timeoutMs`, never under 1 ms: the budget a `ReadWindow` hands one read. */
   readOperation(timeoutMs: number): OperationContext {
+    // A phase that ended for a reason of its own (a closed session, a deadline) starts nothing more, and the reason is the error:
+    // an engine handed the aborted signal would answer with a bare cancellation.
+    if (this.signal.aborted && isE2EError(this.signal.reason)) throw this.signal.reason;
     return {
       signal: this.signal,
       timeoutMs: Math.max(1, timeoutMs),
@@ -214,6 +242,7 @@ export class LocatorEngine {
     missingFrame: MissingFrame = 'wait',
   ): Promise<readonly NodeRef[]> {
     let retried: unknown;
+    const startedMs = Date.now();
     for (;;) {
       try {
         return await reads.read((timeoutMs) => this.session.locate(expression, this.readOperation(timeoutMs)));
@@ -225,7 +254,7 @@ export class LocatorEngine {
           if (missingFrame === 'empty' && engineError.code === 'FRAME_NOT_FOUND') return [];
           if (!reads.deadline.expired()) {
             retried = cause;
-            await sleep(POLL_INTERVAL_MS, this.signal);
+            await sleep(pollDelay(Date.now() - startedMs), this.signal);
             continue;
           }
         }
@@ -272,7 +301,7 @@ if (sampled && reads.cutOff(cause)) throw await notFound(cause);
       const ref = await this.singleOf(refs, expression);
       if (ref !== null) return { ref, waitedMs: rounds > 1 ? Date.now() - startedMs : 0 };
       if (deadline.expired()) throw await notFound();
-      await sleep(POLL_INTERVAL_MS, this.signal);
+      await sleep(pollDelay(Date.now() - startedMs), this.signal);
     }
   }
 
@@ -496,6 +525,7 @@ const ref = await this.singleOf(await this.resolveOnce(expression, reads, missin
         ...(cause === undefined ? {} : { cause }),
       });
     const reads = this.reads(deadline);
+    const pollStartedMs = Date.now();
     let sampled = false;
     for (;;) {
       let node: SemanticNode | null;
@@ -512,7 +542,7 @@ const ref = await this.singleOf(await this.resolveOnce(expression, reads, missin
         return;
       }
       if (deadline.expired()) throw notVisible();
-      await sleep(POLL_INTERVAL_MS, this.signal);
+      await sleep(pollDelay(Date.now() - pollStartedMs), this.signal);
     }
   }
 

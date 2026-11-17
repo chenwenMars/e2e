@@ -57,7 +57,7 @@ import {
   beforeEach,
   describe,
 } from '../../src/index.ts';
-import type { Engine, EngineAttemptContext, EngineCleanupContext, EngineDisposeContext, EngineHandle, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
+import type { Engine, EngineAttemptContext, EngineCleanupContext, EngineDisposeContext, EngineFixtureContext, EngineHandle, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
 import {
   BASE_RULES,
   createGrammarTools,
@@ -77,6 +77,12 @@ import { chatgpt } from '../../src/oauth/chatgpt.ts';
 import { copilot } from '../../src/oauth/copilot.ts';
 import { grok } from '../../src/oauth/grok.ts';
 import { opencodeConsole } from '../../src/oauth/opencode-console.ts';
+import {
+  createAgent as createCoreAgent, type CacheStore as CoreCacheStore, type CreateAgentOptions, type StepExecutor as CoreStepExecutor, type UncheckedAgent,
+} from '@e2e-dev/core/agent';
+import { launch, SessionState, type Host, type Session } from '@e2e-dev/core';
+import { engineBrand, expectationBrand, locatorBrand, secretBrand } from '@e2e-dev/core/lib/internal/brands';
+import { defineEngine } from '../../src/engine/index.ts';
 // @ts-expect-error isDefinedTool left e2e/agent: config loading checks each tools entry itself
 import { isDefinedTool } from '../../src/agent/public.ts';
 // @ts-expect-error createAgent left e2e/agent: an agents entry is the plain object it took
@@ -1050,3 +1056,65 @@ void ({ ...protocolManifest, methods: ['engine/teleport'] } satisfies EngineMani
 void connectEngine({ manifest: protocolManifest, transport: socketTransport({ host: '127.0.0.1', port: 7000 }), initializationOptions: { onReady: () => {} } });
 
 await agent.assert('all settings are reachable', { explore: true, maxSteps: 10, maxModelCalls: 6, vision: 'only' });
+
+// @e2e-dev/core: an engine handle types the fixtures its sessions hold.
+interface Gadget { poke(label: string): Promise<void> }
+declare function createGadget(context: EngineFixtureContext): Gadget;
+const gadgetEngine = defineEngine<{ readonly gadget: Gadget }>({ name: 'gadget', version: '1.0.0', spiVersion: 1, fixtures: { gadget: createGadget } });
+// @ts-expect-error a fixture the engine names needs a factory in its fixtures
+defineEngine<{ readonly gadget: Gadget }>({ name: 'gadget', version: '1.0.0', spiVersion: 1 });
+// @ts-expect-error each factory returns the fixture the engine names
+defineEngine<{ readonly gadget: Gadget }>({ name: 'gadget', version: '1.0.0', spiVersion: 1, fixtures: { gadget: () => ({ poke: 'no' }) } });
+// @ts-expect-error a union of fixture sets needs the factories of one of them
+defineEngine<{ readonly gadget: Gadget } | { readonly widget: Gadget }>({ name: 'gadget', version: '1.0.0', spiVersion: 1 });
+void defineEngine<{ readonly gadget: Gadget } | { readonly widget: Gadget }>({ name: 'gadget', version: '1.0.0', spiVersion: 1, fixtures: { gadget: createGadget } });
+// Narrowing a fixture every session holds needs no factory.
+void defineEngine<{ readonly app: App & { readonly baseUrl: string } }>({ name: 'site', version: '1.0.0', spiVersion: 1 });
+void (gadgetEngine satisfies EngineHandle);
+const gadgetHost = await launch(gadgetEngine);
+void (gadgetHost satisfies Host<{ readonly gadget: Gadget }>);
+const gadgetSession = await gadgetHost.newSession();
+await gadgetSession.gadget.poke('typed without an argument');
+void (gadgetSession.screen satisfies Screen);
+// @ts-expect-error a session holds no agent: @e2e-dev/core/agent creates one over it
+void gadgetSession.agent;
+const plainSession: Session = gadgetSession;
+// @ts-expect-error a session typed by no engine holds only screen, app, and platform
+void plainSession.gadget;
+// @ts-expect-error saved state leaves only encrypted, under a key
+void (await gadgetSession.saveState()).data;
+await SessionState.import(new Uint8Array(), { key: new Uint8Array(32) });
+// @ts-expect-error a state key is bytes, never a passphrase
+await SessionState.import(new Uint8Array(), { key: 'passphrase' });
+// A brand's key is typed by its name, never `unique symbol`: a project that updates `e2e` or an engine alone holds two
+// copies of @e2e-dev/core, and their branded types (an engine handle, a locator under `expect`) must still agree.
+void (engineBrand satisfies 'e2e.engine.v1');
+void (expectationBrand satisfies 'e2e.expectation.v1');
+void (locatorBrand satisfies 'e2e.locator');
+void (secretBrand satisfies 'e2e.secret');
+// @e2e-dev/core/agent: an agent with a cache names every act's recording.
+const cachingAgent = createCoreAgent(gadgetSession, { cache: { dir: '.e2e/cache' } });
+void ((await cachingAgent.act('checkout', { cacheKey: 'checkout' })).summary satisfies string);
+await cachingAgent.act('look around', { cache: false });
+// @ts-expect-error an agent with a cache names the recording each act replays
+await cachingAgent.act('checkout');
+// @ts-expect-error a recording key and a live run are exclusive
+await cachingAgent.act('checkout', { cacheKey: 'checkout', cache: false });
+const liveAgent = createCoreAgent(gadgetSession, {});
+await liveAgent.act('checkout');
+// @ts-expect-error an @e2e-dev/core agent takes no agent name: create another agent instead
+await liveAgent.act('checkout', { agent: 'other' });
+// Options held in a variable hide the cache from the compiler: act takes either form, and the runtime refuses the wrong one.
+declare const heldAgentOptions: CreateAgentOptions;
+const uncheckedAgent = createCoreAgent(gadgetSession, heldAgentOptions);
+void (uncheckedAgent satisfies UncheckedAgent);
+await uncheckedAgent.act('checkout', { cacheKey: 'checkout' });
+await uncheckedAgent.act('checkout');
+// @ts-expect-error an agent is created over a session, not a host
+createCoreAgent(gadgetHost, {});
+// @ts-expect-error nor over any object
+createCoreAgent({}, {});
+// A custom executor and a custom store are typed from the agent entry alone.
+declare const coreExecutor: CoreStepExecutor;
+declare const coreStore: CoreCacheStore;
+void createCoreAgent(gadgetSession, { executor: coreExecutor, cache: { store: coreStore } });

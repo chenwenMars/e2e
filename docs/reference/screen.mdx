@@ -124,7 +124,10 @@ Names follow the same rules:
   item, option, checkbox, radio, switch, cell, row or column header, row, tree
   item, tooltip) takes its name from its descendants, a custom element's
   shadow tree included. So `getByRole('checkbox', { name })` and
-  `toHaveAccessibleName(name)` agree on a `<div role="checkbox">`.
+  `toHaveAccessibleName(name)` agree on a `<div role="checkbox">`. A
+  descendant with a role of its own that is not text or structure (a `status`
+  badge, a tree item's child `group`, an `img`) adds only its label or
+  `title`: a tab holding `Inbox <span role="status">3</span>` is `Inbox`.
 - An `<input type="submit">` or `type="reset"` with no `value` reads `Submit`
   or `Reset`.
 

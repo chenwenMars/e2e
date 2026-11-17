@@ -394,7 +394,8 @@ function readCost(metadata: Readonly<Record<string, Readonly<Record<string, unkn
 /** A token count: plain under a thousand, then `12.4k`, then `4.2M`. */
 function formatTokens(count: number): string {
   if (count < 1_000) return `${count}`;
-  if (count < 1_000_000) return `${(count / 1_000).toFixed(1)}k`;
+  const hundreds = Math.round(count / 100);
+  if (hundreds < 10_000) return `${(hundreds / 10).toFixed(1)}k`;
   return `${(count / 1_000_000).toFixed(1)}M`;
 }
 /** USD with enough precision for sub-cent calls; `<$0.0001` for a cost that would round to nothing. */

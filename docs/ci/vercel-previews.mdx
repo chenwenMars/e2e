@@ -1,0 +1,256 @@
+---
+title: Vercel Previews
+description: Test Vercel preview and production deployments with GitHub Actions, and hold production releases until e2e passes.
+---
+
+import { SetupPrompt } from '../snippets/setup-prompt-card.jsx';
+import { Video } from '../snippets/video.jsx';
+
+export const setupPrompt = `Run this project's e2e tests against Vercel deployments. Docs: \`https://e2e.com/docs/ci/vercel-previews.md\`
+
+1. Read the page and adapt its config to this app's local command, URL, and model provider.
+2. Add the repository_dispatch workflow for vercel.deployment.ready. Keep the deployed commit checkout and environment-specific status.
+3. Ask me to enable Vercel repository dispatch events and store the automation bypass secret and model key in GitHub.
+4. Explain that the workflow must reach the default branch before Vercel can trigger it.
+5. After I deploy, inspect the workflow result and fix errors until the suite passes. Then guide me through adding the e2e - production Deployment Check.`;
+
+[Vercel](https://vercel.com) gives each app deployment its own URL.
+GitHub Actions runs e2e against it. A
+[Deployment Check](https://vercel.com/docs/deployment-checks) holds the
+production release until the tests pass.
+
+See the [e2e-vercel example](https://github.com/e2e-inc/e2e-vercel) for a
+Next.js app with locator and agent tests.
+
+<Video>
+  <video src="/images/vercel-previews.mp4" aria-label="A pull request that crashes the greeting form fails its e2e check on the Vercel preview. The pull request comment shows the agent's failed steps and the app's uncaught error, and the recorded video shows the crash." muted loop playsInline controls />
+
+  e2e fails a broken pull request on its Vercel preview. The comment comes from the [GitHub reporter](#post-results-on-the-pull-request).
+</Video>
+
+<SetupPrompt>
+
+<Prompt description={setupPrompt} children={setupPrompt} actions={["copy", "cursor"]} />
+
+</SetupPrompt>
+
+## Set up manually
+
+Start with a [web suite](/web) and a Vercel project connected to its GitHub
+repository. The workflow below uses npm and a committed `package-lock.json`.
+
+### Configure the deployment URL
+
+Read `APP_URL` to test a deployment. Without it, this config starts your
+local app. Adapt the command and port:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { gateway } from 'ai';
+
+const appUrl = process.env.APP_URL;
+const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+
+export default {
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast') } },
+  targets: [
+    {
+      engine: web(bypassSecret ? { headers: { 'x-vercel-protection-bypass': bypassSecret } } : {}),
+      app: {
+        identity: 'my-app',
+        environment: process.env.DEPLOYMENT_ENVIRONMENT === 'production' ? 'production' : 'test',
+        ...(appUrl
+          ? { url: appUrl }
+          : {
+              url: 'http://localhost:3000',
+              command: { executable: 'npm', args: ['run', 'dev'], reuseExisting: true },
+            }),
+      },
+    },
+  ],
+} satisfies E2EConfig;
+```
+
+Use `app.open('/')` in tests so navigation follows the configured URL.
+
+### Enable events and deployment access
+
+In your Vercel project's **Settings → Git**, enable
+[`repository_dispatch` events](https://vercel.com/docs/git/vercel-for-github#repository-dispatch-events).
+Under **Settings → Deployment Protection**, create a
+[Protection Bypass for Automation](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
+secret. The config sends it as the `x-vercel-protection-bypass` header.
+
+In GitHub's **Settings → Secrets and variables → Actions**, add:
+
+| Secret | Used for |
+| --- | --- |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | Opening protected preview and unreleased production deployments |
+| `AI_GATEWAY_API_KEY` | Model calls with the config above; locator-only suites need none |
+
+<Note>
+The example explicitly skips agent tests when no model credential is set.
+e2e does not skip them automatically. Give CI the key to run the whole suite.
+</Note>
+
+### Add the workflow
+
+Use `vercel.deployment.ready`, which fires after the build and before
+Deployment Checks. Set `APP_URL` to the event's deployment URL so tests
+reach the build awaiting promotion.
+
+```yaml title=".github/workflows/e2e.yml" expandable
+name: e2e
+
+on:
+  repository_dispatch:
+    types: [vercel.deployment.ready]
+
+run-name: e2e - ${{ github.event.client_payload.environment }} - ${{ github.event.client_payload.git.shortSha }}
+
+permissions:
+  contents: read
+  actions: read
+  statuses: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: vercel/repository-dispatch/actions/status@30f760c6640485cd92f8c785ef361382555fb712 # v1
+        with:
+          name: e2e - ${{ github.event.client_payload.environment }}
+      - uses: vercel/repository-dispatch/actions/checkout@30f760c6640485cd92f8c785ef361382555fb712 # v1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+      - run: npx e2e-web install chromium --with-deps
+
+      - name: Run e2e against the deployment
+        run: npx e2e run --reporter list,junit --video on
+        env:
+          APP_URL: ${{ github.event.client_payload.url }}
+          DEPLOYMENT_ENVIRONMENT: ${{ github.event.client_payload.environment }}
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+      - name: Upload the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-report-${{ github.event.client_payload.environment }}
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+            .e2e/results
+          if-no-files-found: warn
+          retention-days: 7
+```
+
+Vercel's checkout action selects the deployed commit. Its status action
+reports the job result on that commit. Separate `e2e - preview` and `e2e - production`
+statuses prevent one environment's result from overwriting the other's.
+
+<Note>
+Put the workflow on the default branch before testing a deployment.
+Workflow edits on a pull request do not change the workflow Vercel triggers.
+</Note>
+
+Run this workflow only for trusted deployment code. It installs and runs
+that commit with repository secrets and a write token. See
+[Model credentials](/ci#model-credentials).
+
+### Gate production on the result
+
+After the first production run, open Vercel's
+**Settings → Build and Deployment → Deployment Checks**.
+Select **Add Checks**, choose **GitHub**, and select `e2e - production`.
+
+Future production builds wait for the check before Vercel assigns their
+production domains. A failing check leaves the previous deployment live.
+Keep the status name in Vercel and the workflow identical. See
+[Deployment Checks](https://vercel.com/docs/deployment-checks#adding-github-checks).
+
+## Reuse agent recordings
+
+Commit [`.e2e/cache`](/cache#commit-the-replay-cache) to replay recorded
+`agent.act` steps in CI. The config's fixed `app.identity` and `test`
+environment let local and preview runs share recordings across URLs.
+Production uses its own cache entries because its environment differs.
+
+CI reads recordings by default and calls the model on a cache miss.
+`agent.assert`, `agent.waitFor`, and `agent.extract` always run live, so
+recordings do not remove the need for a model key.
+
+## Post results on the pull request
+
+The dispatch payload has no pull request number. Look it up from the
+deployed commit for the [`@e2e-dev/github` reporter](/github).
+
+<Accordion title="Add pull request comments to the workflow">
+
+Follow the reporter's [setup](/github#setup) to install `@e2e-dev/github`
+and add `github()` to your config's `reporters`. The CLI's
+`--reporter list,junit` keeps custom reporters enabled.
+
+Add `pull-requests: write` to the workflow permissions. Insert this step
+before **Run e2e against the deployment**:
+
+```yaml
+      - name: Find the pull request
+        id: pull-request
+        run: |
+          number=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" \
+            --jq '[.[] | select(.state == "open")][0].number // empty')
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.client_payload.git.sha }}
+```
+
+Replace the run step. The temporary event file gives the reporter the
+pull request number and deployed commit for its source links:
+
+```yaml
+      - name: Run e2e against the deployment
+        run: |
+          export GITHUB_SHA="$SHA"
+          if [ -n "$PULL_REQUEST" ]; then
+            jq -n --argjson number "$PULL_REQUEST" --arg sha "$SHA" \
+              '{pull_request: {number: $number, head: {sha: $sha}}}' > "$RUNNER_TEMP/pull-request.json"
+            export GITHUB_EVENT_PATH="$RUNNER_TEMP/pull-request.json"
+          fi
+          npx e2e run --reporter list,junit --video on
+        env:
+          PULL_REQUEST: ${{ steps.pull-request.outputs.number }}
+          SHA: ${{ github.event.client_payload.git.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          APP_URL: ${{ github.event.client_payload.url }}
+          DEPLOYMENT_ENVIRONMENT: ${{ github.event.client_payload.environment }}
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+```
+
+The reporter updates one comment on reruns and writes the job summary.
+Without an open pull request, it writes only the summary.
+
+</Accordion>
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Pull request comments" icon="code-pull-request" href="/github">
+    Read failures, screenshots, and traces from the pull request.
+  </Card>
+  <Card title="Continuous integration" icon="rotate" href="/ci">
+    CI defaults, artifacts, and model credentials.
+  </Card>
+</CardGroup>
