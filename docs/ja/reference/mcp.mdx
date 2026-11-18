@@ -273,7 +273,7 @@ call {tool: "run_code", args: {code: "await screen.getByLabel('Email').fill('ada
 | 引数 | 文字列、数値、真偽値、`null`、正規表現、`${}` のないテンプレート、配列、オブジェクト、ロケーター、`credentials.user(name).username` |
 | シークレット | `fill` の値としてのみ、`credentials.user(name).password` または `secrets.get(name)` |
 
-対象外は、エンジンが提供するフィクスチャ（`browser`、`device`）、`expect(screen)`、`toHaveScreenshot`、`app.screenshot`、`screen.debug`、`all`、`setInputFiles`、値のマッチャー（`toBe`、`toEqual`）です。
+対象外は、エンジンが提供する組み込みフィクスチャ（`browser`、`device`）、`expect(screen)`、`toHaveScreenshot`、`app.screenshot`、`screen.debug`、`all`、`setInputFiles`、値のマッチャー（`toBe`、`toEqual`）です。
 
 | 投げるエラー | 発生条件 |
 | --- | --- |
@@ -312,7 +312,7 @@ Test line: await screen.getByRole("button", "Sign in").tap();
 | ノードへの `scroll_to` | `scrollIntoView()` |
 | `navigate`、`back` | `app.open(url)`。アプリのオリジン上の URL はパスで表します。戻る操作は `app.back()` |
 
-行を生成しない操作は、対象のない `type` または `press`、`times` が 1 を超える `press`、`scroll`、テキストへの `scroll_to`、`dismiss_keyboard`、`resize_viewport`（サイズはエンジンのフィクスチャで設定します。Web では `browser.setViewport`）、`switch_tab` と `close_tab`（Web では `browser.tabs()[tab - 1].activate()` と `.close()`）、ノードがキーボード経由で受け取った `type` です。[座標ツール](#point-tools)も行を出力しません。
+行を生成しない操作は、対象のない `type` または `press`、`times` が 1 を超える `press`、`scroll`、テキストへの `scroll_to`、`dismiss_keyboard`、`resize_viewport`（サイズはエンジンの組み込みフィクスチャで設定します。Web では `browser.setViewport`）、`switch_tab` と `close_tab`（Web では `browser.tabs()[tab - 1].activate()` と `.close()`）、ノードがキーボード経由で受け取った `type` です。[座標ツール](#point-tools)も行を出力しません。
 
 #### `screenshot`
 

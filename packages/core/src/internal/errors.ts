@@ -471,18 +471,42 @@ function isDetails(value: unknown): value is ErrorDetails {
   );
 }
 
-/** Details as the report carries them: text redacted, sanitized, and bounded, empty text dropped, nothing when nothing is left. */
-function boundedDetails(details: ErrorDetails, redact: (text: string) => string): ErrorDetails | undefined {
-  const bounded: Record<string, string | number> = {};
+/** `details` with each text field passed through `rewrite`, an empty result dropped; the counts as they were. */
+function mapDetailText(details: ErrorDetails, rewrite: (text: string) => string): ErrorDetails {
+  const mapped: { -readonly [Key in keyof ErrorDetails]: ErrorDetails[Key] } = {};
   for (const key of DETAIL_TEXT_KEYS) {
-    const text = details[key];
-    if (text !== undefined && text !== '') bounded[key] = truncateUtf8(sanitizeRecordedText(redact(text)), MAX_DETAIL_BYTES);
+    const text = details[key] === undefined ? '' : rewrite(details[key]);
+    if (text !== '') mapped[key] = text;
   }
   for (const key of DETAIL_NUMBER_KEYS) {
     const count = details[key];
-    if (count !== undefined && Number.isFinite(count)) bounded[key] = count;
+    if (count !== undefined && Number.isFinite(count)) mapped[key] = count;
   }
-  return Object.keys(bounded).length === 0 ? undefined : (bounded as ErrorDetails);
+  return mapped;
+}
+
+/** Replaces secret values in the text fields of the details `error` carries, for an error a program catches itself. */
+export function redactErrorDetails(error: Error & { details?: unknown }, redact: (text: string) => string): void {
+  if (error.details === undefined) return;
+  // Details of a shape this copy cannot read cannot be redacted either, so they do not stay.
+  if (isDetails(error.details)) error.details = mapDetailText(error.details, redact);
+  else delete error.details;
+}
+
+/** A serialized error with `redact` run over its message, details, and stack: what a record taken from another session's is put through. */
+export function redactSerializedError(error: SerializedError, redact: (text: string) => string): SerializedError {
+  return {
+    ...error,
+    message: redact(error.message),
+    ...(error.details === undefined ? {} : { details: mapDetailText(error.details, redact) }),
+    ...(error.stack === undefined ? {} : { stack: redact(error.stack) }),
+  };
+}
+
+/** Details as the report carries them: text redacted, sanitized, and bounded, empty text dropped, nothing when nothing is left. */
+function boundedDetails(details: ErrorDetails, redact: (text: string) => string): ErrorDetails | undefined {
+  const bounded = mapDetailText(details, (text) => truncateUtf8(sanitizeRecordedText(redact(text)), MAX_DETAIL_BYTES));
+  return Object.keys(bounded).length === 0 ? undefined : bounded;
 }
 
 /** C0/C1 control characters except tab and newline. */

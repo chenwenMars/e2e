@@ -558,6 +558,16 @@ function unfinishedMarkerBefore(text: string, cut: number, maxMarkerLength: numb
   return MARKER_NAME.test(text.slice(open + MARKER_OPEN.length, cut)) ? open : cut;
 }
 
+/** An append-only list of secret names and values. */
+export type SecretList = readonly (readonly [string, string])[];
+
+/** Values a ledger redacts without holding them; see `SecretLedger`. */
+export interface SecretsBeside {
+  /** Moves whenever `values` would return a different set. */
+  readonly revision: number;
+  values(): SecretList;
+}
+
 /**
  * The attempt's registered secret values and their redactor, in one owner.
  *
@@ -575,25 +585,38 @@ export class SecretLedger {
    */
   private readonly values: [string, string][] = [];
   private compiled: Compiled | undefined;
+  /** The revision `beside` had when `compiled` was built. */
+  private besideRevision = -1;
 
-  constructor(initial: Iterable<readonly [string, string]> = []) {
+  /**
+   * `beside` names values the ledger redacts and does not hold: what other
+   * owners in the process share (`run/secrecy.ts`). They are read again
+   * whenever its revision moves, so a value is redacted from the moment it is
+   * shared and no longer once its owner is gone. `entries` stays the
+   * ledger's own.
+   */
+  constructor(
+    initial: Iterable<readonly [string, string]> = [],
+    private readonly beside?: SecretsBeside,
+  ) {
     for (const [name, value] of initial) this.register(name, value);
   }
 
-  /** Registers one resolved value; earlier values for the name keep redacting. */
-  register(name: string, value: string): void {
-    if (this.values.some(([n, v]) => n === name && v === value)) return;
+  /** Registers one resolved value, and says whether it was new; earlier values for the name keep redacting. */
+  register(name: string, value: string): boolean {
+    if (this.values.some(([n, v]) => n === name && v === value)) return false;
     this.values.push([name, value]);
     this.compiled = undefined;
+    return true;
+  }
+
+  /** Whether the ledger redacts anything at all, its own values or the ones beside it. */
+  get redactsAnything(): boolean {
+    return this.compile().pattern !== undefined;
   }
 
   /** Bound so it can be handed out as a plain function. */
   readonly redact = (text: string): string => this.compile().redact(text);
-
-  /** Whether no value is registered, so there is nothing to redact. */
-  get isEmpty(): boolean {
-    return this.values.length === 0;
-  }
 
   /** Every registered name and value, in registration order. */
   entries(): readonly (readonly [string, string])[] {
@@ -667,7 +690,14 @@ export class SecretLedger {
   }
 
   private compile(): Compiled {
-    this.compiled ??= compile(this.values);
+    const revision = this.beside?.revision ?? 0;
+    if (this.compiled === undefined || revision !== this.besideRevision) {
+      this.besideRevision = revision;
+      // A value the ledger holds is usually shared beside it too; one alternative each is enough.
+      const all = new Map<string, readonly [string, string]>();
+      for (const entry of [...this.values, ...(this.beside?.values() ?? [])]) all.set(`${entry[0]}\0${entry[1]}`, entry);
+      this.compiled = compile([...all.values()]);
+    }
     return this.compiled;
   }
 }

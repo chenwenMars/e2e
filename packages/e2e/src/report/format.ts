@@ -19,6 +19,15 @@ export const F_POINTER = '❯';
 export const F_CHECK = '✓';
 export const F_CROSS = '×';
 
+/**
+ * A step's call under the session it ran on when that is not the test's
+ * own, `launch-1 › locator.tap`: how the terminal and the trace page list
+ * such a step. `actor` and `call` come already escaped for the format.
+ */
+export function withActor(actor: string | undefined, call: string): string {
+  return actor === undefined ? call : `${actor} › ${call}`;
+}
+
 /** Every untrusted field is capped here before it reaches the terminal. */
 const MAX_FIELD_BYTES = 8192;
 const LONG_DASH = '⎯';

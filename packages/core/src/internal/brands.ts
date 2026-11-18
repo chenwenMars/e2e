@@ -29,3 +29,7 @@ export const expectationBrand = brand('e2e.expectation.v1');
 export const attemptBrand: unique symbol = Symbol.for('e2e.attempt.v1');
 /** Slot on `globalThis` holding the runner's view of which phase owns an `expect.poll`. */
 export const pollScopesBrand: unique symbol = Symbol.for('e2e.pollScopes.v1');
+/** Slot on `globalThis` holding the secret values the sessions open in the process share. */
+export const sharedSecretsBrand: unique symbol = Symbol.for('e2e.sharedSecrets.v1');
+/** Slot on `globalThis` holding the rejections of steps already failed as not awaited. */
+export const abandonedRejectionsBrand: unique symbol = Symbol.for('e2e.abandonedRejections.v1');

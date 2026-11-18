@@ -132,6 +132,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | Detox | e2e |
 | --- | --- |
 | `device.launchApp({ newInstance: true })` | `app.restart()` |
+| `beforeAll` 内の `device.launchApp()` | `beforeAll` 内の `app.open()`。`beforeAll` は `device`、`app`、`screen` を受け取る |
 | `device.launchApp({ newInstance: false })` | `relaunch` なしの `device.openApp(id)` |
 | `device.launchApp({ launchArgs, permissions })` | `device.openApp(id, { relaunch: true, launchArguments, permissions })` |
 | `device.resetAppState()` | `app.clearState()` |
@@ -153,7 +154,6 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 
 | Detox | 現在使える方法 |
 | --- | --- |
-| アプリを起動する `beforeAll` | `beforeEach` 内の `app.open()` |
 | `artifacts.plugins.log`, `--record-logs` | CI ステップで `adb logcat` または `xcrun simctl spawn booted log stream` |
 | `by.id('x').and(by.text('y'))` | `.filter({ hasText })`、または `device.locator('id=x label="y"')` |
 | `system.element(by.system.label('Allow'))` | `device.alert('accept' \| 'dismiss')`、またはプロンプトを出さないための `app.permissions` |
@@ -188,7 +188,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `device.reloadReactNative()` | `app.restart()`。リロードにはアプリ内の Detox フレームワークが必要 |
 | `device.disableSynchronization()`, `enableSynchronization()` | 呼び出しを削除。無効にする同期処理はありません |
 | `device.setURLBlacklist()` | 呼び出しを削除。ネットワーク通信が操作をブロックすることはありません |
-| 初期化時のインストール、`behavior.init.reinstallApp`、`--reuse` | フィクスチャ内の `device.installApp()` |
+| 初期化時のインストール、`behavior.init.reinstallApp`、`--reuse` | `auto: true` を付けたワーカーフィクスチャ内の `device.installApp()` |
 | `apps.<name>.build`, `detox build` | `e2e run` の前に通常のビルドを実行 |
 | 正確な移動量を指定する `.scroll()` | `screen.swipe({ from, to })` |
 | `by.type('RCTImageView')` | `device.locator('role=image')`、または `testID` |

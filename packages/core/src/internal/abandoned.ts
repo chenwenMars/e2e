@@ -5,15 +5,32 @@
  * passed or the run was forced to stop.
  */
 
+import { abandonedRejectionsBrand } from './brands.ts';
+import { realmSlot } from './realm-slot.ts';
+
 /** Whether the process stopped waiting for work that may still hold it open. */
 let workLeftBehind = false;
 
-/** What abandoned work rejected with. The promise the test holds rejects with the same value, and nobody awaits it. */
-const ABANDONED_REJECTIONS = new WeakSet<object>();
+const abandonedSlot = realmSlot<WeakSet<object>>(abandonedRejectionsBrand);
+
+/**
+ * What abandoned work rejected with. The promise the test holds rejects with
+ * the same value, and nobody awaits it. Held on `globalThis`: the step may
+ * be one of a `launch()` session from another copy of this package than the
+ * runner's, which is the copy that meets the rejection.
+ */
+function abandonedRejections(): WeakSet<object> {
+  let known = abandonedSlot.get(globalThis);
+  if (known === undefined) {
+    known = new WeakSet();
+    abandonedSlot.set(globalThis, known);
+  }
+  return known;
+}
 
 /** Records `cause` as the rejection of work already failed as not awaited. */
 export function markAbandonedRejection(cause: unknown): void {
-  if (typeof cause === 'object' && cause !== null) ABANDONED_REJECTIONS.add(cause);
+  if (typeof cause === 'object' && cause !== null) abandonedRejections().add(cause);
 }
 
 /**
@@ -22,7 +39,7 @@ export function markAbandonedRejection(cause: unknown): void {
  * test did not await rejected with it. Such a rejection is not a fault.
  */
 export function isAbandonedRejection(cause: unknown): boolean {
-  return typeof cause === 'object' && cause !== null && ABANDONED_REJECTIONS.has(cause);
+  return typeof cause === 'object' && cause !== null && abandonedRejections().has(cause);
 }
 
 /** Points `error` at the frames of `stack`, keeping its own name and message as the first line. */

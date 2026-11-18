@@ -32,7 +32,7 @@ test('checkout summary', async ({ screen }) => {
 
 `expect` は、渡された引数の種類に応じて使うマッチャーを決めます。
 
-- エンジンのフィクスチャは、`expect(browser).toHaveURL()` のようなマッチャーを提供できます。そのフィクスチャは `Expectable<E>` です。エンジンが [`expectable`](/reference/engine#contributed-fixtures) を通じてマッチャー群 `E` を付けており、`expect(fixture)` はそれを返します。
+- エンジンが提供する組み込みフィクスチャは、`expect(browser).toHaveURL()` のようなマッチャーを提供できます。そのフィクスチャは `Expectable<E>` です。エンジンが [`expectable`](/reference/engine#contributed-fixtures) を通じてマッチャー群 `E` を付けており、`expect(fixture)` はそれを返します。
 - それ以外の引数には、Promise も含めて値のマッチャーを使います。Promise の結果を検証するには、先に await してから `expect` に渡してください。
 
 宣言は[型](#types)にあります。

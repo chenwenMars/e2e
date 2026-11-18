@@ -11,16 +11,17 @@
  * quota is used up, the review goes on with openai/gpt-6-luna on the Vercel
  * AI Gateway, or skips with a warning without AI_GATEWAY_API_KEY.
  *
- * Sections pair by position, which holds because `check-docs-translations.ts`
- * keeps a translation's outline equal to its English page's; a page whose
- * outline differs is skipped here and fails there.
+ * Sections pair by position, which holds only while a translation keeps its
+ * English page's outline. Translations are best effort and may lag behind,
+ * so a page whose outline differs is skipped here with a notice;
+ * `check-docs-translations.ts` warns about it.
  *
  * The docs workflow's `translations` job runs it on pull requests that touch the docs.
  *
  * Usage: `node scripts/check-docs-translations-deepl.ts [--base <ref>] [--report <file>]`.
  * With `--base`, only the sections whose English or Japanese text differs
  * from `<ref>` are sent to DeepL, so an English edit that leaves its
- * translation stale is checked too. Without it every section is sent: about
+ * translation stale is checked too, unless it changed the outline. Without it every section is sent: about
  * a million characters for the whole docs, twice the Free plan's month.
  * `--report` also writes every reviewed section, with DeepL's versions and
  * the scores, to `<file>` as JSON.

@@ -91,8 +91,10 @@ function AttemptPanel({ attempt, model, prompt, platform }: { attempt: AttemptVi
   );
   const portrait = isPortrait(shape);
 
-  // The step the video is showing: the last one that started at or before the playhead.
-  const playingStep = playhead === undefined ? undefined : attempt.steps.findLast((step) => Date.parse(step.startedAt) <= playhead);
+  // The step the video is showing: the last one of the recording's session that started at or before the playhead.
+  const playingActor = videos[videoIndex]?.artifact.actor;
+  const playingStep =
+    playhead === undefined ? undefined : attempt.steps.findLast((step) => step.actor === playingActor && Date.parse(step.startedAt) <= playhead);
 
   const seek = (step: Step) => {
     const position = videoPosition(step, videos);
@@ -224,6 +226,8 @@ const PHASE_HINT: Record<NonNullable<Step['phase']>, string> = {
   afterEach: 'Ran in an afterEach hook, after the test body.',
 };
 
+const ACTOR_HINT = "Ran on a session the test opened beside its own with launch(), not on the test's own.";
+
 function StepRow({
   step,
   attempt,
@@ -275,6 +279,7 @@ function StepRow({
           <span className="type-code-s shrink-0 text-shade-400">{step.api}</span>
           <span className="type-body-s min-w-0 truncate">{step.label}</span>
         </button>
+        {step.actor === undefined ? null : <Tag hint={ACTOR_HINT}>{step.actor}</Tag>}
         {step.phase === undefined ? null : <Tag hint={PHASE_HINT[step.phase]}>{step.phase}</Tag>}
         {step.cache === undefined ? null : (
           <Tag tone={step.cache.mode === 'missed' ? undefined : 'mint'} hint={CACHE_HINT[step.cache.mode]}>
@@ -391,9 +396,11 @@ function FailureEvidence({ attempt, model }: { attempt: AttemptView; model: Repo
   const find = (id: string | undefined) => (id === undefined ? undefined : attempt.artifacts.find((artifact) => artifact.id === id));
   const screenshot = find(failure.screenshot);
   const screen = find(failure.screen);
+  // A failure on a session beside the test's own is shown with the test's own screen, the one the runner can read.
+  const onOtherSession = attempt.steps.findLast((step) => step.status === 'failed')?.actor !== undefined;
   return (
     <section aria-label="At failure" className="flex flex-col gap-e2e-1">
-      <h2 className="type-caption text-shade-500">at failure</h2>
+      <h2 className="type-caption text-shade-500">{onOtherSession ? "the test's own session at failure" : 'at failure'}</h2>
       {failure.url === undefined ? null : <span className="type-code-s truncate text-shade-300">{failure.url}</span>}
       {screenshot === undefined ? null : <Screenshot artifact={screenshot} model={model} />}
       {screen === undefined ? null : <ArtifactLink artifact={screen} model={model} label={`screen at failure${failure.nodes === undefined ? '' : ` (${failure.nodes} nodes)`}`} />}

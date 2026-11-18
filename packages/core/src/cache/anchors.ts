@@ -188,13 +188,15 @@ const VOLATILE_TEXT: readonly RegExp[] = [
  * CJK counts put the counter word right after the digits (`42件`), with no
  * word boundary or space for the English patterns to match. As in English,
  * the counter has to end the word: after it comes the end, a non-letter, a
- * particle (の, 中, 의), or a "records"/"results" noun. A counter that starts
+ * particle (の, を, が, 의, 이, 는, ...), or a "records"/"results" noun. `で`
+ * is left out, since `3行で書く` is not a count, and a Korean particle only
+ * counts when no Hangul follows it (`2024 개도국` is a word). A counter that starts
  * a longer word (`3个月`, `2024 개발자`) or an ordinal (`第3条`) is not a count.
  */
 const COUNT_TEXT: readonly RegExp[] = [
   /\b\d+\s*(?:to|-|\u2013)\s*\d+\s+of\s+\d+\b/i,
   /\b\d+\s+(?:results?|items?|rows?|entries|records?|matches|total)\b/i,
-  /(?<!第\s*)\b\d+\s*(?:件|個|个|項目?|项目?|条|筆|笔|行|개|건|행)(?=$|[^\p{L}]|[の中의]|记录|記錄|記録|结果|結果)/u,
+  /(?<!第\s*)\b\d+\s*(?:件|個|个|項目?|项目?|条|筆|笔|行|개|건|행)(?=$|[^\p{L}]|[の中をがはも]|[의이가을를은는도](?![가-힣])|记录|記錄|記録|结果|結果)/u,
 ];
 
 /**

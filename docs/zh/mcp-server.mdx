@@ -60,6 +60,18 @@ description: 让编码智能体使用你的应用，并检查自己的工作。
     }
     ```
   </Tab>
+  <Tab title="OpenCode">
+    将服务器添加到项目的 `opencode.json`。在项目中运行 `opencode mcp list`，会显示它已连接：
+
+    ```json title="opencode.json"
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "e2e": { "type": "local", "command": ["npx", "e2e", "mcp"] }
+      }
+    }
+    ```
+  </Tab>
 </Tabs>
 
 如果测试目标配置了应用命令，会话会启动它，并通过 URL 和端口标识它。配置读取的是服务器的环境，不是智能体 Shell 的环境。

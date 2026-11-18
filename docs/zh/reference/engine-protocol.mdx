@@ -164,6 +164,8 @@ export interface EngineManifest {
   /** Required with `engine/performAt`. */
   readonly pointerActions?: readonly PointerActionKind[];
   readonly tapModifiers?: boolean;
+  /** See `Engine.isolation`; left out for `attempt`. */
+  readonly isolation?: 'worker';
 }
 ```
 

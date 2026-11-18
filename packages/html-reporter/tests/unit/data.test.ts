@@ -1,6 +1,6 @@
 import type { Report } from 'e2e';
 import { describe, expect, it } from 'vitest';
-import { buildModel, formatDuration, formatTokens } from '../../app/data.ts';
+import { buildModel, formatDuration, formatTokens, onTarget, selectedTarget, statusTabs, timedVideos, videoName, videoPosition, type Artifact, type Step } from '../../app/data.ts';
 import fixture from '../../../e2e/schema/fixtures/report-v1.valid.json' with { type: 'json' };
 
 // The page's own tsconfig checks this file: the model it tests reads the DOM.
@@ -60,5 +60,92 @@ describe('formatTokens', () => {
     expect(formatTokens(999_949)).toBe('999.9k');
     expect(formatTokens(999_950)).toBe('1.0M');
     expect(formatTokens(2_500_000)).toBe('2.5M');
+  });
+});
+
+describe('onTarget', () => {
+  const [first, second] = REPORT.run.results;
+  const split = [
+    { ...first!, targetId: 'web' },
+    { ...second!, targetId: 'mobile' },
+    { ...first!, targetId: 'web' },
+  ];
+
+  it('answers every result when no target is named, as the same list', () => {
+    expect(onTarget(split, undefined)).toBe(split);
+  });
+
+  it('keeps only the results that ran on the named target', () => {
+    expect(onTarget(split, 'mobile').map((result) => result.targetId)).toEqual(['mobile']);
+    expect(onTarget(split, 'web')).toHaveLength(2);
+  });
+
+  it('answers none for a target the run did not select', () => {
+    expect(onTarget(split, 'tablet')).toEqual([]);
+  });
+});
+
+describe('selectedTarget', () => {
+  const two = new Set(['web', 'mobile']);
+  const one = new Set(['web']);
+
+  it('answers the target a multi-target run carries', () => {
+    expect(selectedTarget(two, 'mobile')).toBe('mobile');
+  });
+
+  it('answers none for a target the run did not carry, or for no value at all', () => {
+    expect(selectedTarget(two, 'tablet')).toBeUndefined();
+    expect(selectedTarget(two, null)).toBeUndefined();
+    expect(selectedTarget(two, undefined)).toBeUndefined();
+  });
+
+  it('answers none on a single-target run, which renders no tab that could clear the choice', () => {
+    expect(selectedTarget(one, 'web')).toBeUndefined();
+  });
+});
+
+describe('statusTabs', () => {
+  const counts = { all: 3, failed: 0, flaky: 0, passed: 2, skipped: 1, interrupted: 0 };
+
+  it('keeps every status with results, in tab order, with all first', () => {
+    expect(statusTabs(counts, 'all')).toEqual(['all', 'passed', 'skipped']);
+  });
+
+  it('keeps the active tab even at 0, so a filter never strands itself', () => {
+    expect(statusTabs(counts, 'failed')).toEqual(['all', 'failed', 'passed', 'skipped']);
+  });
+});
+
+describe('videos of a test that drove a second session', () => {
+  const at = (seconds: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
+  const video = (id: string, startedAt: string, actor?: string): Artifact => ({
+    id, kind: 'video', mediaType: 'video/webm', path: `t/attempt-1/video/${id}.webm`, startedAt,
+    redaction: 'incomplete', producer: { kind: 'attempt' }, ...(actor === undefined ? {} : { actor }),
+  });
+  const step = (startedAt: string, actor?: string): Step => ({ startedAt, ...(actor === undefined ? {} : { actor }) }) as Step;
+  // The test's own video in two parts, and the session's video recorded while the first part ran.
+  const videos = timedVideos([video('video', at(0)), video('launch-1', at(2), 'launch-1'), video('video-part2', at(10))], { mode: 'link', base: 'results' });
+
+  it('ends each recording where the next of its own session begins', () => {
+    expect(videos.map((each) => [each.artifact.id, each.endsAt])).toEqual([
+      ['video', Date.parse(at(10))],
+      ['launch-1', Infinity],
+      ['video-part2', Infinity],
+    ]);
+  });
+
+  it('places a step in the recording of the session it ran on', () => {
+    expect(videoPosition(step(at(5)), videos)).toEqual({ video: 0, seconds: 5 });
+    expect(videoPosition(step(at(5), 'launch-1'), videos)).toEqual({ video: 1, seconds: 3 });
+    expect(videoPosition(step(at(12)), videos)).toEqual({ video: 2, seconds: 2 });
+    // Before its session's recording began, at that recording's start; a session with no recording, nowhere.
+    expect(videoPosition(step(at(1), 'launch-1'), videos)).toEqual({ video: 1, seconds: 0 });
+    expect(videoPosition(step(at(5), 'launch-2'), videos)).toBeUndefined();
+  });
+
+  it('names each recording by its session, and the test\'s own parts by number', () => {
+    expect(videos.map((each) => videoName(each, videos))).toEqual(['test part 1', 'launch-1', 'test part 2']);
+    const alone = timedVideos([video('video', at(0)), video('video-part2', at(10))], { mode: 'link', base: 'results' });
+    expect(alone.map((each) => videoName(each, alone))).toEqual(['part 1', 'part 2']);
   });
 });

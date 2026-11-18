@@ -4,6 +4,10 @@ The Simplified Chinese translation of the e2e docs. The site serves each page he
 `/docs/zh/<path>`; a page without a translation shows the English page with a
 notice. English stays the source of truth.
 
+This translation is best effort. English changes don't wait for it, so a page
+here can lag behind its English page until someone who reads Chinese updates
+it. `pnpm docs:check` lists every page and label that is behind as a warning.
+
 ## Layout
 
 - `docs/zh/<path>.mdx` translates `docs/<path>.mdx`: same path, same file name.
@@ -23,19 +27,21 @@ notice. English stays the source of truth.
    the same `<Tab>` and `<Accordion>` elements in the same order, and every
    `id="..."`. The site gives a translated heading the English heading's id
    by position, so links and the language switcher land on the same section.
-   `pnpm docs:check` (`scripts/check-docs-translations.ts`) fails when the
+   `pnpm docs:check` (`scripts/check-docs-translations.ts`) warns when the
    outline drifts.
 3. Leave code alone: code blocks, inline code, fence titles, URLs, link
    targets and their `#anchors` stay exactly as on the English page.
-   `pnpm docs:check` fails when a code block differs. Links
+   `pnpm docs:check` warns when a code block differs. Links
    stay docs-root relative (`/quickstart#install`); the site points them at
    the Simplified Chinese pages.
 4. Snippet imports sit one folder deeper: `./snippets/x.jsx` becomes
    `../snippets/x.jsx`.
 
-When an English change adds or removes a heading, tab, or accordion, make the
-same change here. An English placeholder heading is fine until someone
-translates it; deleting the translated page falls back to English.
+When you update a page, bring its outline, code, and labels in line with the
+English page, including changes English made since. An English placeholder
+heading is fine until someone translates it; deleting the translated page
+falls back to English. When an English page moves or is deleted, its
+translation moves or goes with it in the same change.
 
 ## Style
 

@@ -251,6 +251,7 @@
                 "kind": "agent",
                 "api": "agent.assert",
                 "label": "the result is visible",
+                "actor": "launch-1",
                 "source": {
                   "file": "tests/example.e2e.ts",
                   "line": 3,
@@ -306,6 +307,7 @@
                 "mediaType": "video/mp4",
                 "url": "https://recordings.example.com/sessions/abc/replay.mp4",
                 "startedAt": "2026-07-24T12:00:00.000Z",
+                "actor": "launch-1",
                 "redaction": "incomplete",
                 "producer": {
                   "kind": "attempt"

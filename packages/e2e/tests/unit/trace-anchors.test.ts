@@ -258,6 +258,24 @@ describe('describeDelta', () => {
     ['41行', '42行'],
     ['41행', '42행'],
     ['41 개의 상품', '42 개의 상품'],
+    ['41件 表示中', '42件 表示中'],
+    ['全41件中', '全42件中'],
+    ['41件の結果', '42件の結果'],
+    ['共 41 条结果', '共 42 条结果'],
+    ['41件記録しました', '42件記録しました'],
+    ['共 41 筆結果', '共 42 筆結果'],
+    ['41筆記錄', '42筆記錄'],
+    ['41件を表示', '42件を表示'],
+    ['41件が見つかりました', '42件が見つかりました'],
+    ['41件は削除済み', '42件は削除済み'],
+    ['41件も', '42件も'],
+    ['41건이 검색되었습니다', '42건이 검색되었습니다'],
+    ['41개가 있습니다', '42개가 있습니다'],
+    ['41건을 처리했습니다', '42건을 처리했습니다'],
+    ['41개를 선택', '42개를 선택'],
+    ['41건은 처리되었습니다', '42건은 처리되었습니다'],
+    ['41개는 품절', '42개는 품절'],
+    ['41건도 확인', '42건도 확인'],
   ])('reads %s becoming %s, a count with a CJK counter, the way it reads an English one', (from, to) => {
     const before = nodes([heading, node('c0', { text: from })]);
     const after = nodes([heading, node('c1', { text: to }), node('n', { text: 'Item added' })]);
@@ -303,6 +321,8 @@ describe('describeDelta', () => {
     '2025건강검진',
     '2024개발자',
     '3개국어',
+    '3行で書く',
+    '2024 개도국 지원',
   ])('keeps %s on a screen the step navigated to, since the digits are not a count', (text) => {
     const opened = nodes([heading, node('p', { text }), node('n', { text: 'インポートしたレコード' })]);
     expect(describeDelta(nodes([heading]), opened, true).appeared).toEqual([{ text }, { text: 'インポートしたレコード' }]);

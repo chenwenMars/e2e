@@ -267,6 +267,9 @@ describe('renderMarkdownReport', () => {
     // A step that is not the agent's reads as the one call it was.
     const single = named({ title: 'one', status: 'failed', attempts: [attempt({ status: 'failed', error: { code: 'E', message: 'm' }, steps: [step({ index: 0, label: 'only', status: 'failed', error: reportError({ code: 'E', message: 'm' }) })] })] });
     expect(renderMarkdownReport(page({ status: 'failed', results: [single] }))).toContain('**E** at step 1 of 1: `screen.tap only`, after 900ms');
+    // A step of a session the test opened beside its own says whose it is.
+    const guest = named({ title: 'two', status: 'failed', attempts: [attempt({ status: 'failed', error: { code: 'E', message: 'm' }, steps: [step({ index: 0, label: 'only', actor: 'launch-1', status: 'failed', error: reportError({ code: 'E', message: 'm' }) })] })] });
+    expect(renderMarkdownReport(page({ status: 'failed', results: [guest] }))).toContain('**E** at step 1 of 1 on launch-1: `screen.tap only`, after 900ms');
   });
 
   it('names the step whose error ended the test, not an earlier failure the test caught and went on from', () => {

@@ -69,7 +69,7 @@ test('rejects a wrong password', async ({ app, signInPage }) => {
 
 `screen` だけを使うページオブジェクトは、Web とモバイルの両方のターゲットで動きます。`browser`（キーボード、CSS セレクター、`evaluate`）や `device` が必要な場合は、そのプラットフォームだけで動きます。
 
-フィクスチャが `browser` または `device` を参照すると、その `test` の全テストがそれを必要とします。他のターゲットでは、`beforeEach` で `UNSUPPORTED_CAPABILITY` により失敗します。そこでスキップするには、テストに `requires: ['browser']` を指定します。または、プラットフォーム共通のテストには基本の `test` を使い続けてください。
+フィクスチャが `browser` または `device` を指定すると、そのフィクスチャを使うすべてのテストがそれを必要とします。他のターゲットでは、実行が収集時に `COLLECTION_ERROR` で失敗します。そこでスキップするには、該当するテストに `requires: ['browser']` を指定します。そのフィクスチャを指定しないテストは、プラットフォームを問わず実行できます。
 
 ## エージェントの目標を組み込む
 

@@ -195,6 +195,8 @@ export interface ReportStep {
   kind: StepRecord['kind'];
   api: string;
   label: string;
+  /** The session the step ran on when it is not the test's own: one the test opened with `launch()`. */
+  actor?: string | undefined;
   source: ReportSource;
   status: StepRecord['status'];
   startedAt: string;

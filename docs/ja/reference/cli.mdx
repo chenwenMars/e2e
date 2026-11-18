@@ -65,6 +65,7 @@ $ npx e2e --version
 | [`e2e list`](#e2e-list) | 実行で選択されるテストを表示します |
 | [`e2e doctor`](#e2e-doctor) | 実行を開始できるか確認します |
 | [`e2e cache`](#e2e-cache) | リプレイキャッシュを調べるか消去します |
+| [`e2e report`](#e2e-report) | HTML レポートをブラウザーで開きます |
 | [`e2e upgrade`](#e2e-upgrade) | e2e と関連パッケージを更新します |
 | [`e2e feedback`](#e2e-feedback) | e2e チームにフィードバックを送ります |
 | [`e2e telemetry`](#e2e-telemetry) | 利用状況テレメトリーの表示・切り替えを行います |
@@ -523,7 +524,7 @@ e2e run [files...]
 
 | オプション | 説明 |
 | --- | --- |
-| `--reporter <ids>` | `config.reporters` の組み込み ID を置き換えます。`list`、`json`、`junit`、`markdown` をカンマ区切りで指定します。デフォルトは設定値です。`json` と `list` の併用は `INVALID_CONFIG` です。設定内の[レポーターオブジェクト](/reference/reporters)は引き続き実行します。 |
+| `--reporter <ids>` | `config.reporters` の組み込み ID を置き換えます。`list`、`dot`、`json`、`junit`、`markdown` をカンマ区切りで指定します。デフォルトは設定値です。`json` または `dot` と `list` の併用は `INVALID_CONFIG` です。設定内の[レポーターオブジェクト](/reference/reporters)は引き続き実行します。 |
 | `--output <dir>` | 設定の [`output`](/reference/config#output) より優先する、この実行の結果ディレクトリです。レポート、レポーターのファイル、AI トレース、`results/`、`sessions/` を含みます。デフォルトは設定値、なければ `.e2e` です。プロジェクトルートから解決し、その内側のディレクトリである必要があります。ルート自体や、実行が所有できないその他のディレクトリ（リンク先に一覧）は `INVALID_CONFIG` です。テスト開始時に `results/` を消去しますが、`--last-failed` の再実行では前回のレポートが参照するものを残します。 |
 | `--cache-dir <dir>` | [`E2E_CACHE_DIR`](/reference/environment#replay-cache) と [`cache.dir`](/reference/config#cache) より優先する、この実行のリプレイキャッシュディレクトリです。デフォルトは `E2E_CACHE_DIR`、次に `cache.dir`、なければ `.e2e/cache` です。プロジェクトルートから解決し、`~` または先頭の `~/` はホームディレクトリです。キャッシュモードは設定のままです。カスタムの `cache.store` との併用は `INVALID_CONFIG` です。 |
 | `--timings <file>` | 実行終了時に更新する[所要時間の履歴](/ci#cache-the-timings-history)です。`<output>/timings.json` より優先します。複数ワーカーでは、時間の記録がないファイルを先に、残りを所要時間の長い順に開始します。プロジェクトルートから解決します。ファイルがない、または不正な場合は履歴なしとして扱い、エラーにはしません。 |
@@ -586,6 +587,7 @@ $ npx e2e run --debug
 | レポーター | 出力内容 |
 | --- | --- |
 | `list` | ターミナルの進捗、周辺コード付きの失敗、実行サマリーです。TTY では現在のエージェントステップ、モデルのターン、ツール呼び出し、推論の抜粋をリアルタイムに表示します。stdout がターミナルでなければ（パイプ、リダイレクト、多くの CI）、各テストの完了時に表示します。最後に、失敗した各テストのファイルと行、エラーの最初の行、作成済みならトレースページを示します。信頼できないフィールドは 8 KiB に制限し、制御文字を除きます。 |
+| `dot` | 選択した各テストの結果を 1 文字で表示し、その後に失敗の詳細と実行サマリーを表示します。記号、色、改行については [`dot`](/reference/reporters#dot) を参照してください。`dot,json` では、ターミナル向けの出力をすべて stderr に送ります。 |
 | `json` | stdout にレポートドキュメントだけを出すため、`e2e run --reporter json \| jq` を使えます。内容は `<output>/report.json` と同じで、パッケージの `schema/report-v1.schema.json` に定義されています。形式の変更は `schemaVersion` フィールドの変更時だけです（現在は `report-1`）。 |
 | `junit` | レポートと同じ場所の `junit.xml` です。ファイルごとに 1 つの `<testsuite>`、テストとターゲットの組ごとに `title > path [target]` という名前の `<testcase>` を作ります。test 分類のエラーは `<failure>`、それ以外は `<error>`、スキップは理由付きの `<skipped>` です。中断したテストには判定がないため、メッセージが `interrupted:` で始まる `<skipped>` にします。[テストフィルター](/filters)が除外したテストは、`left out by filter <name>:` で始まる `<skipped>` です。それ以外の未選択テストは載せません。実行全体のエラーは `run` スイートにまとめます。 |
 | `markdown` | レポートと同じ場所の `summary.md` です。件数、コスト、エラー、失敗の詳細を載せ、トレースページを残したものにはそのパスを示します。探索実行では発見事項を表示します。[`@e2e-dev/github`](/github) はこのサマリーをプルリクエストのコメントに使います。 |
@@ -598,7 +600,7 @@ $ npx e2e run --debug
 
 テスト開始前に停止した実行は、これらを何も書かず、前回のファイルを残します。設定や収集のエラー、`NO_TESTS`、`NO_LAST_RUN`、`UNSUPPORTED_ARTIFACT`、アプリコマンドの起動失敗、中断が該当します。エラーはターミナルと終了コードで示します。`junit.xml` または `summary.md` の書き込み失敗は stderr の 1 行で示し、実行エラーにはしません。
 
-`list` レポーターは実行エラーを `Run Errors` の下に表示します。`list` がなければ、`json` の場合も含め、各エラーを stderr に `CODE: message` として表示します。
+`list` と `dot` レポーターは実行エラーを `Run Errors` の下に表示します。どちらもなければ、`json` の場合も含め、各エラーを stderr に `CODE: message` として表示します。
 
 レポートの `run.summary` は結果を集計します。
 
@@ -1063,6 +1065,38 @@ E2E_TELEMETRY_DEBUG=1 bunx e2e run
 - `E2E_TELEMETRY_DISABLED=1` と `DO_NOT_TRACK=1` は、ファイルを変更せずにテレメトリーを無効にします。
 - `E2E_TELEMETRY_DEBUG=1` は、すべてのイベントを stderr に表示し、何も送りません。
 - マシン上の最初のコマンドで、`e2e init` と `e2e telemetry` を除き、通知を 1 回表示します。CI では何も表示せず、ファイルも書きません。
+
+#### `e2e report`
+
+[`htmlReporter()`](/reference/reporters#htmlreporter) が書き出した HTML レポートを既定のブラウザーで開きます（デフォルトは `<output>/report.html`）。読み取れるレポートファイルが見つからない場合、または `[path]` と `--output` の両方が渡された場合は終了コード `2` で終了します。
+
+<CodeGroup>
+```bash npm
+npx e2e report
+npx e2e report out/custom.html
+npx e2e report --output out
+```
+
+```bash pnpm
+pnpm exec e2e report
+pnpm exec e2e report out/custom.html
+pnpm exec e2e report --output out
+```
+
+```bash bun
+bunx e2e report
+bunx e2e report out/custom.html
+bunx e2e report --output out
+```
+</CodeGroup>
+
+| 引数またはフラグ | 説明 |
+| --- | --- |
+| `[path]` | HTML ファイルまたは `report.html` を含むディレクトリ（デフォルト: `<output>/report.html`、`--output` とは併用不可） |
+| `--config <path>` | 設定ファイル（デフォルト: 最も近い `e2e.config.ts`、`.mts`、`.js`、`.mjs`） |
+| `--output <dir>` | `report.html` がある結果ディレクトリ（デフォルト: 設定の `output`、なければ `.e2e`） |
+
+- [`htmlReporter({ outputFile })`](/reference/reporters#htmlreporter) で別の場所に書き出した場合は、そのパスを `[path]` として渡してください。`e2e report` は `<output>/report.html` のみを探します。
 
 ## 終了コード
 

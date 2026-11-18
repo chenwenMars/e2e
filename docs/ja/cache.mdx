@@ -254,6 +254,7 @@ CI=1 bunx e2e run --strict-cache
 | `invalid-entry`、`wrong-context`、`target-not-found`、`target-ambiguous`、`viewport-changed`、`action-failed`、`action-uncertain`、`end-mismatch`: アプリまたはエントリーが変わった | 一度も記録されていないステップ（新規または編集済みの指示やパラメーター） |
 | `no-entry`: キャッシュディレクトリに同じステップの記録が別のキーで存在する場合 | `gap` または `truncated` の記録 |
 | | ストアの読み取りが失敗したステップ |
+| | テストの `report.json` の `testId`、ターゲット名、エージェント名のいずれかが 300 文字を超えるステップで、以前の `e2e` バージョンが別のキーで記録し、その後このバージョンの `read-write` の実行で再生されていないもの |
 
 別のキーの記録は、キーを変える `e2e` のアップグレード、プロジェクト ID、アプリの識別情報、エージェントのコンテキストの変更などで生じます。メッセージにはそのファイルと、現行バージョンで作られた記録なら変更点も示されます。何も再生しなくなったファイルは削除してください。この検査は、独自の `cache.store` には適用されません。
 

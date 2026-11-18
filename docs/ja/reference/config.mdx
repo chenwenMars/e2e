@@ -210,6 +210,7 @@ reporters: ['list', 'junit'], // default: ['list']
 | 値 | 動作 |
 | --- | --- |
 | `'list'` | ターミナルに進捗、失敗、実行サマリーを表示します。 |
+| `'dot'` | ターミナルに簡潔な進捗、失敗、実行サマリーを表示します。`list` とは排他で、併用すると `INVALID_CONFIG` です。 |
 | `'junit'` | `<output>/junit.xml` に書き込みます。 |
 | `'markdown'` | `<output>/summary.md` に書き込みます。 |
 | `'json'` | レポートを出力します。`list` とは排他で、併用すると `INVALID_CONFIG` です。 |

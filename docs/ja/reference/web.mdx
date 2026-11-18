@@ -5,7 +5,7 @@ description: ブラウザエンジン、そのオプション、エンジンが�
 "twitter:image": "https://e2e.com/docs/images/og/reference/web.png?v=66fee465a4"
 ---
 
-`@e2e-dev/web` はブラウザエンジンです。Playwright を通して Chromium、Firefox、WebKit を操作します。Web ターゲットには `web()` でエンジンを指定します。ブラウザ専用の操作には、このエンジンが提供する `browser` フィクスチャを使います。
+`@e2e-dev/web` はブラウザエンジンです。Playwright を通して Chromium、Firefox、WebKit を操作します。Web ターゲットには `web()` でエンジンを指定します。ブラウザ専用の操作には、このエンジンが提供する組み込みフィクスチャ `browser` を使います。
 
 ```ts title="e2e.config.ts"
 import type { E2EConfig } from 'e2e';

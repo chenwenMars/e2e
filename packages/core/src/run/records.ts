@@ -57,6 +57,11 @@ interface SkipDetail {
 
 export type ArtifactProducer = { kind: 'step'; stepId: string } | { kind: 'attempt' };
 
+/** A video a session recorded, as its owner hands it on: a file still on disk, or a link a hosted service keeps. */
+export type SessionVideo =
+  | { readonly path: string; readonly startedAt?: string | undefined }
+  | { readonly url: string; readonly mediaType: string; readonly startedAt: string };
+
 export interface ArtifactRecord {
   id: string;
   kind: 'screenshot' | 'video' | 'download' | 'log';
@@ -74,6 +79,8 @@ export interface ArtifactRecord {
    * is the step's offset into it.
    */
   startedAt?: string;
+  /** The session that produced the artifact when it is not the test's own: one the test opened with `launch()`. */
+  actor?: string;
   /**
    * Mirrors report-1: how much of the file the runner masked. A screenshot is
    * `complete`; a video is `incomplete`, since a recording masks nothing

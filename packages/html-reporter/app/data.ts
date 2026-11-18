@@ -154,6 +154,31 @@ export function matchesSearch(result: Result, search: string): boolean {
   return words.every((word) => new RegExp(`(?:^|[^\\p{L}\\p{N}])${word.replaceAll(/[\\^$.*+?()[\]{}|/]/gu, '\\$&')}`, 'u').test(haystack));
 }
 
+/** The results that ran on `target`, or every result when it names none; an unknown target answers none. */
+export function onTarget(results: readonly Result[], target: string | undefined): readonly Result[] {
+  return target === undefined ? results : results.filter((result) => result.targetId === target);
+}
+
+/**
+ * The target a hash names, when the page can act on it: one the run carries
+ * results for, and only on a run that selected more than one, since a
+ * single-target run renders no tabs and so nothing could clear the choice.
+ * Anything else is no target at all, the way an unknown status falls back to
+ * every status.
+ */
+export function selectedTarget(targetIds: ReadonlySet<string>, value: string | null | undefined): string | undefined {
+  return value != null && targetIds.size > 1 && targetIds.has(value) ? value : undefined;
+}
+
+/**
+ * The status tabs to render, in `STATUS_FILTERS` order: every status with
+ * results, plus the active one even at 0, so a filter never strands itself
+ * on a tab it hid.
+ */
+export function statusTabs(counts: Readonly<Record<StatusFilter, number>>, active: StatusFilter): StatusFilter[] {
+  return (Object.keys(STATUS_FILTERS) as StatusFilter[]).filter((name) => name === 'all' || counts[name] > 0 || name === active);
+}
+
 /**
  * The URL an artifact opens at, by the payload's media mode: its file under
  * the link base, each segment encoded, or its embedded bytes. A hosted
@@ -197,26 +222,54 @@ export interface TimedVideo {
   readonly endsAt: number;
 }
 
-/** The attempt's playable videos in recording order, each ending where the next begins. */
+/**
+ * The attempt's playable videos in recording order, each ending where the
+ * next of its session begins: a session the test opened beside its own
+ * records at the same time as the test's, so its video ends no other's.
+ */
 export function timedVideos(artifacts: readonly Artifact[], media: ReportMedia): TimedVideo[] {
   const videos = artifacts.flatMap((artifact) => {
     const url = artifact.kind === 'video' ? artifactUrl(artifact, media) : undefined;
     return url === undefined || artifact.startedAt === undefined ? [] : [{ artifact, url, startsAt: Date.parse(artifact.startedAt) }];
   });
   const sorted = videos.toSorted((a, b) => a.startsAt - b.startsAt);
-  return sorted.map((video, index) => ({ ...video, endsAt: sorted[index + 1]?.startsAt ?? Infinity }));
+  return sorted.map((video, index) => ({
+    ...video,
+    endsAt: sorted.slice(index + 1).find((next) => next.artifact.actor === video.artifact.actor)?.startsAt ?? Infinity,
+  }));
+}
+
+/**
+ * What a recording is called among an attempt's: the session's name for one
+ * of a session the test opened beside its own, else `test` beside such
+ * recordings, and its part number when the test's own video came in parts.
+ */
+export function videoName(video: TimedVideo, videos: readonly TimedVideo[]): string {
+  const { actor } = video.artifact;
+  const own = videos.filter((candidate) => candidate.artifact.actor === actor);
+  const part = own.length > 1 ? ` part ${own.indexOf(video) + 1}` : '';
+  if (actor !== undefined) return `${actor}${part}`;
+  return own.length === videos.length ? part.trim() : `test${part}`;
 }
 
 /**
  * Where a step starts in the recording that was running then: the segment
- * and the second into it. A step before the first segment began is at its
- * start, the way the trace page reads it.
+ * and the second into it. A step before its session's first segment began
+ * is at that segment's start, the way the trace page reads it.
  */
 export function videoPosition(step: Step, videos: readonly TimedVideo[]): { readonly video: number; readonly seconds: number } | undefined {
   const at = Date.parse(step.startedAt);
-  const index = videos.findLastIndex((video) => video.startsAt <= at && at < video.endsAt);
+  // A step is in the recording of the session it ran on, never in one of a session beside it.
+  const ofSession = (video: TimedVideo): boolean => video.artifact.actor === step.actor;
+  const index = videos.findLastIndex((video) => ofSession(video) && video.startsAt <= at && at < video.endsAt);
   if (index !== -1) return { video: index, seconds: (at - (videos[index]?.startsAt ?? at)) / 1000 };
-  return videos.length > 0 && at < (videos[0]?.startsAt ?? 0) ? { video: 0, seconds: 0 } : undefined;
+  const first = videos.findIndex(ofSession);
+  return first !== -1 && at < (videos[first]?.startsAt ?? 0) ? { video: first, seconds: 0 } : undefined;
+}
+
+/** A step's api as the page names it: under the session it ran on when that is not the test's own. */
+export function stepCall(step: Step): string {
+  return step.actor === undefined ? step.api : `${step.actor} › ${step.api}`;
 }
 
 export function formatDuration(ms: number): string {

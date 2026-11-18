@@ -100,6 +100,7 @@ export function createAttemptArtifacts(options: {
         kind,
         mediaType: mediaTypeFor(relativePath),
         ...(startedAt === undefined ? {} : { startedAt }),
+        ...(registration?.actor === undefined ? {} : { actor: registration.actor }),
         redaction: REDACTION_BY_KIND[kind],
         producer: stepId === undefined ? { kind: 'attempt' } : { kind: 'step', stepId },
       };
@@ -163,6 +164,7 @@ export function createAttemptArtifacts(options: {
         mediaType: link.mediaType,
         url,
         startedAt: link.startedAt,
+        ...(link.actor === undefined ? {} : { actor: link.actor }),
         redaction: REDACTION_BY_KIND.video,
         producer: stepId === undefined ? { kind: 'attempt' } : { kind: 'step', stepId },
       };

@@ -277,7 +277,9 @@ function stepClause(steps: readonly ReportStep[], at: { index: number; step: Fai
   const calls = modelCalls(at.step);
   const spent = calls === 0 ? '' : ` and ${plural(calls, 'model call')}`;
   const call = at.step.kind === 'agent' ? `${code(at.step.api, MAX_ID_CHARS)} ${stepLabel(at.step, MAX_PATH_CHARS)}` : code(`${at.step.api} ${at.step.label}`, MAX_PATH_CHARS);
-  return `at step ${at.index + 1} of ${steps.length}: ${call}, after ${formatDuration(at.step.durationMs)}${spent}`;
+  // A step of a session the test opened beside its own says whose it is.
+  const on = at.step.actor === undefined ? '' : ` on ${cell(at.step.actor, MAX_ID_CHARS)}`;
+  return `at step ${at.index + 1} of ${steps.length}${on}: ${call}, after ${formatDuration(at.step.durationMs)}${spent}`;
 }
 
 /** `**CODE** (phase)`: how the error names itself. */

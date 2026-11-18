@@ -210,6 +210,7 @@ reporters: ['list', 'junit'], // default: ['list']
 | 值 | 作用 |
 | --- | --- |
 | `'list'` | 终端进度、失败信息和运行摘要。 |
+| `'dot'` | 简洁的终端进度、失败信息和运行摘要。不能与 `list` 同用：两者同时使用会导致 `INVALID_CONFIG`。 |
 | `'junit'` | 写入 `<output>/junit.xml`。 |
 | `'markdown'` | 写入 `<output>/summary.md`。 |
 | `'json'` | 输出报告。不能与 `list` 同用：两者同时使用会导致 `INVALID_CONFIG`。 |

@@ -31,7 +31,7 @@ bun add @e2e-dev/core @e2e-dev/web
 
 ## 操作浏览器
 
-`launch` 准备引擎并返回宿主。会话是该宿主上一个隔离的浏览器上下文，包含 `screen`、`app`、`platform` 和引擎自己的测试夹具，此处为 `browser`。
+`launch` 准备引擎并返回宿主。会话是该宿主上一个隔离的浏览器上下文，包含内置测试夹具 `screen`、`app` 和 `platform`，以及引擎提供的那一个，此处为 `browser`。
 
 ```ts title="prices.ts"
 import { launch } from '@e2e-dev/core';
@@ -127,6 +127,8 @@ await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
 
 这些值绝不会出现在会话抛出的错误、`screen.tree()` 或智能体读取的内容中。代码主动请求的读取，例如 `textContent()`，会原样返回页面文本。导出的状态会加密保存会话已知的值，因此即使启动宿主时未传入这些值，也仍会对它们脱敏。
 
+程序中的每个会话都会对所有已打开宿主的值脱敏。
+
 智能体通过参数按名称获取机密值：`agent.act('Sign in with {password}', { params: { password: shop.secret('SHOP_PASSWORD') } })`。
 
 ## 处理错误
@@ -211,6 +213,36 @@ if (order.total <= 39_000) {
 | `mode` | `read-write` | `read-only` 只回放，不写入。 |
 | `strict` | `false` | 录制内容无法再回放时，以 `REPLAY_STALE` 失败。 |
 | `store` | - | 使用自定义 [`CacheStore`](/cache) 替代文件。 |
+
+## 在测试中打开宿主
+
+`e2e run` 运行的测试可以为第二个会话打开宿主：另一个用户，或与浏览器并用的手机。
+
+```ts title="tests/board.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+test('the reviewer sees the note', async ({ app, screen }) => {
+  await app.open('/board');
+  await using host = await launch(web(), { app: { url: 'https://shop.example.com' } });
+  const reviewer = await host.newSession();
+  await reviewer.app.open('/board');
+  await screen.getByLabel('Note').fill('hello');
+  await reviewer.screen.getByText('hello').waitFor();
+});
+```
+
+测试报告会涵盖该会话：
+
+| 报告内容 | 行为 |
+| --- | --- |
+| 步骤 | 会话的每个步骤，按测试打开各会话的顺序记在 `launch-1`、`launch-2` 名下。 |
+| 模型用量 | 计入测试的用量。 |
+| 视频 | 测试录制视频时，与测试的视频一起保存为 `video/launch-1.webm`。会话必须在测试中打开，录制期间对它调用 `app.startRecording()` 会失败。 |
+| 机密值 | 宿主会对配置中的机密值脱敏，报告在测试结束前会对宿主的机密值脱敏。 |
+| 测试打开的宿主或会话 | 若仍未关闭，测试结束时关闭。由 worker fixture 或 `beforeAll` 钩子打开的不会关闭，也不录制视频。 |
+| 仍在运行的步骤 | 测试以 `STEP_NOT_AWAITED` 失败，并关闭其会话。 |
 
 ## 下一步
 

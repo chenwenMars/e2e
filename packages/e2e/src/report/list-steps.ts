@@ -18,6 +18,7 @@ import {
   formatTokens,
   terminalColumns,
   visibleWidth,
+  withActor,
   type Colors,
 } from './format.ts';
 import type { ConfiguredModel, FinishedStep, ReplayNotice, ShownEvent } from './list-model.ts';
@@ -63,7 +64,7 @@ export function stepLine(pc: Colors, step: FinishedStep, options: StepLineOption
   const calls =
     step.modelCalls > 0 ? ` · ${step.modelCalls} model call${step.modelCalls === 1 ? '' : 's'}` : '';
   const outcome = step.status === 'passed' ? '' : ` ${step.status}`;
-  const head = `${glyph} ${options.context ?? ''}${pc.dim(step.api)} `;
+  const head = `${glyph} ${options.context ?? ''}${pc.dim(withActor(step.actor, step.api))} `;
   const tail = pc.dim(`${formatTime(step.durationMs)}${calls}${outcome}`);
   const room =
     options.maxWidth === undefined

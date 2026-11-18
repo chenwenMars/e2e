@@ -38,7 +38,7 @@ bun add @e2e-dev/core @e2e-dev/web
 
 `launch` はエンジンを準備し、ホストを返します。
 セッションは、そのホスト上の独立したブラウザコンテキストです。
-`screen`、`app`、`platform` と、エンジン固有のフィクスチャ（ここでは `browser`）を持ちます。
+組み込みフィクスチャの `screen`、`app`、`platform` と、エンジンが提供するフィクスチャ（ここでは `browser`）を持ちます。
 
 ```ts title="prices.ts"
 import { launch } from '@e2e-dev/core';
@@ -152,6 +152,8 @@ await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
 エクスポートした状態には、セッションが知っていた値が暗号化して含まれます。
 そのため、値を渡さずに起動したホストでもマスキングできます。
 
+プログラム内のすべてのセッションは、開いているすべてのホストの値をマスキングします。
+
 エージェントには、パラメーターを通じてシークレットの名前だけを渡します。
 `agent.act('Sign in with {password}', { params: { password: shop.secret('SHOP_PASSWORD') } })`。
 
@@ -252,6 +254,36 @@ if (order.total <= 39_000) {
 | `mode` | `read-write` | `read-only` はリプレイだけを行い、書き込みません。 |
 | `strict` | `false` | リプレイできなくなった記録を `REPLAY_STALE` で失敗させます。 |
 | `store` | - | ファイルの代わりに使うカスタムの [`CacheStore`](/cache)。 |
+
+## テスト内でホストを開く
+
+`e2e run` が実行するテストは、2 つ目のセッション用にホストを開けます。別のユーザーや、ブラウザと並べて使うスマートフォンなどです。
+
+```ts title="tests/board.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+test('the reviewer sees the note', async ({ app, screen }) => {
+  await app.open('/board');
+  await using host = await launch(web(), { app: { url: 'https://shop.example.com' } });
+  const reviewer = await host.newSession();
+  await reviewer.app.open('/board');
+  await screen.getByLabel('Note').fill('hello');
+  await reviewer.screen.getByText('hello').waitFor();
+});
+```
+
+テストのレポートには、このセッションも含まれます。
+
+| レポートの内容 | 動作 |
+| --- | --- |
+| ステップ | セッションの各ステップを、テストがセッションを開いた順に `launch-1`、`launch-2` の名前で記録します。 |
+| モデル使用量 | テストの使用量に合算します。 |
+| 動画 | テストが動画を記録する場合、`video/launch-1.webm` としてテストの動画と並べて保存します。セッションはテスト内で開く必要があり、記録中はそのセッションの `app.startRecording()` が失敗します。 |
+| シークレット | ホストは設定のシークレットをマスキングし、レポートはテストが終わるまでホストのシークレットをマスキングします。 |
+| テストが開いたホストやセッション | まだ開いていれば、テストの終了時に閉じます。ワーカーフィクスチャや `beforeAll` フックが開いたものは閉じず、動画も記録しません。 |
+| 実行中のまま残したステップ | テストは `STEP_NOT_AWAITED` で失敗し、そのセッションを閉じます。 |
 
 ## 次のステップ
 

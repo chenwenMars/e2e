@@ -25,7 +25,7 @@ bunx e2e init
 
 | 路径 | 使用者 |
 | --- | --- |
-| `.agents/skills/e2e/` | 读取 `.agents/skills` 的智能体 |
+| `.agents/skills/e2e/` | Codex、Cursor、OpenCode 等读取 `.agents/skills` 的智能体 |
 | `.claude/skills/e2e/` | Claude Code。同时安装两者时，这是指向 `.agents/skills/e2e/` 的符号链接。 |
 
 安装的副本包含 `SKILL.md` 和各主题的参考资料。[`e2e upgrade`](/reference/cli#e2e-upgrade) 会更新它，在你使用包管理器升级后也可以运行此命令。无需 `init`，也可以用 `npx skills add e2e-inc/e2e` 安装技能，用 `npx e2e guide [topic]` 从已安装的包中输出技能内容。下方插件可为所有项目安装全部三个 e2e 技能。

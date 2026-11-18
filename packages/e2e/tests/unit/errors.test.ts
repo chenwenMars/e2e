@@ -7,6 +7,8 @@ import {
   exitCodeForCategory,
   InfrastructureError,
   messageWithCauses,
+  redactErrorDetails,
+  redactSerializedError,
   sanitizeRecordedText,
   sanitizeText,
   setErrorRedactor,
@@ -250,5 +252,32 @@ describe('serializeError default redactor', () => {
 
   it('is identity when no redactor is installed', () => {
     expect(serializeError(new TestError('ASSERTION_FAILED', 'expected hunter2')).message).toBe('expected hunter2');
+  });
+});
+
+describe('redacting an error a program catches itself', () => {
+  const redact = (text: string): string => text.replaceAll('hunter2-secret', '<secret:pw>');
+
+  it('rewrites the text fields of its details and keeps the counts', () => {
+    const error = new TestError('LOCATOR_NOT_FOUND', 'nothing matched', { details: { locator: 'getByText("hunter2-secret")', name: 'hunter2-secret', matches: 0 } });
+    redactErrorDetails(error, redact);
+    expect(error.details).toEqual({ locator: 'getByText("<secret:pw>")', name: '<secret:pw>', matches: 0 });
+  });
+
+  it('drops details of a shape it cannot read, which it cannot redact either', () => {
+    const foreign = Object.assign(new Error('from another copy'), { details: { screenText: 'hunter2-secret' } });
+    redactErrorDetails(foreign, redact);
+    expect('details' in foreign).toBe(false);
+    const plain = new Error('no details');
+    redactErrorDetails(plain, redact);
+    expect('details' in plain).toBe(false);
+  });
+
+  it('rewrites the message, details, and stack of a serialized error taken from another session\'s record', () => {
+    const serialized = redactSerializedError(
+      { category: 'test', code: 'ASSERTION_FAILED', message: 'saw hunter2-secret', retryable: false, details: { observed: 'hunter2-secret', matches: 1 }, stack: 'Error: saw hunter2-secret\n    at test' },
+      redact,
+    );
+    expect(serialized).toEqual({ category: 'test', code: 'ASSERTION_FAILED', message: 'saw <secret:pw>', retryable: false, details: { observed: '<secret:pw>', matches: 1 }, stack: 'Error: saw <secret:pw>\n    at test' });
   });
 });

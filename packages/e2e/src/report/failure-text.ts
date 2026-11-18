@@ -15,7 +15,7 @@ import type { AppLogSource } from '@e2e-dev/core/lib/engine/index';
 import type { AppLogRecord, StepCacheInfo, StepCacheRecord, StepEvent, StepTurn } from '@e2e-dev/core/lib/run/steps';
 import type { Report1Document, ReportError, ReportResult, ReportSource, ReportStep } from './build.ts';
 import { cell, code, formatDuration, link, MAX_CELL_CHARS, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_PATH_CHARS, MAX_TITLE_CHARS, plural } from './markdown-text.ts';
-import { repeatSuffix, STATUS_WORD } from './format.ts';
+import { repeatSuffix, STATUS_WORD, withActor } from './format.ts';
 import type { AttemptView, Outcome } from './outcome.ts';
 
 type ReportArtifact = ReportResult['attempts'][number]['artifacts'][number];
@@ -484,7 +484,9 @@ function timedVideos(told: AttemptView): TimedVideo[] {
  * `, video-part2 0:03`. A step before the attempt's video began is at 0:00;
  * one outside every recording a step stopped gets nothing.
  */
-function videoOffset(step: ReportStep, videos: readonly TimedVideo[]): string {
+function videoOffset(step: ReportStep, all: readonly TimedVideo[]): string {
+  // A step is in the recording of the session it ran on, never in one of a session beside it.
+  const videos = all.filter((candidate) => candidate.artifact.actor === step.actor);
   const at = Date.parse(step.startedAt);
   const timed =
     videos.findLast((candidate) => candidate.startsAt <= at && at < candidate.endsAt) ??
@@ -492,7 +494,8 @@ function videoOffset(step: ReportStep, videos: readonly TimedVideo[]): string {
   if (timed === undefined) return '';
   const video = timed.artifact;
   const seconds = Math.max(0, Math.floor((at - timed.startsAt) / 1000));
-  const name = videos.length > 1 && video.path !== undefined ? (video.path.split('/').at(-1) ?? 'video').replace(/\.[^.]+$/u, '') : 'video';
+  // A session's recording goes by the session's name; the test's own parts by their file's.
+  const name = video.actor ?? (all.length > 1 && video.path !== undefined ? (video.path.split('/').at(-1) ?? 'video').replace(/\.[^.]+$/u, '') : 'video');
   return `, ${name} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
@@ -572,7 +575,8 @@ export function renderTracePage(report: Report1Document, result: ReportResult, f
       const offset = videoOffset(step, videos);
       const hook = step.phase === undefined ? '' : ` in ${step.phase}`;
       const label = stepLabel(step, MAX_CELL_CHARS);
-      lines.push(`${index + 1}. ${STEP_GLYPH[step.status]} ${code(step.api, MAX_ID_CHARS)}${label === '' ? '' : ` ${label}`} (${formatDuration(step.durationMs)}${calls}${offset}${hook})${failed}${own}`);
+      const call = withActor(step.actor === undefined ? undefined : cell(step.actor, MAX_ID_CHARS), code(step.api, MAX_ID_CHARS));
+      lines.push(`${index + 1}. ${STEP_GLYPH[step.status]} ${call}${label === '' ? '' : ` ${label}`} (${formatDuration(step.durationMs)}${calls}${offset}${hook})${failed}${own}`);
       if (step.status !== 'passed' && step.explanation !== undefined && step.explanation.trim() !== '') {
         lines.push(`   > ${cell(step.explanation, MAX_DETAIL_CHARS)}`);
       }
@@ -606,7 +610,8 @@ export function renderTracePage(report: Report1Document, result: ReportResult, f
 
   const failure = told.failure;
   if (failure !== undefined) {
-    lines.push('## Screen at failure', '');
+    // A failure on a session beside the test's own is shown with the test's own screen, which is the one the runner can read.
+    lines.push(at?.step.actor === undefined ? '## Screen at failure' : `## Screen of the test's own session at failure`, '');
     const screen = failure.screen === undefined ? undefined : told.artifacts.find((artifact) => artifact.id === failure.screen);
     const listing = screen?.path === undefined ? undefined : options.readArtifact?.(screen.path);
     const where = [

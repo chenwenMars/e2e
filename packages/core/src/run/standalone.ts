@@ -85,9 +85,9 @@ function claimEngine(engine: object | undefined): () => void {
 }
 
 /**
- * An `@e2e-dev/core` host: a worker whose sessions publish nothing to `globalThis`
- * and hold no process-wide secret registry, so any number of hosts coexist in
- * one process. It owns its engine instance.
+ * An `@e2e-dev/core` host: a worker whose sessions publish no attempt to
+ * `globalThis` and hold no process-wide secret registry, so any number of
+ * hosts coexist in one process. It owns its engine instance.
  */
 export function openCoreHost(options: StandaloneHostOptions): Promise<StandaloneHost> {
   return openWorker(options, {

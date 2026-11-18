@@ -27,6 +27,11 @@ export class PollScope {
   /** `owner` completes "... returned before", as in `the test body`. */
   constructor(private readonly owner: string) {}
 
+  /** Whether the phase has ended: what its work still does then is no test's, whichever one runs now. */
+  get over(): boolean {
+    return this.closed;
+  }
+
   /**
    * Runs one poll, owned by this scope until it settles. `work` receives the
    * signal that cancels it when the scope closes first. A poll started after
@@ -89,6 +94,8 @@ interface PollOwner {
   scope: PollScope | undefined;
   /** Set inside one `expect.poll` read: the steps it calls are part of the poll, which `e2e run --step` never holds. */
   readonly reading?: true;
+  /** Set for work that outlives the test it started in, a worker fixture: what it opens is its own to end. */
+  readonly outlives?: true;
 }
 
 /** The runner's async context, shared through `globalThis` so a test module's copy of `expect` reads it. */
@@ -96,13 +103,15 @@ interface PollScopes {
   current(): PollScope | undefined;
   read<T>(run: () => T): T;
   reading(): boolean;
+  outlives(): boolean;
 }
 
 const storage = new AsyncLocalStorage<PollOwner>();
 const scopes: PollScopes = {
   current: () => storage.getStore()?.scope,
-  read: (run) => enter({ scope: storage.getStore()?.scope, reading: true }, run),
+  read: (run) => enter({ ...storage.getStore(), scope: storage.getStore()?.scope, reading: true }, run),
   reading: () => storage.getStore()?.reading === true,
+  outlives: () => storage.getStore()?.outlives === true,
 };
 const slot = realmSlot<PollScopes>(pollScopesBrand);
 
@@ -131,9 +140,10 @@ export interface PollLineage {
 /**
  * A lineage for work that spans two phases, a fixture: its setup runs in the
  * body's phase, and the rest of its function after `use` is its teardown's.
+ * `outlivesTest` marks a worker fixture's, which no test owns.
  */
-export function pollLineage(): PollLineage {
-  const owner: PollOwner = { scope: scopes.current() };
+export function pollLineage(options: { readonly outlivesTest?: boolean } = {}): PollLineage {
+  const owner: PollOwner = { scope: scopes.current(), ...(options.outlivesTest === true ? { outlives: true } : {}) };
   return {
     run: (run) => enter(owner, run),
     handOver: () => {
@@ -155,6 +165,16 @@ export function currentPollScope(): PollScope | undefined {
 export function pollRead<T>(run: () => T): T {
   const shared: Partial<PollScopes> | undefined = slot.get(globalThis);
   return typeof shared?.read === 'function' ? shared.read(run) : run();
+}
+
+/**
+ * Whether this async context is work that outlives the test it started in,
+ * such as a worker fixture set up by the first test that names it. A runner
+ * from before the marker publishes a slot without it, and nothing is then.
+ */
+export function outlivesTest(): boolean {
+  const shared: Partial<PollScopes> | undefined = slot.get(globalThis);
+  return typeof shared?.outlives === 'function' && shared.outlives();
 }
 
 /** Whether this async context is inside an `expect.poll` read. */

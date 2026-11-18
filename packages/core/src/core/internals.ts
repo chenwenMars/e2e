@@ -7,9 +7,13 @@
 import { MODEL_UNREACHABLE_CODES } from '../agent/error.ts';
 import type { AttemptSettlement, SurvivedFailure } from '../cache/context.ts';
 import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
+import { currentAttempt } from '../expect/attempt.ts';
+import { currentPollScope, outlivesTest } from '../expect/poll-scope.ts';
 import { TestError } from '../internal/errors.ts';
+import type { AttemptGuests, GuestSession, GuestSteps } from '../run/guest-steps.ts';
+import type { SessionVideo } from '../run/records.ts';
 import type { StandaloneAttempt } from '../run/standalone-attempt.ts';
-import type { StepProgress, StepRecorder } from '../run/steps.ts';
+import type { StepProgress, StepRecord, StepRecorder } from '../run/steps.ts';
 
 export interface SessionInternals {
   readonly attempt: StandaloneAttempt;
@@ -57,6 +61,92 @@ export class FailureWatch {
   settlement(steps: StepRecorder): AttemptSettlement {
     return { lastVerifiedStepIndex: steps.lastVerifiedStepIndex, implicatesUnconfirmed: false, survived: this.failures };
   }
+}
+
+/**
+ * What the test running now offers the caller, when the caller is part of
+ * it. A body past its timeout goes on running while the next test does, and
+ * a worker fixture is set up inside the first test that names it and lives
+ * on after it: what either opens or steps is no test's to end, so it is
+ * offered nothing.
+ */
+export function currentGuests(): AttemptGuests | undefined {
+  return currentPollScope()?.over === true || outlivesTest() ? undefined : currentAttempt()?.guests;
+}
+
+/**
+ * A session's part in the tests around it (`run/guest-steps.ts`): it tells a
+ * test of each step it takes, so the test's report covers them. Which test
+ * is decided once, when the session starts opening; see `sessionGuest`.
+ */
+export interface SessionGuest {
+  /** Whether the session records a video for the test it is part of. */
+  readonly recordsVideo: boolean;
+  /** Aborts when the test the session is opening for gives it up; absent for a session no test owns. */
+  readonly signal: AbortSignal | undefined;
+  /** Takes the error the opening failed with, which the test that gave it up has told already. */
+  failed(error: unknown): void;
+  /** Takes each progress of the session's recorder with its record of the step. */
+  readonly mirror: (progress: StepProgress, record: StepRecord) => void;
+  /** Hands over the open session. False when the test it was opening for gave it up: it is the caller's to close. */
+  attach(session: GuestSession): boolean;
+  /** Hands on the videos the session recorded. */
+  videos(recordings: readonly SessionVideo[]): Promise<void>;
+}
+
+/**
+ * The guest of a session being opened now. Opened by a running test, it is
+ * that test's for good: named now, recorded on video if the test keeps
+ * videos, and closed with the test. Opened outside every test, on a host
+ * from a hook or the top of a file, it visits whichever test is running
+ * when it starts a step, and a step outside every test is told to nobody.
+ */
+export function sessionGuest(): SessionGuest {
+  const opener = currentGuests();
+  return opener === undefined ? visitingGuest() : ownedGuest(opener);
+}
+
+function ownedGuest(opener: AttemptGuests): SessionGuest {
+  const seat = opener.session();
+  let steps: GuestSteps | undefined;
+  return {
+    recordsVideo: opener.video,
+    signal: seat.signal,
+    failed: (error) => {
+      if (seat.signal.aborted) opener.gaveUp(error);
+    },
+    mirror: (progress, record) => steps?.progress(progress, record),
+    attach: (session) => {
+      steps = seat.take(session);
+      return steps !== undefined;
+    },
+    videos: async (recordings) => {
+      for (const recording of recordings) await steps?.video(recording);
+    },
+  };
+}
+
+function visitingGuest(): SessionGuest {
+  let session: GuestSession | undefined;
+  /** The test the session last started a step in, and where that test takes its steps. */
+  let visited: { readonly guests: AttemptGuests | undefined; readonly steps: GuestSteps | undefined } = { guests: undefined, steps: undefined };
+  return {
+    recordsVideo: false,
+    signal: undefined,
+    failed: () => undefined,
+    mirror: (progress, record) => {
+      if (progress.phase === 'start') {
+        const guests = currentGuests();
+        if (guests !== visited.guests) visited = { guests, steps: session === undefined ? undefined : guests?.visit(session) };
+      }
+      visited.steps?.progress(progress, record);
+    },
+    attach: (opened) => {
+      session = opened;
+      return true;
+    },
+    videos: () => Promise.resolve(),
+  };
 }
 
 const sessions = new WeakMap<object, SessionInternals>();

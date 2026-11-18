@@ -38,8 +38,8 @@ types need `e2e` unless `skipLibCheck` is on.
 ## Drive a browser
 
 `launch` prepares an engine and returns a host. A session is one isolated
-browser context on that host, and it holds `screen`, `app`, `platform`, and
-the engine's own fixture, here `browser`.
+browser context on that host, and it holds the built-in fixtures `screen`,
+`app`, and `platform`, and the one the engine contributes, here `browser`.
 
 ```ts title="prices.ts"
 import { launch } from '@e2e-dev/core';
@@ -157,6 +157,8 @@ or in what the agent reads. A read your code asks for, such as
 the values the session knew, encrypted, so a host launched without them still
 redacts them.
 
+Every session in the program redacts the values of every host open in it.
+
 An agent gets a secret through its params, by name only:
 `agent.act('Sign in with {password}', { params: { password: shop.secret('SHOP_PASSWORD') } })`.
 
@@ -262,6 +264,37 @@ how a replay checks the screen and hands off to the model.
 | `mode` | `read-write` | `read-only` replays and never writes. |
 | `strict` | `false` | A recording that no longer replays fails with `REPLAY_STALE`. |
 | `store` | - | A custom [`CacheStore`](/cache) in place of the files. |
+
+## Open a host inside a test
+
+A test that `e2e run` runs can open a host for a second session: another
+user, or a phone beside the browser.
+
+```ts title="tests/board.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+test('the reviewer sees the note', async ({ app, screen }) => {
+  await app.open('/board');
+  await using host = await launch(web(), { app: { url: 'https://shop.example.com' } });
+  const reviewer = await host.newSession();
+  await reviewer.app.open('/board');
+  await screen.getByLabel('Note').fill('hello');
+  await reviewer.screen.getByText('hello').waitFor();
+});
+```
+
+The test's report covers the session:
+
+| In the report | Behavior |
+| --- | --- |
+| Steps | Each step of the session, under `launch-1`, `launch-2`, in the order the test opened the sessions. |
+| Model usage | Counted with the test's. |
+| Video | Kept beside the test's when the test records one, as `video/launch-1.webm`. The session must be opened inside the test, and `app.startRecording()` on it fails while it records. |
+| Secrets | The host redacts the config's secrets, and the report redacts the host's until the test ends. |
+| A host or session the test opened | Closed when the test ends, if still open. One a worker fixture or a `beforeAll` hook opened is left open, and records no video. |
+| A step left running | Fails the test with `STEP_NOT_AWAITED`, and its session is closed. |
 
 ## Next
 

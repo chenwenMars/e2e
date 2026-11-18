@@ -250,9 +250,10 @@ function readable(mdx: string): string {
 
 /**
  * A page split at its headings (h1 to h4, outside code fences), with the
- * frontmatter's title and description as the first section. A translation
- * keeps its English page's outline (`check-docs-translations.ts`), so the
- * sections of the two pair up by position.
+ * frontmatter's title and description as the first section. While a
+ * translation keeps its English page's outline, the sections of the two pair
+ * up by position; translations are best effort, so a caller checks the
+ * counts match first.
  */
 export function sections(source: string): Section[] {
   const normalized = source.replaceAll('\r\n', '\n');

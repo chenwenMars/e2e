@@ -32,7 +32,7 @@ test('checkout summary', async ({ screen }) => {
 
 `expect` 根据参数本身的类型进行区分：
 
-- 引擎测试夹具可以提供匹配器，例如 `expect(browser).toHaveURL()`。这样的测试夹具属于 `Expectable<E>`：引擎通过 [`expectable`](/reference/engine#contributed-fixtures) 附加匹配器集合 `E`，`expect(fixture)` 会返回该集合。
+- 引擎提供的内置测试夹具可以提供匹配器，例如 `expect(browser).toHaveURL()`。这样的测试夹具属于 `Expectable<E>`：引擎通过 [`expectable`](/reference/engine#contributed-fixtures) 附加匹配器集合 `E`，`expect(fixture)` 会返回该集合。
 - 其他所有参数都使用值匹配器，包括 Promise。请先等待 Promise 完成，再将其结果传给 `expect`。
 
 声明见[类型](#types)。

@@ -88,6 +88,7 @@ export interface EngineHandle<Fixtures extends object = {}> extends Engine {
 | `perform`, `actions` | 片方しかない。`actions` が空、種類が重複、または `LOCATOR_ACTION_KINDS` にない種類を含む。 |
 | `performAt`, `pointerActions` | 片方しかない。`pointerActions` が空、種類が重複、または `POINTER_ACTION_KINDS` にない種類を含む。 |
 | `tapModifiers` | 真偽値でない、または `perform` がないのに `true`。 |
+| `isolation` | `'attempt'` と `'worker'` 以外の値。 |
 | `keyboard`, `state`, `artifacts`, `session` | 未知のキーや関数でないメンバーがある。`keyboard` に `type` と `press` がない、`state` に `capture` と `restore` の両方がない、`artifacts` に `screenshot` がない、`startVideo` と `stopVideo` の片方しかない。 |
 | `secrets` | `secrets.get()` ハンドルの配列でない。 |
 | `fixtures` | オブジェクトでない、フィクスチャがファクトリー関数でない、名前が lowerCamelCase の識別子でない、または `agent`、`app`、`screen`、`platform`、`session` を隠してしまう。 |
@@ -115,6 +116,7 @@ export interface EngineHandle<Fixtures extends object = {}> extends Engine {
 | [`tapModifiers`](#capabilities) | `boolean` |
 | [`keyboard`](#keyboard) | `EngineKeyboard` |
 | [`fixtures`](#contributed-fixtures) | ファクトリー |
+| [`isolation`](#fixture-isolation) | `'attempt' \| 'worker'` |
 | [`state`](#state) | `EngineStateCapability` |
 | [`artifacts`](#artifacts) | `EngineArtifacts` |
 | [`validateApp`](#app) | メソッド |
@@ -221,6 +223,11 @@ export interface Engine {
    * capability names; `requires: ['<name>']` gates at selection.
    */
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
+  /**
+   * How long the state behind this engine's `fixtures`, `app`, and `screen`
+   * lives; see `EngineIsolation`. Defaults to `attempt`.
+   */
+  readonly isolation?: EngineIsolation;
   /** capability: state - opaque snapshot capture/restore for session reuse. */
   readonly state?: EngineStateCapability;
   /** capability: artifacts - screenshots under the attempt directory, and videos there or at a provider. */
@@ -1967,7 +1974,7 @@ export function stopProviderRecording(
 
 ### エンジンが提供するフィクスチャ
 
-エンジンは `fixtures` を通して、名前付きの操作インターフェースをテストのフィクスチャに追加します。各キーがフィクスチャ名と機能名になります。
+エンジンは `fixtures` を通して、名前付きの操作インターフェースをテストのフィクスチャに追加します。各キーがフィクスチャ名と機能名になります。テストから見ると、`app` や `screen` と並ぶ[組み込みフィクスチャ](/reference/test#fixtures)です。
 
 ```ts title="src/index.ts"
 fixtures: {
@@ -2075,6 +2082,38 @@ export interface EngineFixtureContext {
 }
 ```
 
+#### フィクスチャの分離
+
+`isolation` は、ある試行で行った操作の結果が次の試行に残るかどうかを宣言します。エンジンが支える組み込みフィクスチャ、つまりエンジンが提供するフィクスチャ、`app`、`screen` のスコープを決めます。
+
+```ts
+defineEngine({ name: 'device', /* ... */ isolation: 'worker' });
+```
+
+| 値 | 意味 | フィクスチャのスコープ |
+| --- | --- | --- |
+| `'attempt'`（デフォルト） | `startAttempt` が、ブラウザコンテキストのような新しい操作対象を試行ごとに用意します。 | テストフィクスチャ。`beforeAll` と `afterAll` からは読み取れません。 |
+| `'worker'` | 試行で行った操作の結果が残ります。デバイスは権限とインストール済みアプリを保持します。 | [ワーカーフィクスチャ](/reference/test#worker-fixtures)。`beforeAll`、`afterAll`、ワーカーフィクスチャが受け取ります。 |
+
+`@e2e-dev/mobile` は `'worker'` を宣言しています。そのようなエンジンでは、次のように動作します。
+
+- スイートのフックは、ひとまとまりの実行ごとに、専用の短い試行（`startAttempt`、続いて `endAttempt`）の中で実行します。ワーカー終了時のワーカーフィクスチャの後処理も同様です。`startAttempt` では何も起動しないように実装してください。
+- 直列実行グループ、または `e2e mcp` セッションが実行するテストでは、フックはすでに開いている試行の上で実行します。エンジンが同時に実行する試行は 1 つだけです。
+- 試行を開けない場合や、実行が中断された場合、フックはそれらの組み込みフィクスチャなしで実行します。[`beforeAll`](/reference/test#beforeall) を参照してください。
+
+```ts
+/**
+ * What one attempt on an engine leaves for the next. `attempt`: nothing,
+ * `startAttempt` gives each attempt a fresh surface (a browser context), so
+ * the engine's fixtures, `app`, and `screen` are test fixtures, and a suite
+ * hook cannot use them. `worker`: what an attempt does stays (a device keeps
+ * permissions, keychain, and installed apps), so they are worker fixtures,
+ * which `beforeAll`, `afterAll`, and worker-scoped `test.extend()` fixtures
+ * see; a suite hook runs in a short attempt of its own for them.
+ */
+export type EngineIsolation = 'attempt' | 'worker';
+```
+
 #### 操作を宣言する
 
 `context.fixture(name, surface, operations)` は、どのメソッドをステップとして記録するか宣言します。各操作には次を指定します。
@@ -2126,7 +2165,7 @@ return context.fixture('printer', printer, { print: { kind: 'resource' } });
 
 ### エクスポートされる名前
 
-`EngineCleanupContext`、`EngineDisposeContext`、`OperationContext`、`TextPattern`、`SemanticQuery`、`LocatorExpression`、`NodeRef`、`SemanticNode`、`ViewportPoint`、`ViewportSize`、`ObservationPixels`、`LocatorAction`、`LocatorActionKind`、`PointerAction`、`PointerActionKind`、`ScrollDirection`、`Momentum`、`SelectOption`、`Key`、`KeyModifier`、`KeyName`、`ParsedKey`、`ENGINE_SPI_VERSION`、`LOCATOR_ACTION_KINDS`、`POINTER_ACTION_KINDS`、`KEY_MODIFIERS`、`KEY_NAMES`、`parseKey`、`ENGINE_ERROR_CODES`、`RETRYABLE_ENGINE_ERROR_CODES`、`Secret`、`isSecret`、`TextMatch`、`JsonValue`、`JsonValueRules`、`ResolveExpressionOptions`、`PollConditionOptions`、`WithoutUndefined`、`FixtureOperation`、`OBSERVED_NAME_LIMIT`、`OBSERVED_TEXT_LIMIT` は `e2e/engine` からエクスポートされます。[エンジンプロトコル](/reference/engine-protocol)の `connectEngine`、`serveEngine`、`describeEngine`、`spawnTransport`、`socketTransport`、`loopbackTransport`、`ENGINE_METHODS`、`ENGINE_PROTOCOL_VERSION` と、それぞれの型も含まれます。
+`EngineCleanupContext`、`EngineDisposeContext`、`OperationContext`、`TextPattern`、`SemanticQuery`、`LocatorExpression`、`NodeRef`、`SemanticNode`、`ViewportPoint`、`ViewportSize`、`ObservationPixels`、`LocatorAction`、`LocatorActionKind`、`PointerAction`、`PointerActionKind`、`ScrollDirection`、`Momentum`、`SelectOption`、`Key`、`KeyModifier`、`KeyName`、`ParsedKey`、`ENGINE_SPI_VERSION`、`LOCATOR_ACTION_KINDS`、`POINTER_ACTION_KINDS`、`KEY_MODIFIERS`、`KEY_NAMES`、`parseKey`、`ENGINE_ERROR_CODES`、`RETRYABLE_ENGINE_ERROR_CODES`、`Secret`、`isSecret`、`TextMatch`、`JsonValue`、`JsonValueRules`、`ResolveExpressionOptions`、`PollConditionOptions`、`WithoutUndefined`、`FixtureOperation`、`EngineIsolation`、`OBSERVED_NAME_LIMIT`、`OBSERVED_TEXT_LIMIT` は `e2e/engine` からエクスポートされます。[エンジンプロトコル](/reference/engine-protocol)の `connectEngine`、`serveEngine`、`describeEngine`、`spawnTransport`、`socketTransport`、`loopbackTransport`、`ENGINE_METHODS`、`ENGINE_PROTOCOL_VERSION` と、それぞれの型も含まれます。
 
 ### `SemanticNode`
 

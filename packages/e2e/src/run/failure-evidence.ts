@@ -36,6 +36,12 @@ const SCREEN_FILE = 'screen-at-failure.txt';
 export interface FailureEvidenceOptions {
   readonly session: TargetSession;
   readonly error: E2EError;
+  /**
+   * Whether the step that failed ran on `session`. False for a step of a
+   * session the test drives beside it (`launch()`): the screen is still the
+   * test's own to show, but the failed locator was never asked of it.
+   */
+  readonly ownStep: boolean;
   readonly ledger: SecretLedger;
   readonly config: ResolvedConfig;
   /** The app base URL's origin, whose link targets the screen lists as paths. */
@@ -92,7 +98,7 @@ export async function captureFailureEvidence(options: FailureEvidenceOptions): P
     } catch {
       // An unwritable directory: the tree stays unrecorded.
     }
-    const candidates = locatorCandidates(options.error, observation, redact, options.appOrigin);
+    const candidates = options.ownStep ? locatorCandidates(options.error, observation, redact, options.appOrigin) : [];
     if (candidates.length > 0) evidence.candidates = candidates;
   }
 

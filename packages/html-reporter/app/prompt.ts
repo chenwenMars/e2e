@@ -1,4 +1,4 @@
-import { formatDuration, testTitle, type Artifact, type AttemptView, type ReportError, type ReportModel, type Result, type Step } from './data.ts';
+import { formatDuration, stepCall, testTitle, type Artifact, type AttemptView, type ReportError, type ReportModel, type Result, type Step } from './data.ts';
 
 /** Agent turns quoted per failed step; the trace page has every one. */
 const MAX_TURNS = 3;
@@ -61,7 +61,7 @@ function errorLines(error: ReportError): string[] {
 function stepLines(step: Step, index: number, attempt: AttemptView): string[] {
   const label = step.label === '' ? '' : `: ${step.label.replaceAll('\n', ' ')}`;
   const notes = [formatDuration(step.durationMs), step.phase, step.cache === undefined ? undefined : `cache ${step.cache.mode}`].filter((note) => note !== undefined);
-  const head = `${index + 1}. ${step.status} ${step.api}${label} (${notes.join(', ')})`;
+  const head = `${index + 1}. ${step.status} ${stepCall(step)}${label} (${notes.join(', ')})`;
   if (step.status === 'passed') return [head];
   const actions = step.events.flatMap((event) => (event.kind === 'engine' && event.detail !== undefined ? [`${event.detail}${event.status === 'passed' ? '' : ` (${event.status})`}`] : []));
   const turns = (step.turns ?? []).slice(-MAX_TURNS).map((turn) => `turn ${turn.index}: ${turn.calls.join(', ')} -> ${turn.outcome}`);

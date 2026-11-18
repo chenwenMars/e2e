@@ -23,6 +23,8 @@ export function isShownEvent(event: StepEvent): event is ShownEvent {
 export interface CurrentStep {
   readonly api: string;
   readonly label: string;
+  /** The session the step runs on when it is not the test's own. */
+  readonly actor: string | undefined;
   /** Only an agent step has model turns to wait on. */
   readonly kind: StepKind;
   /**
@@ -48,7 +50,10 @@ export interface CurrentStep {
 export type FinishedStep = Pick<
   Extract<StepProgress, { phase: 'end' }>,
   'api' | 'label' | 'status' | 'durationMs' | 'modelCalls'
->;
+> & {
+  /** The session the step ran on when it is not the test's own. */
+  readonly actor?: string | undefined;
+};
 
 /** A pair that has started and whose result is still to come. */
 export interface RunningTest {

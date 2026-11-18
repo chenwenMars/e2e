@@ -59,7 +59,7 @@ agent-device、Xcode または Android SDK、ターゲットが指定する各�
 
 デバイスのターゲットには、`bundleId`、`appPath`、または両方が必要です。
 エンジンは自動ではインストールしません。
-すべてのテストが使うフィクスチャなどで、デバイスごとに 1 回 `device.installApp()` を呼んでください。
+[`auto: true`](/fixtures#run-a-fixture-for-every-test) を付けた[ワーカーフィクスチャ](/fixtures#share-a-fixture-across-a-worker)で、デバイスごとに 1 回 `device.installApp()` を呼んでください。
 パスを省略すると `app.appPath` をインストールします。
 `bundleId` がない場合、`app.open()` はビルドがインストールしたアプリを起動します。
 

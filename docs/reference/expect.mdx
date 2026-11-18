@@ -38,7 +38,8 @@ test('checkout summary', async ({ screen }) => {
 
 `expect` tells the argument apart by what it is:
 
-- Engine fixtures can provide matchers, such as `expect(browser).toHaveURL()`.
+- A built-in fixture an engine contributes can provide matchers, such as
+  `expect(browser).toHaveURL()`.
   Such a fixture is an `Expectable<E>`: its engine attached the matcher set
   `E` through [`expectable`](/reference/engine#contributed-fixtures), and
   `expect(fixture)` returns it.

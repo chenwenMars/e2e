@@ -273,7 +273,7 @@ call {tool: "run_code", args: {code: "await screen.getByLabel('Email').fill('ada
 | 参数 | 字符串、数字、布尔值、`null`、正则表达式、不含 `${}` 的模板、数组、对象、定位器，或 `credentials.user(name).username` |
 | 机密值 | `credentials.user(name).password` 或 `secrets.get(name)`，仅可作为 `fill` 的值 |
 
-不包含：引擎提供的测试夹具（`browser`、`device`）、`expect(screen)`、`toHaveScreenshot`、`app.screenshot`、`screen.debug`、`all`、`setInputFiles` 和值匹配器（`toBe`、`toEqual`）。
+不包含：引擎提供的内置测试夹具（`browser`、`device`）、`expect(screen)`、`toHaveScreenshot`、`app.screenshot`、`screen.debug`、`all`、`setInputFiles` 和值匹配器（`toBe`、`toEqual`）。
 
 | 抛出错误 | 何时发生 |
 | --- | --- |
@@ -312,7 +312,7 @@ Test line: await screen.getByRole("button", "Sign in").tap();
 | 对节点执行 `scroll_to` | `scrollIntoView()` |
 | `navigate`、`back` | `app.open(url)`，与应用同源的 URL 使用路径；`app.back()` |
 
-没有代码行的操作：未指定目标的 `type` 或 `press`、`times` 大于 1 的 `press`、`scroll`、对文本执行的 `scroll_to`、`dismiss_keyboard`、`resize_viewport`（使用引擎测试夹具设置大小，网页端为 `browser.setViewport`）、`switch_tab` 和 `close_tab`（网页端为 `browser.tabs()[tab - 1].activate()` 和 `.close()`），以及节点通过键盘接收的 `type`。[坐标工具](#point-tools)不输出任何代码行。
+没有代码行的操作：未指定目标的 `type` 或 `press`、`times` 大于 1 的 `press`、`scroll`、对文本执行的 `scroll_to`、`dismiss_keyboard`、`resize_viewport`（使用引擎的内置测试夹具设置大小，网页端为 `browser.setViewport`）、`switch_tab` 和 `close_tab`（网页端为 `browser.tabs()[tab - 1].activate()` 和 `.close()`），以及节点通过键盘接收的 `type`。[坐标工具](#point-tools)不输出任何代码行。
 
 #### `screenshot`
 

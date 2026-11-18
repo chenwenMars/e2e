@@ -46,7 +46,7 @@ bunx e2e doctor
 }
 ```
 
-设备测试目标需要 `bundleId`、`appPath` 或两者同时提供。引擎不会自行安装任何内容。为每台设备调用一次 `device.installApp()`，例如在每个测试都使用的测试夹具中调用。未提供路径时，它会安装 `app.appPath`。未提供 `bundleId` 时，`app.open()` 会启动该构建安装的应用。
+设备测试目标需要 `bundleId`、`appPath` 或两者同时提供。引擎不会自行安装任何内容。为每台设备调用一次 `device.installApp()`，在设置了 [`auto: true`](/fixtures#run-a-fixture-for-every-test) 的[工作进程测试夹具](/fixtures#share-a-fixture-across-a-worker)中调用。未提供路径时，它会安装 `app.appPath`。未提供 `bundleId` 时，`app.open()` 会启动该构建安装的应用。
 
 在 CI 中运行测试套件，请参阅[移动端作业](/ci#mobile-jobs)。
 

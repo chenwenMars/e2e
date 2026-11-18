@@ -25,6 +25,7 @@ export default {
 | 报告器 | 描述 |
 | --- | --- |
 | [`list`](#list) | 终端进度和运行摘要 |
+| [`dot`](#dot) | 简洁进度和运行摘要 |
 | [`json`](#json) | 将报告文档输出到 stdout |
 | [`junit`](#junit) | 写入 `<output>/junit.xml` |
 | [`markdown`](#markdown) | 写入 `<output>/summary.md` |
@@ -34,9 +35,10 @@ export default {
 | 抛出 | 条件 |
 | --- | --- |
 | `INVALID_CONFIG` | `reporters` 不是数组。 |
-| `INVALID_CONFIG` | ID 不是 `list`、`json`、`junit` 或 `markdown`。 |
+| `INVALID_CONFIG` | ID 不是 `list`、`dot`、`json`、`junit` 或 `markdown`。 |
 | `INVALID_CONFIG` | 条目既不是 ID，也不是包含 `name` 和至少一个处理函数的对象。 |
 | `INVALID_CONFIG` | 同时使用 `json` 和 `list`。 |
+| `INVALID_CONFIG` | 同时使用 `dot` 和 `list`。 |
 
 #### `list`
 
@@ -50,6 +52,24 @@ reporters: ['list'], // default
 - 在 TTY 中，实时视图显示正在运行的测试。stdout 不是终端时（管道、重定向、大多数 CI），每个测试完成后才输出。
 - 报告器返回的[摘要行](#onrunfinished)显示在其摘要下方。
 - 输出末尾会为每个失败测试显示一行 `Failed`：文件和行号、错误的第一行，以及已写入的追踪页面。因此 `e2e run | tail` 仍会指出哪里出了问题。
+
+#### `dot`
+
+每个所选测试完成时输出一个字符。
+
+```ts
+reporters: ['dot'],
+```
+
+| 通过 | 不稳定 | 失败 | 超时 | 中断 | 跳过 |
+| --- | --- | --- | --- | --- | --- |
+| `.` | `~` | `F` | `T` | `I` | `-` |
+
+每 80 个标记换行。颜色遵循终端设置；`NO_COLOR` 会禁用颜色。运行标题、失败详情和位置、摘要以及步骤提示均使用与 `list` 相同的格式。
+
+报告器默认输出到 stdout。使用 `--reporter dot,json` 时，所有面向用户的终端输出都发送到 stderr，stdout 只包含 JSON 报告。
+
+与 Playwright 不同，e2e 使用 ASCII 标记，并且只在重试结束后输出最终结果，不为每次重试单独输出标记。
 
 #### `json`
 
@@ -127,7 +147,7 @@ import { htmlReporter } from '@e2e-dev/html-reporter';
 const reporter = htmlReporter({ media: 'embed' });
 ```
 
-- 它在报告旁写入 `report.html`，并嵌入报告文档。页面可直接从磁盘打开，无需服务器。
+- 它在报告旁写入 `report.html`，并嵌入报告文档。页面可直接从磁盘打开，无需服务器，也可以运行 `npx e2e report`（[CLI 参考](/reference/cli#e2e-report)）打开。
 - `media` 决定如何处理截图、视频和下载文件：
 
   | `media` | 页面行为 | 分享方式 |
@@ -137,7 +157,7 @@ const reporter = htmlReporter({ media: 'embed' });
   | `'none'` | 省略媒体，仅显示文本 | 发送该文件 |
 
   下载链接会保存文件，而非打开它。运行器无法扫描机密值的下载文件（如 PDF 或 zip）不会放入嵌入式页面；由托管浏览器或设备服务保存的视频仍以链接形式提供。
-- `outputFile` 可将页面放在其他位置，路径相对于项目根目录。
+- `outputFile` 可将页面放在其他位置，路径相对于项目根目录（在项目根目录下运行时，请将该路径传给 `e2e report <path>`）。
 - 页面仅显示写入它的那次运行：使用 `--last-failed` 后，只显示重跑的测试，不包含沿用的失败；使用 `e2e explore` 时，显示探索过程，不包含发现。
 - 测试以树形列出：先是各文件，再是 describe 块，最后是其中的测试，失败项优先。选择文件路径会折叠其测试。
 - 每个步骤会显示它在该次尝试的视频中的起始时间；选择时间可从该位置播放，视频当前对应的步骤会保持高亮。视频时间轴标记每个步骤的开始，速度按钮可在 0.25× 到 4× 之间切换；不足五秒的录像默认慢速播放。手机录像显示在步骤旁边，而非上方。
@@ -257,7 +277,7 @@ type ReporterSummary = readonly { label: string; text: string }[];
 
 ##### 摘要行
 
-报告器完成时返回的行显示在 `list` 摘要下方，布局与其自身的行相同。`json` 报告器不包含这些行。
+报告器完成时返回的行显示在 `list` 或 `dot` 摘要下方，布局与其自身的行相同。`json` 报告器不包含这些行。
 
 ```
    Test Files  2 passed (2)
@@ -368,13 +388,14 @@ type StepProgress = (
 运行器发送的每个步骤阶段都包含 `progress.identity`：
 
 ```ts
-{ attemptId: string; attemptIndex: number; stepId: string; stepIndex: number }
+{ attemptId: string; attemptIndex: number; stepId: string; stepIndex: number; actor?: string }
 ```
 
 - ID 与最终报告一致。两个索引都从零开始。
 - 重试有新的尝试 ID 和更大的尝试索引；其步骤索引重新从零开始。
 - 串行分组的成员共享分组的尝试 ID 和索引。每个成员的步骤 ID 仍各不相同。
 - 使用 `stepId` 匹配 start、activity、event、replay 和 end 阶段，包括嵌套步骤。
+- 当步骤运行的会话不是测试自身的会话时，`actor` 给出该会话的名称：即测试用 [`launch()`](/core#open-a-host-inside-a-test) 打开的会话。
 - 类型中的 `identity` 是可选的，因此报告器也能接受旧版事件流。
 
 ## `--reporter` 对报告器对象的影响

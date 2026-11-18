@@ -254,6 +254,7 @@ CI=1 bunx e2e run --strict-cache
 | `invalid-entry`、`wrong-context`、`target-not-found`、`target-ambiguous`、`viewport-changed`、`action-failed`、`action-uncertain`、`end-mismatch`：应用或条目发生了变化 | 从未录制过的步骤（新建或编辑过的指令或参数） |
 | `no-entry`，且缓存目录中存在使用其他键的同一步骤录制记录 | `gap` 或 `truncated` 录制记录 |
 | | 从存储读取失败的步骤 |
+| | 测试在 `report.json` 中的 `testId`、目标名称或智能体名称超过 300 个字符的步骤，且其录制记录由较早的 `e2e` 版本以其他键生成，之后也没有此版本的 `read-write` 运行回放过它 |
 
 其他键下的录制记录可能来自改变键的 `e2e` 升级，也可能来自项目 ID、应用标识或智能体上下文的变化。消息会指出该文件；如果记录由当前版本生成，还会说明变化内容。如果已无回放使用该文件，请删除它。此检查不涵盖自定义 `cache.store`。
 

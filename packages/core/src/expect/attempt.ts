@@ -4,6 +4,7 @@ import { attemptBrand } from '../internal/brands.ts';
 import { InfrastructureError } from '../internal/errors.ts';
 import { realmSlot } from '../internal/realm-slot.ts';
 import type { AttemptBudget } from '../run/budget.ts';
+import type { AttemptGuests } from '../run/guest-steps.ts';
 import type { SoftFailures } from './soft.ts';
 import type { PollScope } from './poll-scope.ts';
 
@@ -23,6 +24,13 @@ export interface PublishedAttempt {
   readonly expectFailure?: (reason: string) => void;
   /** Hosted callers have no runner-owned body lineage; their polls belong to the session. */
   readonly polls?: PollScope;
+  /**
+   * Takes in the other sessions the test drives beside its own, the ones a
+   * `launch()` host opens: their steps are recorded with the attempt's own.
+   * A suite's attempt offers it; a hosted one (`openHost`, `e2e mcp`) does
+   * not yet, so a session used there tells nobody.
+   */
+  readonly guests?: AttemptGuests;
 }
 
 /**

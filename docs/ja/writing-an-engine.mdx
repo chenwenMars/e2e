@@ -178,7 +178,7 @@ targets: [{ name: 'phone', engine: hyperdrive({ device: 'iPhone 16' }), app: { b
 
 ## エンジンが提供するフィクスチャ
 
-エンジンは `browser` や `device` のようなフィクスチャを提供できます。各メソッドを `context.fixture` で包むと、呼び出しごとに独自のアーティファクトと失敗情報を持つ `<fixture>.<method>` ステップとして記録できます。フィクスチャは、テストと同じランナープロセス内で動きます。エンジンサーバーでは `connectEngine` から渡します。[ホスト側の処理をクライアントに置く](/engine-servers#keep-host-work-on-the-client)を参照してください。
+エンジンは `browser` や `device` のようなフィクスチャを提供できます。テストから見ると、これらは[組み込みフィクスチャ](/reference/test#fixtures)です。各メソッドを `context.fixture` で包むと、呼び出しごとに独自のアーティファクトと失敗情報を持つ `<fixture>.<method>` ステップとして記録できます。フィクスチャは、テストと同じランナープロセス内で動きます。エンジンサーバーでは `connectEngine` から渡します。[ホスト側の処理をクライアントに置く](/engine-servers#keep-host-work-on-the-client)を参照してください。
 
 ```ts
 fixtures: {

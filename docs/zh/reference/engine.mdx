@@ -88,6 +88,7 @@ export interface EngineHandle<Fixtures extends object = {}> extends Engine {
 | `perform`、`actions` | 只声明了其中一个。`actions` 列表为空、包含重复的种类，或指定了 `LOCATOR_ACTION_KINDS` 之外的种类。 |
 | `performAt`、`pointerActions` | 只声明了其中一个。`pointerActions` 列表为空、包含重复的种类，或指定了 `POINTER_ACTION_KINDS` 之外的种类。 |
 | `tapModifiers` | 不是布尔值，或设为 `true` 但未声明 `perform`。 |
+| `isolation` | 不是 `'attempt'` 或 `'worker'`。 |
 | `keyboard`、`state`、`artifacts`、`session` | 包含未知键或非函数成员。`keyboard` 缺少 `type` 和 `press`；`state` 未同时包含 `capture` 和 `restore`；`artifacts` 缺少 `screenshot`；声明了 `startVideo` 却没有 `stopVideo`，或反之。 |
 | `secrets` | 不是由 `secrets.get()` 句柄组成的数组。 |
 | `fixtures` | 不是对象，某个测试夹具不是工厂函数，或测试夹具名称不是小驼峰标识符，或遮蔽了 `agent`、`app`、`screen`、`platform`、`session`。 |
@@ -115,6 +116,7 @@ export interface EngineHandle<Fixtures extends object = {}> extends Engine {
 | [`tapModifiers`](#capabilities) | `boolean` |
 | [`keyboard`](#keyboard) | `EngineKeyboard` |
 | [`fixtures`](#contributed-fixtures) | 工厂 |
+| [`isolation`](#fixture-isolation) | `'attempt' \| 'worker'` |
 | [`state`](#state) | `EngineStateCapability` |
 | [`artifacts`](#artifacts) | `EngineArtifacts` |
 | [`validateApp`](#app) | 方法 |
@@ -221,6 +223,11 @@ export interface Engine {
    * capability names; `requires: ['<name>']` gates at selection.
    */
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
+  /**
+   * How long the state behind this engine's `fixtures`, `app`, and `screen`
+   * lives; see `EngineIsolation`. Defaults to `attempt`.
+   */
+  readonly isolation?: EngineIsolation;
   /** capability: state - opaque snapshot capture/restore for session reuse. */
   readonly state?: EngineStateCapability;
   /** capability: artifacts - screenshots under the attempt directory, and videos there or at a provider. */
@@ -1967,7 +1974,7 @@ export function stopProviderRecording(
 
 ### 引擎提供的测试夹具
 
-引擎通过 `fixtures` 为测试夹具提供具名接口。每个键都会成为一个测试夹具名称和能力名称。
+引擎通过 `fixtures` 为测试夹具提供具名接口。每个键都会成为一个测试夹具名称和能力名称。对测试来说，它与 `app` 和 `screen` 一样是[内置测试夹具](/reference/test#fixtures)。
 
 ```ts title="src/index.ts"
 fixtures: {
@@ -2075,6 +2082,38 @@ export interface EngineFixtureContext {
 }
 ```
 
+#### 测试夹具隔离
+
+`isolation` 声明一次尝试所做的更改是否会保留到下一次尝试。它决定由该引擎支撑的内置测试夹具的作用域：引擎提供的测试夹具、`app` 和 `screen`。
+
+```ts
+defineEngine({ name: 'device', /* ... */ isolation: 'worker' });
+```
+
+| 值 | 含义 | 测试夹具作用域 |
+| --- | --- | --- |
+| `'attempt'`（默认） | `startAttempt` 为每次尝试提供全新的界面，例如浏览器上下文。 | 测试作用域的测试夹具。`beforeAll` 和 `afterAll` 无法读取它们。 |
+| `'worker'` | 一次尝试所做的更改会保留。设备会保留权限和已安装的应用。 | [工作进程测试夹具](/reference/test#worker-fixtures)。`beforeAll`、`afterAll` 和工作进程测试夹具可以得到它们。 |
+
+`@e2e-dev/mobile` 声明 `'worker'`。在这样的引擎上：
+
+- 每一轮测试套件钩子都在它自己的一次简短尝试中运行（先 `startAttempt`，再 `endAttempt`）。工作进程结束时，工作进程测试夹具的清理也是如此。让 `startAttempt` 不启动任何内容。
+- 在串行分组中，或在 `e2e mcp` 会话运行的测试中，钩子在已经打开的尝试上运行。引擎同一时间只运行一次尝试。
+- 当这次尝试无法打开，或运行被中断时，钩子会在没有这些内置测试夹具的情况下运行。参阅 [`beforeAll`](/reference/test#beforeall)。
+
+```ts
+/**
+ * What one attempt on an engine leaves for the next. `attempt`: nothing,
+ * `startAttempt` gives each attempt a fresh surface (a browser context), so
+ * the engine's fixtures, `app`, and `screen` are test fixtures, and a suite
+ * hook cannot use them. `worker`: what an attempt does stays (a device keeps
+ * permissions, keychain, and installed apps), so they are worker fixtures,
+ * which `beforeAll`, `afterAll`, and worker-scoped `test.extend()` fixtures
+ * see; a suite hook runs in a short attempt of its own for them.
+ */
+export type EngineIsolation = 'attempt' | 'worker';
+```
+
 #### 声明操作
 
 `context.fixture(name, surface, operations)` 声明哪些方法会作为步骤记录。每个操作接受：
@@ -2126,7 +2165,7 @@ return context.fixture('printer', printer, { print: { kind: 'resource' } });
 
 ### 导出的名称
 
-`EngineCleanupContext`、`EngineDisposeContext`、`OperationContext`、`TextPattern`、`SemanticQuery`、`LocatorExpression`、`NodeRef`、`SemanticNode`、`ViewportPoint`、`ViewportSize`、`ObservationPixels`、`LocatorAction`、`LocatorActionKind`、`PointerAction`、`PointerActionKind`、`ScrollDirection`、`Momentum`、`SelectOption`、`Key`、`KeyModifier`、`KeyName`、`ParsedKey`、`ENGINE_SPI_VERSION`、`LOCATOR_ACTION_KINDS`、`POINTER_ACTION_KINDS`、`KEY_MODIFIERS`、`KEY_NAMES`、`parseKey`、`ENGINE_ERROR_CODES`、`RETRYABLE_ENGINE_ERROR_CODES`、`Secret`、`isSecret`、`TextMatch`、`JsonValue`、`JsonValueRules`、`ResolveExpressionOptions`、`PollConditionOptions`、`WithoutUndefined`、`FixtureOperation`、`OBSERVED_NAME_LIMIT` 和 `OBSERVED_TEXT_LIMIT` 均从 `e2e/engine` 导出。[引擎协议](/reference/engine-protocol)的 `connectEngine`、`serveEngine`、`describeEngine`、`spawnTransport`、`socketTransport`、`loopbackTransport`、`ENGINE_METHODS`、`ENGINE_PROTOCOL_VERSION` 及其类型也从这里导出。
+`EngineCleanupContext`、`EngineDisposeContext`、`OperationContext`、`TextPattern`、`SemanticQuery`、`LocatorExpression`、`NodeRef`、`SemanticNode`、`ViewportPoint`、`ViewportSize`、`ObservationPixels`、`LocatorAction`、`LocatorActionKind`、`PointerAction`、`PointerActionKind`、`ScrollDirection`、`Momentum`、`SelectOption`、`Key`、`KeyModifier`、`KeyName`、`ParsedKey`、`ENGINE_SPI_VERSION`、`LOCATOR_ACTION_KINDS`、`POINTER_ACTION_KINDS`、`KEY_MODIFIERS`、`KEY_NAMES`、`parseKey`、`ENGINE_ERROR_CODES`、`RETRYABLE_ENGINE_ERROR_CODES`、`Secret`、`isSecret`、`TextMatch`、`JsonValue`、`JsonValueRules`、`ResolveExpressionOptions`、`PollConditionOptions`、`WithoutUndefined`、`FixtureOperation`、`EngineIsolation`、`OBSERVED_NAME_LIMIT` 和 `OBSERVED_TEXT_LIMIT` 均从 `e2e/engine` 导出。[引擎协议](/reference/engine-protocol)的 `connectEngine`、`serveEngine`、`describeEngine`、`spawnTransport`、`socketTransport`、`loopbackTransport`、`ENGINE_METHODS`、`ENGINE_PROTOCOL_VERSION` 及其类型也从这里导出。
 
 ### `SemanticNode`
 

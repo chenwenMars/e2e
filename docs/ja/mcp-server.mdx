@@ -73,6 +73,19 @@ Web、iOS、Android アプリのライブセッションを提供します。
     }
     ```
   </Tab>
+  <Tab title="OpenCode">
+    プロジェクトの `opencode.json` にサーバーを追加します。
+    プロジェクトで `opencode mcp list` を実行すると、接続済みと表示されます。
+
+    ```json title="opencode.json"
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "e2e": { "type": "local", "command": ["npx", "e2e", "mcp"] }
+      }
+    }
+    ```
+  </Tab>
 </Tabs>
 
 ターゲットにアプリの起動コマンドがあれば、セッションはそれを実行し、URL とポートを示します。

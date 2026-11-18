@@ -1,5 +1,5 @@
 import { useState, type RefObject } from 'react';
-import { formatClock, videoPosition, type Step, type TimedVideo } from './data.ts';
+import { formatClock, stepCall, videoName, videoPosition, type Step, type TimedVideo } from './data.ts';
 import { Icon } from './ui.tsx';
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
@@ -160,7 +160,7 @@ export function VideoPlayer({
                   aria-pressed={partIndex === index}
                   onClick={() => onIndexChange(partIndex)}
                 >
-                  part {partIndex + 1}
+                  {videoName(candidate, videos)}
                 </button>
               ))}
             </div>
@@ -194,7 +194,7 @@ export function VideoPlayer({
         <p className="type-code-s min-h-[1lh] truncate text-shade-400">
           {playingStep === undefined ? null : (
             <>
-              <span className="text-shade-500">{playingStep.api}</span> {playingStep.label}
+              <span className="text-shade-500">{stepCall(playingStep)}</span> {playingStep.label}
             </>
           )}
         </p>

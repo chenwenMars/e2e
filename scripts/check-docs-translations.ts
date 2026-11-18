@@ -1,6 +1,10 @@
 /**
- * Fails when a translated docs page drifted from the English page it
+ * Warns when a translated docs page drifted from the English page it
  * translates, or when a language's navigation labels miss a tab or group.
+ *
+ * Translations are best effort: English is the source of truth, and a
+ * translation may lag behind it, since no contributor can be expected to
+ * edit a language they do not speak. So drift is a warning, never a failure.
  *
  * A translation lives at `docs/<language>/<path>.mdx` beside the English
  * `docs/<path>.mdx`; the site serves it at `/docs/<language>/<path>` and
@@ -8,19 +12,21 @@
  * translated page's headings, tabs, and accordions the English page's ids by
  * position, so every `#anchor` and the language switcher land on the same
  * section in either language. That holds only while both pages have the same
- * outline, so this script compares, outside code fences: the heading levels
- * (h1 to h4, the ones with ids) in order, the `<Tab>` and `<Accordion>`
- * elements in order with the `id` each carries, and the explicit `id="..."`
- * values. It also compares the code blocks, in order: a translation shows
- * the English page's code, which `check-docs-examples.ts` checks on the
- * English page only.
+ * outline (a page whose outline differs keeps ids of its own), so this script
+ * compares, outside code fences: the heading levels (h1 to h4, the ones with
+ * ids) in order, the `<Tab>` and `<Accordion>` elements in order with the
+ * `id` each carries, and the explicit `id="..."` values. It also compares the
+ * code blocks, in order: a translation shows the English page's code, which
+ * `check-docs-examples.ts` checks on the English page only. A missing
+ * navigation label falls back to the English one on the site.
  *
- * It also fails on a translation with no English page, a translation without
- * a `title`, and a `docs/<language>/navigation.json` that does not label every
- * tab and group in `docs/docs.json`, or labels one that is gone.
+ * It fails only on what needs no language to fix: a translation with no
+ * English page (delete or move it with its English page), a translation
+ * without a `title`, and a language with no `navigation.json`.
  *
  * Usage: `node scripts/check-docs-translations.ts`, part of `pnpm docs:check`.
- * Exits 1 listing every problem.
+ * Prints every warning (as an annotation on GitHub Actions) and exits 1
+ * listing every problem.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -110,6 +116,7 @@ function difference(kind: string, english: string[], translated: string[]): stri
 }
 
 const problems: string[] = [];
+const warnings: { file: string; message: string }[] = [];
 const config = JSON.parse(read(join(DOCS, 'docs.json'))) as DocsJson;
 let checked = 0;
 
@@ -133,12 +140,20 @@ for (const language of LANGUAGES) {
       difference('<Tab>/<Accordion>', theirs.elements, ours.elements),
       difference('id', theirs.ids, ours.ids),
     ]) {
-      if (problem) problems.push(`docs/${file}: ${problem}`);
+      if (problem) {
+        warnings.push({
+          file: `docs/${file}`,
+          message: `${problem}; until the outline matches, the site gives this page ids of its own, so links to its anchors and the language switcher miss`,
+        });
+      }
     }
     const drifted = theirs.code.findIndex((block, i) => block !== ours.code[i]);
     if (drifted !== -1 || theirs.code.length !== ours.code.length) {
       const at = drifted === -1 ? theirs.code.length : drifted;
-      problems.push(`docs/${file}: code block #${at + 1} differs from the English page's (${theirs.code.length} vs ${ours.code.length} in all)`);
+      warnings.push({
+        file: `docs/${file}`,
+        message: `code block #${at + 1} differs from the English page's (${theirs.code.length} vs ${ours.code.length} in all)`,
+      });
     }
     checked++;
   }
@@ -155,20 +170,34 @@ for (const language of LANGUAGES) {
     ['tabs', tabs, navigation.tabs ?? {}],
     ['groups', groups, navigation.groups ?? {}],
   ] as const) {
+    const file = `docs/${language}/navigation.json`;
     for (const name of names) {
-      if (!labels[name]) problems.push(`docs/${language}/navigation.json: no label in "${kind}" for "${name}"`);
+      if (!labels[name]) warnings.push({ file, message: `no label in "${kind}" for "${name}"` });
     }
     for (const name of Object.keys(labels)) {
-      if (!names.includes(name)) problems.push(`docs/${language}/navigation.json: "${kind}" labels "${name}", which docs.json no longer has`);
+      if (!names.includes(name)) warnings.push({ file, message: `"${kind}" labels "${name}", which docs.json no longer has` });
     }
   }
 }
 
+if (warnings.length > 0) {
+  const annotate = process.env['GITHUB_ACTIONS'] === 'true';
+  const lines = warnings.map(({ file, message }) =>
+    annotate ? `::warning file=${file}::Stale translation: ${message}` : `warning: ${file}: ${message}`,
+  );
+  process.stdout.write(
+    `${lines.join('\n')}\n\ndocs translations: ${warnings.length} ${warnings.length === 1 ? 'place' : 'places'} behind English. Translations are best effort, so this does not fail the check; whoever updates the translation brings its outline, code, and labels in line. See authoring-docs, "Translations".\n`,
+  );
+}
+
 if (problems.length > 0) {
   process.stderr.write(
-    `${problems.join('\n')}\n\nA translation keeps the English page's outline and code: translate the text, never add, drop, or reorder a heading, tab, accordion, or id, and copy code blocks as they are. See authoring-docs, "Translations".\n`,
+    `${problems.join('\n')}\n\nA translation sits at the same path as its English page and has a title, and each language has a navigation.json. See authoring-docs, "Translations".\n`,
   );
   process.exitCode = 1;
 } else {
-  process.stdout.write(`docs translations: ${checked} translated ${checked === 1 ? 'page matches its' : 'pages match their'} English outline and code\n`);
+  const behind = new Set(warnings.map(({ file }) => file).filter((file) => file.endsWith('.mdx'))).size;
+  process.stdout.write(
+    `docs translations: ${checked - behind} of ${checked} translated ${checked === 1 ? 'page matches its' : 'pages match their'} English outline and code\n`,
+  );
 }

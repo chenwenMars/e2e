@@ -14,15 +14,15 @@ import type { DebugTrace } from '../internal/debug.ts';
 import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type E2EError, type SerializedError } from '../internal/errors.ts';
 import { timestamp, uuidv7 } from '../internal/ids.ts';
 import { Deadline, MAX_TIMER_MS, withTimeout } from '../internal/time.ts';
-import { attemptVideo } from '../internal/recording-modes.ts';
+import { attemptVideo, type VideoRecording } from '../internal/recording-modes.ts';
 import type { TestFixtures } from '../types.ts';
 import { createAttemptArtifacts, type AttemptArtifacts } from './artifacts.ts';
 import { AttemptBudget } from './budget.ts';
 import { classifyAttemptStatus, type ClosingRecord, type EngineSessions, type RestoredState } from './engine-sessions.ts';
 import { createFixtures, type AttemptEnvironment } from './fixtures.ts';
-import type { AttemptRecord } from './records.ts';
+import type { AttemptRecord, SessionVideo } from './records.ts';
 import { redactForSession, sessionLedger } from './secrecy.ts';
-import { StepRecorder, type StepProgress } from './steps.ts';
+import { StepRecorder, type StepProgress, type StepRecord } from './steps.ts';
 import { WorkerModels } from './worker-models.ts';
 
 export interface StandaloneSessionOptions {
@@ -31,6 +31,8 @@ export interface StandaloneSessionOptions {
   readonly timeoutMs: number;
   readonly agent?: string | undefined;
   readonly onProgress?: (progress: StepProgress) => void;
+  /** See `StepRecorderOptions.mirror`. */
+  readonly mirror?: (progress: StepProgress, record: StepRecord) => void;
   /**
    * Makes closing the way the session's owner cancels what runs on it.
    * Absent, a step still running at close was not awaited and fails the
@@ -50,6 +52,8 @@ export interface StandaloneSessionOptions {
   readonly name?: string;
   /** A state an earlier session captured, restored at launch. */
   readonly state?: RestoredState | undefined;
+  /** The video this session records, in place of what the target's mode says. */
+  readonly video?: VideoRecording | undefined;
 }
 
 export interface StandaloneAttempt<Extra = unknown> {
@@ -64,6 +68,8 @@ export interface StandaloneAttempt<Extra = unknown> {
   readonly tracePath: string;
   /** What the policy's `launched` built on the attempt. */
   readonly extra: Extra;
+  /** The videos the attempt recorded, files and hosted links, once it is closed. */
+  videos(): readonly SessionVideo[];
   close(): Promise<readonly SerializedError[]>;
 }
 
@@ -199,9 +205,11 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
   const steps = new StepRecorder(attemptId, {
     maxEventsPerStep: config.limits.maxEventsPerStep, projectRoot: config.projectRoot, redact, signal: attemptSignal,
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+    ...(options.mirror === undefined ? {} : { mirror: options.mirror }),
     ...(options.redactThrown === true ? { redactThrown: true } : {}),
     ...(options.retainSteps === undefined ? {} : { retainSteps: options.retainSteps }),
   });
+  steps.owner = 'the hosted session';
   const artifacts = createAttemptArtifacts({
     artifactsRoot: worker.resultsDir, segments: identity.segments, attemptId, currentStepId: () => steps.currentStepId,
     ...(config.artifactStore === undefined ? {} : { store: config.artifactStore }),
@@ -219,7 +227,7 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
     if (error === undefined) return { status: 'passed', error };
     return { status: classifyAttemptStatus(error, step?.status === 'timed-out', error.code === 'CANCELLED'), error };
   };
-  const video = attemptVideo(target.video, 0);
+  const video = options.video ?? attemptVideo(target.video, 0);
   session = await executor.launchSession({ session: options.state, recordings: { trace: undefined, video } }, attemptId, artifacts.dir, attemptSignal);
   const opened = session;
   const closeOpened = (record: ClosingRecord): Promise<void> =>
@@ -323,5 +331,10 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
   return {
     runId, attemptId, fixtures: acquired.fixtures, agentRuntime: acquired.agentRuntime, session: opened, steps, budget,
     artifactsDir: artifacts.dir, tracePath, extra, close,
+    videos: () => artifacts.records.flatMap((artifact): SessionVideo[] => {
+      if (artifact.kind !== 'video') return [];
+      if (artifact.path !== undefined) return [{ path: path.join(worker.resultsDir, artifact.path), startedAt: artifact.startedAt }];
+      return artifact.url === undefined || artifact.startedAt === undefined ? [] : [{ url: artifact.url, mediaType: artifact.mediaType, startedAt: artifact.startedAt }];
+    }),
   };
 }

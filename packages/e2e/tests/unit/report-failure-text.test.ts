@@ -186,6 +186,29 @@ describe('renderTracePage', () => {
     expect(lines[at + 4]).not.toContain('console.txt');
   });
 
+  it('names the session of a step that ran on one the test opened beside its own, and places it in that session\'s recording', () => {
+    const at = (seconds: number) => new Date(Date.UTC(2026, 9, 27, 10, 0, seconds)).toISOString();
+    const video = (id: string, file: string, startedAt: string, actor?: string) =>
+      ({ id, kind: 'video' as const, mediaType: 'video/webm', path: `t/video/${file}`, redaction: 'incomplete' as const, startedAt, producer: { kind: 'attempt' as const }, ...(actor === undefined ? {} : { actor }) });
+    const body = page([
+      failed({
+        steps: [
+          step({ index: 0, api: 'app.open', startedAt: at(0), durationMs: 500 }),
+          step({ index: 1, api: 'app.open', actor: 'launch-1', startedAt: at(6), durationMs: 500 }),
+          step({ index: 2, api: 'locator.tap', status: 'failed', error: reportError(), startedAt: at(9), durationMs: 500 }),
+        ],
+        artifacts: [video('a:0', 'video.webm', at(0)), video('a:1', 'launch-1.webm', at(4), 'launch-1')],
+      }),
+    ]);
+    const steps = body.split('\n').filter((line) => /^\d+\. /u.test(line));
+    expect(steps[0]).toContain('`app.open`');
+    expect(steps[0]).toContain(', video 0:00');
+    expect(steps[1]).toMatch(/^2\. ✓ launch-1 › `app\.open`/u);
+    expect(steps[1]).toContain(', launch-1 0:02');
+    // The test's own step stays in the test's own recording, though the session's began later.
+    expect(steps[2]).toContain(', video 0:09');
+  });
+
   it("places a step in the recording that covers it: the attempt's video from its start, a stopped recording only until its stop step ends", () => {
     const at = (seconds: number) => new Date(Date.UTC(2026, 9, 27, 10, 0, seconds)).toISOString();
     const video = (id: string, file: string, startedAt: string, producer: ReportAttempt['artifacts'][number]['producer']) =>

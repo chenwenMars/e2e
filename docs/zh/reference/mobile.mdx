@@ -1121,7 +1121,7 @@ export interface DeviceSelection {
 
 ### 导出类型
 
-`MobileOptions`、`MobilePlatform`、`DevicePermission`、`LaunchPermissions`、`PermissionState`、`DeviceClientConfig`、`DeviceConnection`、`DeviceDaemon`、`DeviceProvider`、`DeviceLease`、`DeviceReleaseContext`、`DeviceRequest`、`Device`、`DeviceSession`、`DeviceSessionClient`、`DeviceSelection`、`DeviceOrientation`、`BiometricSensor`、`ForegroundApp`、`FoldPose`、`InstallAppOptions`、`InstalledApp` 和 `OpenAppOptions` 由 `@e2e-dev/mobile` 导出。运行时导出包括 `mobile`，以及带有 `device` 测试夹具类型的 `test`、`describe`、`beforeEach`、`afterEach`、`beforeAll` 和 `afterAll`；`mobileTools` 来自 `@e2e-dev/mobile/tools`。
+`MobileOptions`、`MobilePlatform`、`DevicePermission`、`LaunchPermissions`、`PermissionState`、`DeviceClientConfig`、`DeviceConnection`、`DeviceDaemon`、`DeviceProvider`、`DeviceLease`、`DeviceReleaseContext`、`DeviceRequest`、`Device`、`DeviceSession`、`DeviceSessionClient`、`DeviceSelection`、`DeviceOrientation`、`BiometricSensor`、`ForegroundApp`、`FoldPose`、`InstallAppOptions`、`InstalledApp` 和 `OpenAppOptions` 由 `@e2e-dev/mobile` 导出。运行时导出包括 `mobile`，以及带有 `device` 测试夹具类型的 `test`、`describe`、`beforeEach`、`afterEach`、`beforeAll` 和 `afterAll`。设备会在测试之间保留状态，因此 `device`、`app` 和 `screen` 是[工作进程测试夹具](/reference/test#worker-fixtures)，`beforeAll` 和 `afterAll` 也会得到它们。`mobileTools` 来自 `@e2e-dev/mobile/tools`。
 
 ## 相关内容
 

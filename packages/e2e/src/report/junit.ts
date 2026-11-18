@@ -7,7 +7,7 @@ import { realpathOfExisting, relativeToProjectRoot } from '@e2e-dev/core/lib/int
 import type { FinishedRun } from '../run-types.ts';
 import type { Report1Document, ReportError, ReportResult, ReportSerialGroup } from './build.ts';
 import { repeatSuffix } from './format.ts';
-import { failureScreenshot, toldAttempt } from './failure-text.ts';
+import { failedStepOf, failureScreenshot, toldAttempt } from './failure-text.ts';
 import { outcome, type AttemptView } from './outcome.ts';
 import { fileReporter, toPosixPath } from './write.ts';
 
@@ -98,9 +98,10 @@ function verdictElement(error: ReportError | undefined): 'failure' | 'error' {
   return error === undefined || error.category === 'test' ? 'failure' : 'error';
 }
 
-function errorBody(error: ReportError): string {
+/** `CODE (phase): message`; a failure on a step of a session beside the test's own names it, `CODE (phase) on launch-1: message`. */
+function errorBody(error: ReportError, actor?: string): string {
   const phase = error.phase === undefined ? '' : ` (${error.phase})`;
-  return `${error.code}${phase}: ${error.message}`;
+  return `${error.code}${phase}${actor === undefined ? '' : ` on ${actor}`}: ${error.message}`;
 }
 
 /** Why a result was skipped: its reason, after the test filter's name when one left it out. */
@@ -189,7 +190,7 @@ function renderResult(result: ReportResult, groups: ReadonlyMap<string, ReportSe
       const element = verdictElement(error);
       const message = error?.message ?? result.status;
       const type = error?.code ?? result.status;
-      const body = error === undefined ? result.status : errorBody(error);
+      const body = error === undefined ? result.status : errorBody(error, failedStepOf(told)?.step.actor);
       const attachment = screenshotAttachment(told, options);
       const lines = attachment === undefined ? [] : [`[[ATTACHMENT|${attachment}]]`];
       return {

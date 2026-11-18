@@ -6,7 +6,7 @@
  * moves as calls come and go.
  */
 
-import { bounded, F_POINTER, formatTime, terminalColumns, terminalRows, type Colors } from './format.ts';
+import { bounded, F_POINTER, formatTime, terminalColumns, terminalRows, withActor, type Colors } from './format.ts';
 import type { CurrentStep, FileGroup, PausedTest, RunningTest, SetupInFlight } from './list-model.ts';
 import { eventLine, quotedLabel, stepLine, stepPromptRows } from './list-steps.ts';
 import { REPAINT_INTERVAL_MS, WIDTH_MARGIN } from './live-window.ts';
@@ -194,7 +194,7 @@ export class RunningTree {
     const { pc } = this;
     const { current } = test;
     if (current === undefined) return [];
-    const rows = [pc.dim(`${F_DOWN_RIGHT} ${current.api} ${quotedLabel(current.label)}`)];
+    const rows = [pc.dim(`${F_DOWN_RIGHT} ${withActor(current.actor, current.api)} ${quotedLabel(current.label)}`)];
     if (current.kind !== 'agent') return rows.slice(0, budget);
     const overflow = current.events.length - maxEvents;
     if (overflow > 0) rows.push(`  ${foldMarker(pc, overflow, 'call')}`);

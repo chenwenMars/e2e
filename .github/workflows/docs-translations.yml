@@ -2,7 +2,8 @@ name: docs translations
 
 # Checks the translated docs sections a pull request changes against DeepL
 # (scripts/check-docs-translations-deepl.ts), including the translations an
-# English edit leaves stale. A flagged section gets a warning on its heading
+# English edit leaves stale, unless the edit changed the page's outline: such a
+# page is skipped with a notice. A flagged section gets a warning on its heading
 # and a row in the job summary; the job fails only when DeepL cannot be
 # reached. Advisory, so it is not a required check and filters by path here
 # instead of through a gate job. e2e-inc/e2e-site checks its UI copy the same way.

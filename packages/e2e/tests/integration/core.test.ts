@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { StepExecutor, StepExecutorContext } from '@e2e-dev/core/lib/agent/executor';
 import { createAgent } from '@e2e-dev/core/agent';
 import { launch, SessionState, type Host, type Session } from '@e2e-dev/core';
+import { publishAttempt } from '@e2e-dev/core/lib/expect/attempt';
+import { SoftFailures } from '@e2e-dev/core/lib/expect/soft';
+import { Deadline } from '@e2e-dev/core/lib/internal/time';
+import { AttemptBudget } from '@e2e-dev/core/lib/run/budget';
 import { createFakeEngine, FAKE_APP } from '../helpers/fake-engine.ts';
 import type { ScriptedNode } from '../helpers/scripted-scene.ts';
 
@@ -223,6 +227,63 @@ describe('e2e/core', { timeout: 60_000 }, () => {
     expect(String((failure as Error).message)).not.toContain('capture-secret-123');
     expect((failure as Error).cause).toBeUndefined();
     await session.close();
+  });
+
+  it('redacts in each session the values every other host was given, and carries none of them in its saved state', async () => {
+    const BROWSER = 'browser-only-secret-5511';
+    const PHONE = 'phone-only-secret-8823';
+    const showing = (text: string) => (): ScriptedNode[] => [{ id: 'echo', role: 'paragraph', name: '', text }];
+    const browser = await host(createFakeEngine({ scene: showing(`the phone sent ${PHONE}`), state: true }).engine, { app: FAKE_APP, secrets: { BROWSER }, timeout: 200 });
+    const onBrowser = await browser.newSession();
+    await onBrowser.app.open('/');
+    expect(await onBrowser.screen.tree()).toContain(PHONE);
+
+    // A session opened before the other host redacts its values from the moment it declares them; one opened after does too.
+    const phone = await host(createFakeEngine({ scene: showing(`the browser sent ${BROWSER}`) }).engine, { app: FAKE_APP, secrets: { PHONE } });
+    expect(await onBrowser.screen.tree()).toContain('the phone sent <secret:PHONE>');
+    const onPhone = await phone.newSession();
+    await onPhone.app.open('/');
+    expect(await onPhone.screen.tree()).toContain('the browser sent <secret:BROWSER>');
+
+    const failure = await onBrowser.screen.getByText(PHONE).tap().then(() => undefined, (cause: Error) => cause);
+    expect(failure).toMatchObject({ code: 'LOCATOR_NOT_FOUND', message: expect.stringContaining('<secret:PHONE>'), details: { locator: expect.stringContaining('<secret:PHONE>') } });
+    expect(`${failure?.message} ${failure?.stack} ${JSON.stringify((failure as { details?: unknown }).details)}`).not.toContain(PHONE);
+
+    // The browser session redacts the phone's value and does not hold it: its exported state names its own secret alone.
+    const exported = Buffer.from(await (await onBrowser.saveState()).export({ key: Buffer.alloc(32, 7) })).toString('latin1');
+    expect(exported).toContain('BROWSER');
+    expect(exported).not.toContain('PHONE');
+
+    // A program's host shares its values while it is open, and no longer.
+    await phone.close();
+    expect(await onBrowser.screen.tree()).toContain(PHONE);
+  });
+
+  it('closes a host, and a session, whose test gave up its seat while it was opening', async () => {
+    const ended = new AbortController();
+    let seats = 0;
+    const gaveUp = { signal: new AbortController().signal, take: () => undefined };
+    const steps = { progress: () => undefined, video: () => Promise.resolve() };
+    publishAttempt(
+      {
+        attemptId: 'a1', owner: 'suite', testKind: 'test', assertionTimeout: 1_000, budget: new AttemptBudget(ended.signal, new Deadline(1_000)), soft: new SoftFailures(),
+        // The first host is taken, with a session nobody takes; the second host is not taken either.
+        guests: { video: false, host: () => ((seats += 1) === 1 ? { signal: gaveUp.signal, take: () => true as const } : gaveUp), session: () => gaveUp, visit: () => steps, gaveUp: () => undefined },
+      },
+      ended.signal,
+    );
+    try {
+      const kept = createFakeEngine({ scene: shop });
+      const opened = await host(kept.engine, { app: FAKE_APP });
+      await expect(opened.newSession()).rejects.toMatchObject({ code: 'CANCELLED', message: expect.stringContaining('ended before it was open') });
+      expect(kept.stats()).toMatchObject({ attemptsStarted: 1, attemptsEnded: 1 });
+
+      const dropped = createFakeEngine({ scene: shop });
+      await expect(launch(dropped.engine, { app: FAKE_APP, cwd: dir, env: {}, handleSignals: false })).rejects.toMatchObject({ code: 'CANCELLED', message: expect.stringContaining('ended before it was open') });
+      expect(dropped.stats()).toMatchObject({ inits: 1, disposes: 1 });
+    } finally {
+      ended.abort();
+    }
   });
 
   it('hands secrets out by name and redacts their values from what the screen reads', async () => {

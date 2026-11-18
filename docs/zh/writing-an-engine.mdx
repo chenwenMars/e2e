@@ -178,7 +178,7 @@ targets: [{ name: 'phone', engine: hyperdrive({ device: 'iPhone 16' }), app: { b
 
 ## 引擎提供的测试夹具
 
-引擎可以提供 `browser` 或 `device` 等测试夹具。使用 `context.fixture` 包装它们的方法，将每次调用记录为 `<fixture>.<method>` 步骤，并带有独立的产物和失败信息。测试夹具与测试一起在运行器进程中运行。引擎服务器通过 `connectEngine` 获取它们；参阅[将宿主工作保留在客户端](/engine-servers#keep-host-work-on-the-client)。
+引擎可以提供 `browser` 或 `device` 等测试夹具。对测试来说，它们是[内置测试夹具](/reference/test#fixtures)。使用 `context.fixture` 包装它们的方法，将每次调用记录为 `<fixture>.<method>` 步骤，并带有独立的产物和失败信息。测试夹具与测试一起在运行器进程中运行。引擎服务器通过 `connectEngine` 获取它们；参阅[将宿主工作保留在客户端](/engine-servers#keep-host-work-on-the-client)。
 
 ```ts
 fixtures: {

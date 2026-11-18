@@ -129,6 +129,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | Detox | e2e |
 | --- | --- |
 | `device.launchApp({ newInstance: true })` | `app.restart()` |
+| 在 `beforeAll` 中调用 `device.launchApp()` | 在 `beforeAll` 中调用 `app.open()`，它会得到 `device`、`app` 和 `screen` |
 | `device.launchApp({ newInstance: false })` | 不带 `relaunch` 的 `device.openApp(id)` |
 | `device.launchApp({ launchArgs, permissions })` | `device.openApp(id, { relaunch: true, launchArguments, permissions })` |
 | `device.resetAppState()` | `app.clearState()` |
@@ -150,7 +151,6 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 
 | Detox | 当前替代方案 |
 | --- | --- |
-| 启动应用的 `beforeAll` | 在 `beforeEach` 中调用 `app.open()` |
 | `artifacts.plugins.log`、`--record-logs` | 在 CI 步骤中运行 `adb logcat` 或 `xcrun simctl spawn booted log stream` |
 | `by.id('x').and(by.text('y'))` | `.filter({ hasText })`，或 `device.locator('id=x label="y"')` |
 | `system.element(by.system.label('Allow'))` | `device.alert('accept' \| 'dismiss')`，或通过 `app.permissions` 避免显示提示 |
@@ -185,7 +185,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `device.reloadReactNative()` | `app.restart()`。重新加载需要应用内包含 Detox 框架 |
 | `device.disableSynchronization()`、`enableSynchronization()` | 删除调用。没有需要关闭的同步机制 |
 | `device.setURLBlacklist()` | 删除调用。网络活动不会阻塞操作 |
-| 初始化时安装、`behavior.init.reinstallApp`、`--reuse` | 在测试夹具中调用 `device.installApp()` |
+| 初始化时安装、`behavior.init.reinstallApp`、`--reuse` | 在设置了 `auto: true` 的工作进程测试夹具中调用 `device.installApp()` |
 | `apps.<name>.build`、`detox build` | 在 `e2e run` 前执行普通构建 |
 | 按精确偏移量 `.scroll()` | `screen.swipe({ from, to })` |
 | `by.type('RCTImageView')` | `device.locator('role=image')` 或 `testID` |

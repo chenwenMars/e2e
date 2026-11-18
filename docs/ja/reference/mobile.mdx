@@ -1126,7 +1126,7 @@ export interface DeviceSelection {
 `PermissionState`、`DeviceClientConfig`、`DeviceConnection`、`DeviceDaemon`、
 `DeviceProvider`、`DeviceLease`、`DeviceReleaseContext`、`DeviceRequest`、
 `Device`、`DeviceSession`、`DeviceSessionClient`、`DeviceSelection`、`DeviceOrientation`、`BiometricSensor`、`ForegroundApp`、
-`FoldPose`、`InstallAppOptions`、`InstalledApp`、`OpenAppOptions` を `@e2e-dev/mobile` からエクスポートします。実行時のエクスポートは `mobile` と、`device` フィクスチャの型を持つ `test`、`describe`、`beforeEach`、`afterEach`、`beforeAll`、`afterAll` です。`mobileTools` は `@e2e-dev/mobile/tools` からインポートします。
+`FoldPose`、`InstallAppOptions`、`InstalledApp`、`OpenAppOptions` を `@e2e-dev/mobile` からエクスポートします。実行時のエクスポートは `mobile` と、`device` フィクスチャの型を持つ `test`、`describe`、`beforeEach`、`afterEach`、`beforeAll`、`afterAll` です。デバイスはテスト間で状態を保つため、`device`、`app`、`screen` は[ワーカーフィクスチャ](/reference/test#worker-fixtures)であり、`beforeAll` と `afterAll` も受け取ります。`mobileTools` は `@e2e-dev/mobile/tools` からインポートします。
 
 ## 関連項目
 
