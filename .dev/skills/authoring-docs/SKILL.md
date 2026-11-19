@@ -443,10 +443,15 @@ Each group opens with one table, one row per entry. Keep it to the minimum:
 ## Translations
 
 `docs/<language>/<path>.mdx` translates `docs/<path>.mdx`: `docs/ja/` is
-Japanese, `docs/zh/` Simplified Chinese. Each language's README
-([`docs/ja/README.md`](../../../docs/ja/README.md),
-[`docs/zh/README.md`](../../../docs/zh/README.md)) has its rules, style, and
-glossary.
+Japanese, `docs/zh/` Simplified Chinese, `docs/cs/` Czech, `docs/es/` Spanish,
+`docs/pt/` Brazilian Portuguese, `docs/hi/` Hindi. Each language's
+README ([`docs/ja/README.md`](../../../docs/ja/README.md),
+[`docs/zh/README.md`](../../../docs/zh/README.md),
+[`docs/cs/README.md`](../../../docs/cs/README.md),
+[`docs/es/README.md`](../../../docs/es/README.md),
+[`docs/pt/README.md`](../../../docs/pt/README.md),
+[`docs/hi/README.md`](../../../docs/hi/README.md)) has its rules, style,
+and glossary.
 
 Translations are best effort. English is the source of truth and every
 change keeps it current; translations can lag behind, and no contributor is
@@ -500,6 +505,6 @@ expected to update a language they don't speak.
       ([Vendor logos](#vendor-logos)) and a card on its section's
       overview.
 - [ ] Links and anchors resolve. Moved pages have redirects.
-- [ ] A moved or deleted English page took its `docs/ja/` and `docs/zh/`
-      translations with it ([Translations](#translations)).
+- [ ] A moved or deleted English page took its translations in every
+      `docs/<language>/` folder with it ([Translations](#translations)).
 - [ ] `pnpm docs:check` passes.
