@@ -47,7 +47,7 @@ import { allocateAppPorts } from './app-ports.ts';
 import { inProcessSpawner } from './in-process.ts';
 import { cleanupErrorsOf, someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from '@e2e-dev/core/lib/run/records';
 import { runUnits, type TargetFailure } from './scheduler.ts';
-import type { BeforeStep, HeldStep, StepHoldContext, StepPrompt } from './step-hold.ts';
+import type { BeforeStep, StepPrompt } from './step-hold.ts';
 import { stepPromptLine } from '../report/list-steps.ts';
 import { buildWorkPlans, nonRunResult, orderWorkPlans, plannedSlots, type TargetWorkPlan, type TimeLimit } from './units.ts';
 import { SessionStore } from '@e2e-dev/core/lib/run/sessions';
@@ -1168,7 +1168,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
         ...(options.maxFailures === undefined ? {} : { maxFailures: options.maxFailures }),
         ...(timeLimit === undefined ? {} : { timeLimit }),
         spawn,
-        ...(hold === undefined ? {} : { beforeStep: (step: HeldStep, signal: AbortSignal, readScreen: StepHoldContext['readScreen']) => hold.ask(step, { signal, show: showStep, readScreen }) }),
+        ...(hold === undefined ? {} : { beforeStep: (step, context) => hold.ask(step, { ...context, show: showStep }) }),
         interruptGraceMs: config.timeout + config.cleanupTimeout,
         interruptSignal: interrupted,
         forceSignal: forceController.signal,

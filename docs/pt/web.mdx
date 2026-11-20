@@ -90,31 +90,11 @@ app: {
 - Os testes leem a URL com a porta real em `app.baseUrl`.
 - As entradas do cache continuam válidas quando a porta muda.
 - `reuseExisting` não funciona com a porta `0`.
+- Um servidor de desenvolvimento do Next.js precisa de uma entrada em
+  `allowedDevOrigins` para o host. Veja
+  [Next.js](/frameworks/nextjs#fix-next-js-problems).
 
 Veja [portas livres](/reference/config#free-ports).
-
-<Accordion title="O servidor de desenvolvimento do Next.js renderiza, mas nunca hidrata">
-O Next.js 16 bloqueia requisições de origem cruzada aos seus recursos de
-desenvolvimento. Quando o alvo abre `127.0.0.1` ou `[::1]`, o `next dev` ainda
-se identifica como `localhost`. A página renderiza, os localizadores resolvem e
-os cliques acontecem, mas nenhum handler do React roda.
-
-Adicione o host que o alvo abre a `allowedDevOrigins`. Use `'[::1]'` quando
-`app.url` abre `http://[::1]:0`:
-
-```ts title="next.config.ts"
-import type { NextConfig } from 'next';
-
-const nextConfig: NextConfig = {
-  allowedDevOrigins: ['127.0.0.1'],
-};
-
-export default nextConfig;
-```
-
-Um alvo `localhost` e um alvo de produção com `next start` não precisam de
-entrada.
-</Accordion>
 
 ## Previews protegidos
 

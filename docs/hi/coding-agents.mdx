@@ -78,8 +78,9 @@ cp -R "$repo/plugins/e2e" ~/.cursor/plugins/local/
 Teams और Enterprise पर लोकल प्लगइन के लिए एडमिन सेटिंग **Allow Local
 Plugin Imports** चालू होनी चाहिए, या कोई एडमिन `e2e-inc/e2e` को टीम
 मार्केटप्लेस के रूप में इंपोर्ट करे। प्लगइन
-`e2e`, `create-verification-skill` और `migrate-to-e2e` स्किल और
-[MCP सर्वर](/mcp-server) जोड़ता है, npm पैकेज नहीं। बाकी दो स्किल को प्लगइन के
+`e2e`, `create-verification-skill` और `migrate-to-e2e` स्किल जोड़ता है, npm
+पैकेज नहीं। Codex और Cursor में यह [MCP सर्वर](/mcp-server) भी जोड़ता है।
+Claude Code और Grok Build में सर्वर को प्रोजेक्ट में रजिस्टर करें। बाकी दो स्किल को प्लगइन के
 नाम के साथ चलाएँ: Claude Code में `/e2e:<skill>` और Codex में `$e2e:<skill>`,
 और Cursor में `/<skill>` के रूप में।
 

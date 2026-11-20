@@ -253,6 +253,9 @@ const { app } = await device.installApp('./build/MyApp.app', { reinstall: true }
 await device.openApp(app);
 ```
 
+`device.uninstallApp(id)` remove um app, e `device.isAppInstalled(id)`
+verifica se um app está instalado. Sem um id, os dois usam o app fixado.
+
 `device.openApp` recebe um bundle id, um pacote ou um nome de exibição, nunca
 um link. `device.openLink` abre um deep link ou um link web no app fixado, ou
 no `app` das opções, para login por link mágico e rotas de deep link:

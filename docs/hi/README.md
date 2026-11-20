@@ -93,6 +93,10 @@ translation moves or goes with it in the same change.
 | goal, atomic goal | लक्ष्य, एटॉमिक लक्ष्य | m |
 | replay cache | रीप्ले कैश | m |
 | strict cache mode | स्ट्रिक्ट कैश मोड | m |
+| cache miss | कैश मिस | m |
+| stale (recording, entry) | पुरानी पड़ चुकी (not पुरानी, which only means older) | |
+| recording, cache entry | रिकॉर्डिंग, कैश एंट्री (एंट्री alone when the English says only "entry") | f |
+| test id (prose) | टेस्ट id | f |
 | replay | रीप्ले (noun), रीप्ले करना (verb) | m |
 | executor | एक्ज़ीक्यूटर | m |
 | provider | प्रोवाइडर | m |
@@ -110,6 +114,11 @@ translation moves or goes with it in the same change.
 | coding agent | कोडिंग एजेंट | m |
 | skill | स्किल | f |
 | bug bash | Bug Bash (keep in English) | m |
+| checkout (git working tree) | चेकआउट (git वर्किंग कॉपी) | m |
+| finding (explore, bug bash) | फ़ाइंडिंग (plural also फ़ाइंडिंग) | f |
+| exploration; `explore` in prose | एक्सप्लोरेशन; explore (keep in English) | m |
+| defect | दोष | m |
+| secret fill | सीक्रेट भरना (fill as a noun: फ़िल, m) | |
 | visual testing | विज़ुअल टेस्टिंग | f |
 | self-healing | सेल्फ़-हीलिंग | f |
 | pull request | पुल रिक्वेस्ट (PR) | m |
@@ -149,6 +158,9 @@ translation moves or goes with it in the same change.
 | attempt | प्रयास | m |
 | verdict | फ़ैसला | m |
 | redact | छिपाना | |
+| redaction (noun) | रेडैक्शन | m |
+| value | वैल्यू (not मान) | f |
+| character (of a string) | कैरेक्टर (not अक्षर, since a string also holds digits and symbols) | m |
 | command | कमांड | f |
 | call (noun) | कॉल | f |
 | lease | लीज़ | f |
