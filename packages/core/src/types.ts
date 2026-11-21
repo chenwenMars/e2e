@@ -453,12 +453,21 @@ export interface ActionOptions {
 }
 
 /**
- * A point in CSS pixels. For `screen.tapAt`, `screen.doubleTapAt`, and `screen.swipe` the origin is
- * the viewport's top-left corner, the space `boundingBox()` reports in; for
- * `tap({ position })` it is the node's own top-left corner, inside its
- * border on a document platform.
+ * A point in CSS pixels. For `tap({ position })` the origin is the node's own
+ * top-left corner, inside its border on a document platform. A `Point` is
+ * also a `ScreenPoint`, whose origin is the viewport's top-left corner, the
+ * space `boundingBox()` reports in.
  */
 export type Point = ViewportPoint;
+
+/** CSS pixels, or a percentage of the viewport's width (`x`) or height (`y`), `'0%'` through `'100%'`. */
+export type ScreenCoordinate = number | `${number}%`;
+
+/** A viewport point in pixels, percentages, or both: `{ x: '50%', y: 120 }`. */
+export interface ScreenPoint {
+  readonly x: ScreenCoordinate;
+  readonly y: ScreenCoordinate;
+}
 
 /** `tap`, `click`, `doubleTap`, `dblclick`, and `secondaryTap` options: the action timeout and the keys held for the click. */
 export interface ClickOptions extends ActionOptions {
@@ -509,9 +518,9 @@ export interface SwipeOptions {
 /** A swipe along a path between two viewport points: a touch swipe on a device, a pointer drag on a document platform. */
 export interface SwipePathOptions {
   /** Where the finger goes down. */
-  from: Point;
+  from: ScreenPoint;
   /** Where it lifts. */
-  to: Point;
+  to: ScreenPoint;
   /** Gesture duration in milliseconds; omitted = the engine's default. */
   duration?: number;
   direction?: never;
@@ -533,10 +542,10 @@ export interface Screen {
   getByDisplayValue(value: TextMatch, options?: TextMatchOptions): Locator;
   /** Creates a lazy test-id query: a string matches the whole id, case-sensitive; a RegExp tests it. An engine may also match an id without its platform's namespacing. */
   getByTestId(id: TextMatch, options?: { visible?: boolean }): Locator;
-  /** Taps a viewport point, with no node behind it. */
-  tapAt(point: Point, options?: ActionOptions): Promise<void>;
-  /** Double-taps a viewport point, with no node behind it. */
-  doubleTapAt(point: Point, options?: ActionOptions): Promise<void>;
+  /** Taps a viewport point, in pixels or percentages, with no node behind it. */
+  tapAt(point: ScreenPoint, options?: ActionOptions): Promise<void>;
+  /** Double-taps a viewport point, in pixels or percentages, with no node behind it. */
+  doubleTapAt(point: ScreenPoint, options?: ActionOptions): Promise<void>;
   /** Performs a viewport-level swipe: in a direction, or along a path from one point to another. */
   swipe(options: SwipeOptions | SwipePathOptions): Promise<void>;
   /**
@@ -755,8 +764,9 @@ export interface TestOptions {
   skip?: boolean | string;
   /**
    * Expects the test to fail; a string is the reason. A test failure then
-   * passes it, and a pass fails it with `UNEXPECTED_PASS`. Not allowed inside
-   * a serial group.
+   * passes it, and a pass fails it with `UNEXPECTED_PASS`. A layer with `true`
+   * or any string marks; the innermost reason wins. Not allowed on, inside, or
+   * around a serial group.
    */
   fail?: boolean | string;
   /** Focuses the test locally. CI rejects it with `ONLY_IN_CI`. */
@@ -793,7 +803,7 @@ export interface TestOptions {
   video?: RecordingMode;
 }
 
-export interface DescribeOptions extends Omit<TestOptions, 'only' | 'fail'> {
+export interface DescribeOptions extends Omit<TestOptions, 'only'> {
   /** Runs the group as one ordered retry unit with shared app state. Nesting one serial group in another is a `COLLECTION_ERROR`. */
   serial?: boolean;
 }
@@ -834,6 +844,19 @@ export type SynchronousCondition<Condition> = Extract<Condition, PromiseLike<unk
 /** Opaque handle of a registered test. */
 export interface TestCase {
   readonly [testCaseBrand]: true;
+}
+
+/** The two call forms of `describe`. */
+export interface DescribeRegistrar<Options = DescribeOptions> {
+  /** Declares a group synchronously. */
+  <Result>(title: string, body: SynchronousBody<Result>): void;
+  /** Declares a configured group synchronously. */
+  <Result>(title: string, options: Options, body: SynchronousBody<Result>): void;
+}
+
+export interface DescribeAPI extends DescribeRegistrar {
+  /** Declares a group whose tests are expected to fail, as if it had `fail: true`; a reason goes in the `fail` option of `describe`. */
+  fail: DescribeRegistrar<Omit<DescribeOptions, 'fail'>>;
 }
 
 /** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
@@ -1033,14 +1056,8 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
   extend<Extra = {}, ExtraWorker = {}>(
     fixtures: FixtureDefinitions<Fixtures & Worker, Extra, Worker, ExtraWorker>,
   ): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
-  /** Declares a group synchronously. */
-  describe<Result>(title: string, body: SynchronousBody<Result>): void;
-  /** Declares a configured group synchronously. */
-  describe<Result>(
-    title: string,
-    options: DescribeOptions,
-    body: SynchronousBody<Result>,
-  ): void;
+  /** Declares a group synchronously; `describe.fail` declares one whose tests are expected to fail. */
+  describe: DescribeAPI;
   /** Registers a test-attempt setup hook: it runs after the test's fixtures are set up. */
   beforeEach(fn: TestHookFn<Fixtures & Worker>): void;
   /** Registers a test-attempt teardown hook: it runs before the test's fixtures are torn down. */

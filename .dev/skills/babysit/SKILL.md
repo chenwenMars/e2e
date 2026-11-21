@@ -129,8 +129,31 @@ On `READY`:
    declined scope), post one attributed comment listing exactly that.
    Otherwise post nothing.
 
-Then stop. Any later push removes the label (`.github/workflows/review-label.yml`),
-so babysit again after pushing.
+Then stop. A later push, a merge conflict, a change request, or a move back
+to draft removes the label (`.github/workflows/review-label.yml`), so babysit
+again whenever it is gone.
+
+## From a fork
+
+Without triage access `gh pr edit --add-label` fails. The PR's author asks
+for the label with a comment that is exactly `/ready`, and
+`.github/workflows/review-ready.yml` adds it or replies with what is missing.
+Its gates are stricter than `READY`, because nobody on the team vouches for
+the PR:
+
+- Every review thread is resolved, and each one somebody else opened has
+  your reply. An escalated thread blocks until a maintainer resolves it, so
+  say in the reply that it waits on them.
+- Every comment from someone else has the author's 👍, and so does every
+  review summary a person wrote. Reviews take the reaction through GraphQL
+  only: `gh api graphql -f query='mutation($id:ID!){addReaction(input:{subjectId:$id,content:THUMBS_UP}){reaction{content}}}' -f id=<review node_id>`,
+  with the `node_id` from `gh api repos/{owner}/{repo}/pulls/<pr>/reviews`.
+- No conflict, no draft, no maintainer's standing change request, no
+  `needs:compliance` label, checks reported and green.
+
+Reach `READY` first, then comment `/ready`. A first PR's CI waits for a
+maintainer's approval, and `/ready` is refused until it has run. Never resolve
+or react to get past the gate.
 
 ## Learn
 

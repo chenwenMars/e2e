@@ -32,6 +32,9 @@ describe.each(schemas)('%s schema', (name) => {
 
   it('rejects the invalid fixture', () => {
     expect(validate(readJson('fixtures', `${name}.invalid.json`))).toBe(false);
+    if (name === 'report-v1') {
+      expect(validate.errors).toEqual(expect.arrayContaining([expect.objectContaining({ instancePath: '/run/durationMs', keyword: 'minimum' })]));
+    }
   });
 
   if (name === 'engine-manifest-v1') {

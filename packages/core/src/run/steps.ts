@@ -389,6 +389,8 @@ export interface StepHoldRequest {
    * means the test has reached `screen.pause()`.
    */
   readonly kind: 'step' | 'pause';
+  /** Expected position in the trace, from 1. A pause uses 0. */
+  readonly number: number;
   readonly api: string;
   /** Already redacted. */
   readonly label: string;
@@ -606,7 +608,7 @@ export class StepRecorder {
       return;
     }
 
-    const request: StepHoldRequest = { kind: 'pause', api: 'screen.pause', label: '' };
+    const request: StepHoldRequest = { kind: 'pause', number: 0, api: 'screen.pause', label: '' };
     const stack = stepStack(this.projectRoot);
     const source = sourceLocation(stack, this.projectRoot);
     const pause: HeldPause = { api: request.api, owner: this.owner, stack, cancel: new AbortController(), promise: Promise.resolve() };
@@ -659,13 +661,16 @@ export class StepRecorder {
    * Waits at the hold, then starts the step as if it were called now: its
    * index, start, and verification boundary are those of its release, so
    * steps called together in one `Promise.all` keep their call order.
+   * The prompt uses the position the step would get if the pending holds
+   * started in order with no other steps recorded between them.
    */
   private runHeld<T>(ask: RecorderHold['ask'], call: HeldCall, body: () => Promise<T>): Promise<T> {
     const source = sourceLocation(call.stack, this.projectRoot);
     this.held.add(call);
+    const number = this.steps.length + this.held.size;
     const promise = (async () => {
       try {
-        await ask({ kind: 'step', api: call.api, label: call.label, ...(source === undefined ? {} : { source }) }, call.cancel.signal);
+        await ask({ kind: 'step', number, api: call.api, label: call.label, ...(source === undefined ? {} : { source }) }, call.cancel.signal);
         // Released in the same turn the body abandoned it: it must not run.
         call.cancel.signal.throwIfAborted();
       } catch (cause) {

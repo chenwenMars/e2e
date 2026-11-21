@@ -463,6 +463,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
    * time, and the span is the time it took to fail.
    */
   let startedAt = timestamp();
+  let heldMs = 0;
   const debug = new DebugTrace(options.debug === true);
   const aiTrace = options.aiTrace === true ? new AiTraceCollector() : undefined;
   /** The in-process recorder; child-process workers own their own. */
@@ -649,6 +650,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       config: loaded.config,
       vcs,
       startedAt,
+      heldMs,
       status: statusOf(exitCode),
       exitCode,
       results,
@@ -793,6 +795,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       type: 'run-finished',
       status,
       exitCode,
+      durationMs: report.run.durationMs,
       ...(reportPath === undefined ? {} : { reportPath }),
       ...(aiTracePath === undefined ? {} : { aiTracePath }),
       ...(traces.size === 0 ? {} : { traces: Object.fromEntries(traces) }),
@@ -1189,6 +1192,10 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           onFailureLimit: stopEarly,
           onTimeLimit: () => {
             stoppedEarly = true;
+          },
+          onHoldChange: (total, heldSince) => {
+            heldMs = total;
+            emit({ type: 'run-hold', heldMs, heldSince });
           },
           onTestStart: (start, targetName) =>
             emit({ type: 'test-started', ...start, target: targetName }),

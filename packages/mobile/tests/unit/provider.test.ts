@@ -130,9 +130,10 @@ describe('device provider', () => {
     await h.engine.finish!(finishInfo((line) => finished.push(line)));
     expect(cloud.released.map((lease) => lease.id)).toEqual(['lease-0', 'lease-1']);
     expect(finished).toEqual(['toy-cloud: released 2 device(s)']);
-    // Nothing left: a second finish releases nothing.
+    // Nothing left: a second finish releases nothing, and no released lease's daemon is handed out again.
     await h.engine.finish!(finishInfo());
     expect(cloud.released).toHaveLength(2);
+    expect(h.surface.pool.binding({ targetName: 'ios' }, 0, {})).toBeUndefined();
   });
 
   it('releases the provider lease while a retained session close is pending', async () => {

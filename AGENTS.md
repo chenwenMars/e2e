@@ -132,6 +132,19 @@ suites that consume the built packages the way a user would.
   daemon per slot, heartbeat, a release that fails unless the session end is
   confirmed, and `agentDevicePlugin()`, which checks a provider plugin's
   version and registers it in the daemon's home.
+- `packages/desktop` - the published `@e2e-dev/desktop` package: the
+  desktop engine on agent-desktop (native apps through the OS accessibility
+  tree), built with the same public `defineEngine`,
+  contributing the `desktop` fixture. It imports from `@e2e-dev/core/engine`
+  only, and a target names it as `engine: desktop()`. agent-desktop is not an
+  npm dependency (its `postinstall` would fail `check:install-scripts`): the
+  engine's `prepare` downloads the pinned release and checks its SHA-256
+  (`src/binary.ts`), and every command runs as one CLI process with a private
+  `AGENT_DESKTOP_HOME` per worker (`src/cli.ts`). Text a fill types goes on
+  stdin, never in the arguments, and agent-desktop and the app it launches get
+  only a few variables of the run's environment (`INHERITED_ENV` in
+  `src/surface.ts`). A prototype that runs on macOS only: `prepare` and
+  `init` refuse any other OS.
 - `packages/core/src/engine/protocol/` - the engine protocol: the engine
   contract as LSP-style JSON-RPC (`connectEngine` client, `serveEngine`
   server, spawn/socket/loopback transports), so an engine can run in
@@ -278,6 +291,11 @@ suites that consume the built packages the way a user would.
   "Committed recordings" under Gotchas. Scenario files are copies: keep
   diffs against the source minimal, and name no company a scenario was
   distilled from.
+- `apps/desktop-testbed` (`@e2e-dev/desktop-testbed`, private) - a native
+  AppKit sign-in form (`app/macos/main.swift`, built by `pnpm build:app`
+  into `build/SignInForm.app`) and the e2e suites on `@e2e-dev/desktop`
+  (`tests/` locators only, `tests-agent/` one `agent.act`). Hand-run on a
+  Mac with Accessibility permission; no CI job runs it yet.
 - `examples/` — standalone user-facing projects, one per technology
   (`with-vite`, `with-next`, `with-astro`, `with-angular`, `with-expo`, `with-swiftui`,
   `with-compose`, `with-kotlin-multiplatform`, `with-flutter`, `with-maui`), each the same
@@ -443,9 +461,17 @@ thread handled, and labeled `Ready for Human Review`. "It compiles" and
 - Open every PR through the `ship-pr` skill (`.dev/skills/ship-pr`):
   checks, verification, fresh-context self-review, the PR, then the
   `babysit` skill (`.dev/skills/babysit`) until the label is on. Asking
-  for a PR means asking for all of that. A push removes the label
+  for a PR means asking for all of that. A push, a merge conflict, a change
+  request, or a move back to draft removes the label
   (`.github/workflows/review-label.yml`), so a labeled PR is always labeled
   for its current head.
+- On a PR from a fork you cannot add the label. Comment exactly `/ready` as
+  the PR's author once the gates in
+  [CONTRIBUTING.md](./CONTRIBUTING.md#ready-for-human-review) hold: green,
+  conflict-free, every review thread replied to and resolved, every comment
+  from anyone else acknowledged with your 👍. The workflow refuses
+  it otherwise and lists what is open. Never resolve a thread or react just to
+  pass: handle the feedback first.
 - Never merge or approve.
 - When a reviewer (human or bot) corrects the same thing twice, encode it:
   make it impossible in types or structure, else a lint rule or a test, else

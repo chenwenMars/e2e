@@ -570,11 +570,21 @@ export interface EnginePrepareResult {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+/** Who holds a target, for the lifecycle hooks: `prepare`, `init`, `finish`. */
+export interface EngineHostIdentity {
+  /**
+   * Set when a `launch()` host holds the target: a token no other host has.
+   * Hosts name their targets alike, so an engine that names what it holds
+   * after the target (a device session) adds this to keep hosts apart.
+   */
+  readonly hostId?: string | undefined;
+}
+
 /**
  * Facts handed to `prepare`, once per run and target in the runner process,
  * before any worker exists.
  */
-export interface EnginePrepareInfo {
+export interface EnginePrepareInfo extends EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target being prepared. */
@@ -631,7 +641,7 @@ async finish(info) {
 
 ```ts
 /** Handed to `finish`, once per run and target after the last worker is gone, with the cleanup budget of one hook. */
-export interface EngineFinishInfo extends EngineCleanupContext {
+export interface EngineFinishInfo extends EngineCleanupContext, EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target being finished. */
@@ -706,7 +716,7 @@ async init(info) {
 
 ```ts
 /** Run identity and harness-resolved facts handed to `init`, once per worker before the first step. */
-export interface EngineInitInfo {
+export interface EngineInitInfo extends EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target this worker serves. */
@@ -989,7 +999,14 @@ export interface EngineSnapshot {
   readonly treeUnavailable?: true;
   /** Masked pixels, when requested and producible; omitted otherwise. */
   readonly pixels?: ObservationPixels;
-  /** Regions masked in `pixels`; the harness checks it covers every secure node. */
+  /**
+   * Regions masked in the screenshot; the harness checks it covers every secure
+   * node. An engine asked for pixels (`pixels: true`) that cannot mask every
+   * secure node on screen omits `pixels` and still reports the regions it
+   * could mask, fewer than the secure nodes, so `toHaveScreenshot` fails with
+   * `POLICY_DENIED` and the agent reads `MASKING_UNPROVEN`, not a missing
+   * screenshot.
+   */
   readonly maskedRegionCount?: number;
 }
 

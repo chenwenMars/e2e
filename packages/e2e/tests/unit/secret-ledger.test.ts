@@ -448,28 +448,35 @@ describe('redactFragments', () => {
     // Typed arrays live outside the heap, so both count; a collection mid-scan only lowers the figure.
     const used = (): number => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
     const before = used();
-    const started = performance.now();
+    // CPU time, not wall time: time other processes hold this CPU does not count.
+    const cpu = process.cpuUsage();
     const redacted = ledger.redactFragments(text);
-    expect(performance.now() - started).toBeLessThan(5_000);
+    const { user, system } = process.cpuUsage(cpu);
+    expect((user + system) / 1_000).toBeLessThan(5_000);
     expect(used() - before).toBeLessThan(text.length * 16);
     expect(redacted.endsWith('<secret:apiKey>')).toBe(true);
   });
 
-  it('scans a long text in one linear pass', () => {
+  it.each([
+    ['single spaces', ' '],
+    ['line breaks and indentation', '\n    '],
+  ])('scans a long text with %s in one linear pass', (_kind, separator) => {
     const ledger = new SecretLedger([['apiKey', SECRET]]);
     const scan = (repeats: number): number => {
-      const text = `${SECRET.slice(0, 7).toUpperCase()} `.repeat(repeats);
+      const text = `${SECRET.slice(0, 7).toUpperCase()}${separator}`.repeat(repeats);
       let fastest = Infinity;
       for (let run = 0; run < 3; run += 1) {
-        const started = performance.now();
+        const cpu = process.cpuUsage();
         expect(ledger.redactFragments(text)).toBe(text);
-        fastest = Math.min(fastest, performance.now() - started);
+        const { user, system } = process.cpuUsage(cpu);
+        fastest = Math.min(fastest, (user + system) / 1_000);
       }
       return fastest;
     };
-    const once = scan(20_000);
-    // Eight times the text costs about eight times the time; a quadratic scan costs 64.
-    expect(scan(160_000) / Math.max(once, 1)).toBeLessThan(24);
+    const once = scan(10_000);
+    // A ratio holds on fast and slow machines: 32 times the text costs about 32 times the time.
+    // A break table grown 64 entries at a time reads about twice the bound or more.
+    expect(scan(320_000) / Math.max(once, 1)).toBeLessThan(96);
   });
 
   it('changes nothing with no value registered', () => {

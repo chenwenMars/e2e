@@ -9,6 +9,7 @@ import {
   type PointerAction,
   type SemanticNode,
   type ViewportPoint,
+  type ViewportSize,
 } from '../engine/surface.ts';
 import {
   asEngineError,
@@ -20,6 +21,7 @@ import {
   type ErrorDetails,
 } from '../internal/errors.ts';
 import { requireKey } from '../internal/keys.ts';
+import { isPixelPoint, resolveScreenPoint } from '../internal/geometry.ts';
 import { describeExpression, expressionHints, filterSpine } from './expression.ts';
 import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, pollDelay, ReadWindow, sleep, StepDeadline, stepTimeout } from '../internal/time.ts';
 import { timestamp } from '../internal/ids.ts';
@@ -27,6 +29,16 @@ import { obj } from '../internal/objects.ts';
 import { targetLabel } from '../cache/trace.ts';
 import type { AttemptBudget } from '../run/budget.ts';
 import type { StepEvent } from '../run/steps.ts';
+import type { ScreenPoint } from '../types.ts';
+
+/** A pointer action as a test names it: its `target`, if any, may be a percentage of the viewport. */
+type ScreenPointerAction = WithScreenTarget<PointerAction>;
+
+/** Each action in the union, with `target` typed as a `ScreenPoint`. */
+type WithScreenTarget<A> = { readonly [K in keyof A]: K extends 'target' ? ScreenPoint : A[K] };
+
+/** A tuple of `ScreenPoint`s, each resolved to CSS pixels. */
+type InPixels<P extends readonly ScreenPoint[]> = { readonly [K in keyof P]: ViewportPoint };
 
 /** Canonical visibility predicate over a semantic node snapshot. */
 export function isNodeVisible(node: SemanticNode | null): node is SemanticNode {
@@ -217,7 +229,7 @@ export class LocatorEngine {
   }
 
   /** Refuses a pointer action the session would refuse: an undeclared kind is `UNSUPPORTED_CAPABILITY`. */
-  private checkPointerAction(action: PointerAction): void {
+  private checkPointerAction(action: Pick<PointerAction, 'kind'>): void {
     if (!this.session.pointerActions.has(action.kind)) {
       throw new ConfigurationError(
         'UNSUPPORTED_CAPABILITY',
@@ -496,9 +508,29 @@ const ref = await this.singleOf(await this.resolveOnce(expression, reads, missin
   }
 
   /** Performs one pointer action at a viewport point, with no node behind it. */
-  async performAt(point: ViewportPoint, action: PointerAction, timeoutMs?: number): Promise<void> {
+  async performAt(point: ScreenPoint, action: ScreenPointerAction, timeoutMs?: number): Promise<void> {
     this.checkPointerAction(action);
-    await this.dispatchAt(point, action, this.deadline(timeoutMs));
+    const deadline = this.deadline(timeoutMs);
+
+    if (!('target' in action)) {
+      const [at] = await this.inPixels([point], deadline);
+      await this.dispatchAt(at, action, deadline);
+      return;
+    }
+    const [from, to] = await this.inPixels([point, action.target], deadline);
+    await this.dispatchAt(from, { ...action, target: to }, deadline);
+  }
+
+  /** The points in CSS pixels, with one viewport read if any of them is a percentage. */
+  private async inPixels<const P extends readonly ScreenPoint[]>(points: P, deadline: Deadline): Promise<InPixels<P>> {
+    if (points.every(isPixelPoint)) return points as InPixels<P>;
+    const viewport = await this.viewport(deadline);
+    return points.map((point) => resolveScreenPoint(point, viewport)) as InPixels<P>;
+  }
+
+  /** The viewport size, read from one screen observation. */
+  private async viewport(deadline: Deadline): Promise<ViewportSize> {
+    return (await this.session.observe(this.operationWithin(deadline))).viewport;
   }
 
   /**

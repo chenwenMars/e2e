@@ -760,7 +760,7 @@ describe('web platform integration', () => {
     expect(result.status).toBe('failed');
     const attempt = result.attempts[0]!;
     expect(attempt.error?.code).toBe('INVALID_ARGUMENT');
-    expect(attempt.error?.message).toContain('string or RegExp');
+    expect(attempt.error?.message).toContain('string, RegExp, or { method, url }');
     expect(attempt.steps.find((step) => step.status === 'failed')?.api).toBe(api);
   });
 

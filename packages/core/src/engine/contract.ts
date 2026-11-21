@@ -518,3 +518,13 @@ export class EngineError extends Error {
     this.retryable = options.retryable;
   }
 }
+
+/** Who holds a target, for the lifecycle hooks: `prepare`, `init`, `finish`. */
+export interface EngineHostIdentity {
+  /**
+   * Set when a `launch()` host holds the target: a token no other host has.
+   * Hosts name their targets alike, so an engine that names what it holds
+   * after the target (a device session) adds this to keep hosts apart.
+   */
+  readonly hostId?: string | undefined;
+}

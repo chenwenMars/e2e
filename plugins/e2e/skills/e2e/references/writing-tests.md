@@ -108,8 +108,8 @@ act or the assertions.
 
 `test` registers everything, and `describe`, `beforeEach`, `afterEach`,
 `beforeAll`, and `afterAll` are also top-level imports of the same functions
-(`import { describe, beforeEach } from 'e2e'`; `@e2e-dev/web` and
-`@e2e-dev/mobile` export `test`, `describe`, and the hooks typed with their fixture; a
+(`import { describe, beforeEach } from 'e2e'`; `@e2e-dev/web`,
+`@e2e-dev/mobile`, and `@e2e-dev/desktop` export `test`, `describe`, and the hooks typed with their fixture; a
 `test.extend()` chain registers hooks that see its fixtures through
 `test.beforeEach`). Everything registers at import, so a `describe` body is
 synchronous (`async` is a `COLLECTION_ERROR`).
@@ -135,6 +135,7 @@ test.fixme('not yet', async () => {}); // test.skip's three forms; reported skip
 test('big import', async () => { test.setTimeout(180_000); }); // body or beforeEach: the attempt's timeout, counted from its start; in beforeAll: that hook's own
 test.fail('known gap', async () => {}); // expected to fail: a test failure passes it, a pass fails it with UNEXPECTED_PASS
 test('gap on web', async ({ platform }) => { test.fail(platform === 'web', 'known gap'); }); // marks, does not throw; the body runs on
+describe.fail('legacy', () => {}); // every test inside expected to fail; a reason: describe('legacy', { fail: 'reason' }, fn)
 test.setup('sign in', { sessions: ['admin'] }, async ({ app, screen, session }) => {}); // see Sign-in sessions
 const wsTest = test.extend<{ ws: Ws }>({ ws: async ({ browser }, use) => { await use(await seed()); await drop(); } });
 wsTest('uses the workspace', async ({ ws }) => {}); // code after use() is teardown, runs after failures too
@@ -153,7 +154,7 @@ or a blocked agent verdict still fails the test.
 | `retries` | `config.retries` | 0 to 10; a serial group's value applies to its members. |
 | `tags` | `[]` | Distinct, non-blank, no comma or edge whitespace (`'Login Form'` is fine); union across layers. `--tag smoke` selects, `--tag-mode all` requires every tag. |
 | `skip` | unset | `true` or a reason string. |
-| `fail` | unset | `true` or a reason string: expected to fail, as `test.fail`. Tests only, not groups or setup tests. |
+| `fail` | unset | `true` or a reason string: expected to fail, as `test.fail`. On a group, marks every test in it; not on setup tests or on, inside, or around a serial group. |
 | `platforms` | unset | Only targets with these platforms, e.g. `['ios']`. |
 | `requires` | `[]` | Engine capabilities, e.g. `['browser']`; missing ones skip the test at selection rather than failing it with `UNSUPPORTED_CAPABILITY`. |
 | `session` | unset | Restore state saved by a setup test. |
@@ -213,6 +214,7 @@ configured model, else `MODEL_UNAVAILABLE` (topic `agent`). `platform`
 (`string`): always, hooks included; `web`, `ios`, `android`, or an engine's
 label. `browser` (`Browser`): browser targets, import `test` from `@e2e-dev/web`.
 `device` (`Device`): device targets, import `test` from `@e2e-dev/mobile`.
+`desktop` (`Desktop`): desktop targets, import `test` from `@e2e-dev/desktop`.
 `session` (`SetupSession`): only in `test.setup`.
 
 ### app
@@ -294,7 +296,9 @@ substring; a `RegExp` matches as written.
 - `visible: true` drops nodes the page hides (a closed drawer) before the
   exactly-one rule. Visibility is what renders, as `toBeVisible()` reads it:
   an `aria-hidden` spinner that paints is visible, so `toBeHidden()` waits
-  for it to go.
+  for it to go. A closed `<details>` body and content under
+  `content-visibility: hidden` are hidden through shadow roots and slots too,
+  unless the page's CSS still shows them.
 - On the web, queries reach open shadow roots and closed roots attached with
   `attachShadow`, not declarative closed roots. `browser.locator(css)`,
   `frameLocator`, and `filter({ hasText })` stop at a closed root; query the
@@ -329,8 +333,10 @@ Coordinates are CSS pixels, for what the tree does not list: `tap({ position:
 `INVALID_ARGUMENT`), `screen.tapAt({ x, y })` taps a viewport point,
 `screen.doubleTapAt({ x, y })` double-taps a viewport point,
 `screen.swipe({ from, to, duration? })` swipes along a path,
-`screen.swipe({ direction, momentum? })` swipes the viewport. Prefer a
-locator; a point moves with the layout.
+`screen.swipe({ direction, momentum? })` swipes the viewport. Viewport
+points also take percentages from `'0%'` through `'100%'`, rounded to the
+nearest pixel: `{ x: '50%', y: '50%' }`. Prefer a locator; a point moves with
+the layout.
 
 ### Reads
 
@@ -345,7 +351,7 @@ drops out, `<br>` is a space); `toHaveText` reads the same. `isChecked()` on a
 node that cannot be checked (a button), and `inputValue()` on one that holds
 no value (a heading), throw `ACTION_FAILED`. `waitFor({ state?: 'attached' | 'detached' | 'visible' | 'hidden', timeout? })` waits
 within `actionTimeout`, else `LOCATOR_NOT_FOUND`. For a value that has to
-settle use `expect`, not a read. Reading a password field's value or
+settle use `expect`, not a read. Reading a secure field's value or
 attributes is `POLICY_DENIED`, as is `toHaveAttribute` on one, negated too.
 
 `screen.tree()` returns the whole screen as the agent reads it (one node
@@ -401,7 +407,7 @@ typed; prefer it when the app already has a schema for the response.
 
 `toHaveText` compares the whole normalized text, `toContainText` a substring
 or RegExp, `toHaveValue` a form control's value as is, whitespace included
-(it fails on a node with none); on a password field all three are
+(it fails on a node with none); on a secure field all three are
 `POLICY_DENIED`, never a comparison against `''`. List forms:
 `toHaveText(['Alpha', /^Beta/])` needs exactly two matches with those texts
 in order; `toContainText(['Alpha', 'Beta'])` needs each entry in a distinct
@@ -606,7 +612,8 @@ the opener is gone. `tabs()`, `newTab()`, `tab.activate()`, and
 - `addInitScript(source | { path } | fn)`, `addInitScript(fn, arg)`: runs
   before the page's own scripts; call it before `app.open`. `arg` is JSON.
 - `route(pattern, handler)`, `unroute(pattern)`: intercept requests, newest
-  route first; `route.request` has `url`, `method`, `headers`, `postData`.
+  route first; `pattern` is a URL pattern or `{ method, url }` for one method.
+  `route.request` has `url`, `method`, `headers`, `postData`.
   `route.fetch()` reads upstream without deciding the route and returns
   `{ url, status, headers, body(), text(), json() }`; redirects are not followed.
   Hand binary bodies on with `body()`, never `text()`.
@@ -651,8 +658,11 @@ the opener is gone. `tabs()`, `newTab()`, `tab.activate()`, and
 
 A `route`, `unroute`, or `waitForResponse` pattern is a glob string or
 `RegExp` matched against the full URL (`*` stays within one path segment,
-`**` crosses `/`, `?` is one character); a predicate function is
-`INVALID_ARGUMENT`.
+`**` crosses `/`, `?` is one character), or `{ method, url }` to match one
+HTTP method too, case-insensitively. A method matches exactly that method:
+`GET` does not answer `HEAD`. `unroute` removes routes
+registered with the same pattern, method included, rather than URL-matching
+them. A predicate function is `INVALID_ARGUMENT`.
 
 ## Habits
 

@@ -177,6 +177,14 @@ export async function performPointerDrag(
 // oxlint-disable-next-line no-control-regex -- intentionally matches the ESC control character
 const ANSI_PATTERN = /\u001b\[\d+(?:;\d+)*m/g;
 
+/** A value as an error message shows it: a string quoted, another primitive as written, anything else by its kind, never serialized. */
+export function describe(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return 'an array';
+  return typeof value === 'object' ? 'an object' : typeof value;
+}
+
 /** A failure's message with terminal control sequences removed. */
 export function message(cause: unknown): string {
   const text = cause instanceof Error ? cause.message : String(cause);

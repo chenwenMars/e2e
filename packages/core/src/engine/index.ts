@@ -53,6 +53,7 @@ export { isRefusedLinkScheme, sameSite, siteOf, urlMatches } from '../internal/u
 export { obj, type WithoutUndefined } from '../internal/objects.ts';
 import type { AppPermissionState, Expectable, Locator, Screen, Secret } from '../types.ts';
 import type {
+  EngineHostIdentity,
   EngineSpiVersion,
   LocatorAction,
   LocatorActionKind,
@@ -420,7 +421,7 @@ export interface EnginePrepareResult {
  * Facts handed to `prepare`, once per run and target in the runner process,
  * before any worker exists.
  */
-export interface EnginePrepareInfo {
+export interface EnginePrepareInfo extends EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target being prepared. */
@@ -463,7 +464,7 @@ export interface EnginePrepareInfo {
 }
 
 /** Handed to `finish`, once per run and target after the last worker is gone, with the cleanup budget of one hook. */
-export interface EngineFinishInfo extends EngineCleanupContext {
+export interface EngineFinishInfo extends EngineCleanupContext, EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target being finished. */
@@ -507,7 +508,7 @@ export interface EngineDoctorCheck {
 }
 
 /** Run identity and harness-resolved facts handed to `init`, once per worker before the first step. */
-export interface EngineInitInfo {
+export interface EngineInitInfo extends EngineHostIdentity {
   /** The run id. */
   readonly runId: string;
   /** The target this worker serves. */
@@ -748,7 +749,14 @@ export interface EngineSnapshot {
   readonly treeUnavailable?: true;
   /** Masked pixels, when requested and producible; omitted otherwise. */
   readonly pixels?: ObservationPixels;
-  /** Regions masked in `pixels`; the harness checks it covers every secure node. */
+  /**
+   * Regions masked in the screenshot; the harness checks it covers every secure
+   * node. An engine asked for pixels (`pixels: true`) that cannot mask every
+   * secure node on screen omits `pixels` and still reports the regions it
+   * could mask, fewer than the secure nodes, so `toHaveScreenshot` fails with
+   * `POLICY_DENIED` and the agent reads `MASKING_UNPROVEN`, not a missing
+   * screenshot.
+   */
   readonly maskedRegionCount?: number;
 }
 

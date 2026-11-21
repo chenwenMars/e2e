@@ -1,6 +1,6 @@
 import { assert, describe, expect, it, vi } from 'vitest';
 import type { Observation, SemanticNode } from '@e2e-dev/core/lib/engine/surface';
-import { changeShape, interactiveNodeCount, isTransitionalObservation, observationShape, prepareObservation, projectTree, redactNode, redactNodesAgain, settleObservation } from '@e2e-dev/core/lib/agent/observation';
+import { changeShape, interactiveNodeCount, isTransitionalObservation, observationShape, pixelsForModel, prepareObservation, projectTree, redactNode, redactNodesAgain, settleObservation } from '@e2e-dev/core/lib/agent/observation';
 import { OBSERVED_NAME_LIMIT, OBSERVED_TEXT_LIMIT } from '@e2e-dev/core/lib/engine/contract';
 import { SecretLedger } from '@e2e-dev/core/lib/internal/redact';
 import { describeDelta } from '@e2e-dev/core/lib/cache/anchors';
@@ -60,24 +60,23 @@ it('enforces tree-only observation requests, projection, and unavailable-tree fa
 });
 
 describe('prepareObservation', () => {
-  it('keeps unavailable semantics separate from an empty tree and requires permitted masked evidence', () => {
+  it('keeps unavailable semantics separate from an empty tree and requires permitted evidence', () => {
     const pixels = { data: new Uint8Array(4), mediaType: 'image/png' as const, width: 2, height: 2, scale: 1 };
     const unavailable: Observation = {
       kind: 'pixels', root: node('root').ref, revision: 'r1', capturedAt: '',
       viewport: { width: 2, height: 2 }, pixels,
-      redaction: { secureNodeCount: 1, maskedRegionCount: 0 },
+      // The session admits an unavailable tree only as the bare root, so it holds no secure node to mask.
+      redaction: { secureNodeCount: 0, maskedRegionCount: 0 },
     };
     const prepare = (raw: Observation, pixelsAllowed = true) => prepareObservation(raw, { redact: NO_REDACT, redactCut: NO_REDACT, maxBytes: 4_096, pixelsAllowed });
-    expect(() => prepare(unavailable)).toThrow(/proven-masked screenshot/);
-    const proven = { ...unavailable, redaction: { secureNodeCount: 1, maskedRegionCount: 1 } };
-    const prepared = prepare(proven);
+    const prepared = prepare(unavailable);
     expect(prepared.kind).toBe('pixels');
     expect(prepared.text).toContain('semantic capture unavailable');
     expect(prepared.text).toContain('previous node ids are no longer valid');
     expect(prepared.text).toContain('never infer absence');
     expect(prepared).not.toHaveProperty('nodes');
     expect(prepared).not.toHaveProperty('tree');
-    expect(() => prepare(proven, false)).toThrow(/permitted/);
+    expect(() => prepare(unavailable, false)).toThrow(/permitted/);
     const empty = prepare(observation(node('root')));
     expect(empty.kind).toBe('semantic');
     expect(empty.text).not.toContain('unavailable');
@@ -101,18 +100,28 @@ describe('prepareObservation', () => {
     expect(result.kind).toBe('pixels');
     expect(captures).toBe(1);
   });
-  it('withholds pixels whose masking the engine cannot prove and keeps the tree', () => {
+  it('tells the model how many regions the engine masked in the pixels it passes on', () => {
     const pixels = { data: new Uint8Array(4), mediaType: 'image/png' as const, width: 2, height: 2, scale: 1 };
-    const prepared = prepareObservation(observation(node('root'), pixels), {
-      redact: NO_REDACT,
-      redactCut: NO_REDACT,
-      maxBytes: 4_096,
-    });
-    // One secure node, zero masked regions: the image is not provably redacted.
-    expect(prepared.pixels).toBeUndefined();
+    const options = { redact: NO_REDACT, redactCut: NO_REDACT, maxBytes: 4_096, pixelsAllowed: true };
+    const semantic = prepareObservation({ ...observation(node('root'), pixels), redaction: { secureNodeCount: 1, maskedRegionCount: 2 } }, options);
+    expect(semantic.pixels?.maskedRegionCount).toBe(2);
+    const unavailable = prepareObservation({
+      kind: 'pixels', root: node('root').ref, revision: 'r1', capturedAt: '',
+      viewport: { width: 2, height: 2 }, pixels, redaction: { secureNodeCount: 0, maskedRegionCount: 3 },
+    }, options);
+    expect(unavailable.pixels?.maskedRegionCount).toBe(3);
+  });
+
+  it('passes on pixels the session withheld for masking and keeps the tree', () => {
+    const withheld: Observation = { ...observation(node('root')), pixelsWithheld: 'MASKING_UNPROVEN' };
+    const prepared = prepareObservation(withheld, { redact: NO_REDACT, redactCut: NO_REDACT, maxBytes: 4_096 });
     assert(prepared.kind === 'semantic');
+    expect(prepared.pixels).toBeUndefined();
     expect(prepared.pixelsWithheld).toBe('MASKING_UNPROVEN');
     expect(prepared.text).toBe('#root');
+    expect(pixelsForModel(prepared)).toEqual({ withheld: 'MASKING_UNPROVEN' });
+    const untaken = prepareObservation(observation(node('root')), { redact: NO_REDACT, redactCut: NO_REDACT, maxBytes: 4_096 });
+    expect(pixelsForModel(untaken)).toEqual({ withheld: 'UNSUPPORTED_CAPABILITY' });
   });
 
   it('serializes the tree with node references and indentation', () => {
@@ -852,9 +861,7 @@ describe('isTransitionalObservation', () => {
     expect(isTransitionalObservation(prepare(node('root', { role: 'button', name: 'Continue' })))).toBe(false);
     expect(isTransitionalObservation(prepare(node('root', { role: 'textbox', name: 'Password', states: { secure: true } })))).toBe(false);
     expect(isTransitionalObservation(prepare(node('root', { role, children: [node('child', { role: 'text', text: 'Ready' })] })))).toBe(false);
-    const unproven = observation(node('root', { role }), {
-      data: new Uint8Array([1]), mediaType: 'image/png', width: 1, height: 1, scale: 1,
-    });
+    const unproven: Observation = { ...observation(node('root', { role })), pixelsWithheld: 'MASKING_UNPROVEN' };
     const withheld = prepareObservation(unproven, { redact: NO_REDACT, redactCut: NO_REDACT, maxBytes: 4_096 });
     expect(withheld.pixels).toBeUndefined();
     expect(isTransitionalObservation(withheld)).toBe(true);

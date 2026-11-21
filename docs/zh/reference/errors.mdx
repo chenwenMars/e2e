@@ -138,7 +138,7 @@ export class AgentError extends Error {
 | `UNSUPPORTED_CAPABILITY` | 测试目标的引擎未声明某个测试夹具、操作或层级：没有测试或钩子在运行时工作进程测试夹具使用了内置测试夹具（测试目标没有的测试夹具为 `COLLECTION_ERROR`）、没有 `locate` 时使用 `screen`、没有 `state` 时恢复状态、没有 `artifacts` 时截图、在持久浏览器上下文上调用 `app.clearState()`（消息会指出模式）、执行器未声明 `vision: true` 时使用 `agent.assert` 的 `vision`，或测试视频正在录制时调用 `app.startRecording()` | configuration | 2 |
 | `NO_TESTS` | 可运行的普通测试与测试目标组合数为零。消息会指出原因：没有文件匹配 `tests` glob（会列出相似文件）、位置参数没有匹配项（会指出排除位置参数所指文件的 `!` 条目）、文件未注册测试，或过滤条件排除了全部测试。使用 `--pass-with-no-tests` 可抑制此错误。如果[测试过滤器](/filters)排除了所有可运行测试，运行会通过（退出码 0）。也适用于 `e2e mcp` 的 `open_session` 中 `test` 未选中任何可运行测试的情况。 | configuration | 2 |
 | `RUNNER_BUSY` | 测试套件与另一个测试套件、正在打开或已打开的宿主，或活动尝试重叠；或测试套件运行期间打开宿主；或在没有终端时启动 `e2e run --step`，而该目录中已有另一个运行受 `e2e run --step` 控制；或在没有终端的运行中，测试到达 `screen.pause()` 时，该目录中的另一个运行已以这种方式受控制；或某次运行在取得目录控制权时被终止并遗留了锁（消息会指出要删除的文件）。重试前等待测试套件结束并关闭现有宿主；使用 `e2e run --step stop` 结束单步运行，或删除消息指定的锁文件。 | configuration | 2 |
-| `RUNNER_NOT_INSTALLED` | 在未安装 `e2e` 的位置调用了 `@e2e-dev/web` 或 `@e2e-dev/mobile` 中的 `test`、`describe` 或钩子，例如仅基于 `@e2e-dev/core` 的程序。同一入口导出的引擎工厂仍然可用。要编写测试，请安装 `e2e` | configuration | 2 |
+| `RUNNER_NOT_INSTALLED` | 在未安装 `e2e` 的位置调用了 `@e2e-dev/web`、`@e2e-dev/mobile` 或 `@e2e-dev/desktop` 中的 `test`、`describe` 或钩子，例如仅基于 `@e2e-dev/core` 的程序。同一入口导出的引擎工厂仍然可用。要编写测试，请安装 `e2e` | configuration | 2 |
 | `NO_LAST_RUN` | `--last-failed` 在运行写入报告的位置未找到 `report.json`，或该处文件不是 `report-1` 文档。请先不带该标志运行一次。 | configuration | 2 |
 | `INVALID_CHANGED_SINCE` | `--changed-since`（`changedSince`）不是字符串、为空或以 `-` 开头。或者，当运行调用测试过滤器或 `e2e explore` 探索变更时，该值在检出的仓库中未指向任何提交，或与 HEAD 没有共同历史记录（浅克隆时消息会提示获取更多历史，否则会说明历史不相关）；或项目不在 git 仓库中、未安装 git，或 git 未在 30 秒内响应 | configuration | 2 |
 | `ONLY_IN_CI` | CI 运行中出现了聚焦测试 | configuration | 2 |
@@ -158,6 +158,7 @@ export class AgentError extends Error {
 | `LAUNCH_TIMEOUT` | 引擎初始化或尝试启动超过 `config.launchTimeout` | infrastructure | 3 |
 | `CLEANUP_TIMEOUT` | 引擎结束尝试超过 `config.cleanupTimeout`，尝试结束时引擎为测试运行的路由或对话框处理函数仍在运行，或测试用 `launch()` 打开的宿主或会话未在该时间内关闭 | infrastructure | 3 |
 | `BROWSER_INSTALL_FAILED` | 浏览器准备失败 | infrastructure | 3 |
+| `AGENT_DESKTOP_INSTALL_FAILED` | `@e2e-dev/desktop` 无法下载固定版本的 agent-desktop、归档未通过 SHA-256 校验，或 worker 在没有 agent-desktop 的情况下启动（例如跳过了引擎 prepare 步骤的宿主） | infrastructure | 3 |
 | `WORKER_INIT_FAILED` | 工作进程始终未就绪 | infrastructure | 3 |
 | `WORKER_EXIT` | 工作进程运行文件时意外退出。正在执行的测试因 `WORKER_CRASH` 失败，该文件中的其他测试被跳过。退出前已完成的尝试保留在报告中，包括重试之前的尝试和串行组中已完成的成员。崩溃记录为它们之后的一次尝试；如果发生在最后一次尝试之后（`afterAll` 中），则记录在最后一次尝试上。如果未处理的拒绝导致工作进程结束（参阅 `UNHANDLED_REJECTION`），运行错误是该拒绝，而非此错误 | infrastructure | 3 |
 | `WORKER_CRASH` | 工作进程在某个特定测试期间退出 | infrastructure | 3 |

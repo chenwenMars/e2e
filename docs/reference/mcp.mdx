@@ -304,7 +304,7 @@ Left out: the built-in fixtures an engine contributes (`browser`, `device`),
 | `INVALID_ARGUMENT` | Code that doesn't parse or is outside the grammar, such as another name, a call it lacks, an assignment, or a function. The message quotes it with its line and column, and no statement runs. |
 | `INVALID_ARGUMENT` | A matcher that expects `<secret:name>`, since a test compares the real value. No statement runs. |
 | `POLICY_DENIED` | A secret `fill` into a field that fails the `type_secret` checks. Nothing is typed. |
-| `POLICY_DENIED` | A read of a password field. |
+| `POLICY_DENIED` | A read of a secure field, such as a password input. |
 | `POLICY_DENIED` | When the config declares a secret or credential, a locator found by part of a text: a regular expression, an `exact` other than `true`, or `hasText`. Find it by its exact text. No statement runs. |
 
 #### `test_lines`
