@@ -1,5 +1,6 @@
 /** Shared error translation, filename, and swipe helpers for the Playwright engine. */
 
+import { statSync, type Stats } from 'node:fs';
 import { setTimeout } from 'node:timers/promises';
 import type { ElementHandle, FrameLocator, Locator as PwLocator, Mouse, Page } from 'playwright-core';
 import { EngineError, withinCleanupBudget, type EngineCleanupContext, type Momentum, type ScrollDirection, type ViewportPoint, type ViewportSize } from '@e2e-dev/core/engine';
@@ -189,6 +190,15 @@ export function describe(value: unknown): string {
 export function message(cause: unknown): string {
   const text = cause instanceof Error ? cause.message : String(cause);
   return text.replace(ANSI_PATTERN, '');
+}
+
+/** Stats a caller-supplied path, or returns Node's error when it is missing or a directory on it may not be searched (`EACCES`). */
+export function statPath(file: string): Stats | Error {
+  try {
+    return statSync(file);
+  } catch (cause) {
+    return cause as Error;
+  }
 }
 
 /** Constrains a caller-supplied artifact label to a safe filename. */

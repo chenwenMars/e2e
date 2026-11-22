@@ -64,6 +64,12 @@ export interface NodeBinding {
   readonly rect?: Rect;
   /** Whether the id comes from the node's identity and every ancestor's, and so names it in the next snapshot too; a look-alike's, or one inside a look-alike, is new in every snapshot. */
   readonly stable: boolean;
+  /**
+   * How many look-alikes the node and each of its ancestors have among their
+   * siblings, root first (`/1/2/1`): a look-alike found again by its role and
+   * place is the same one only if no twin around it came or went.
+   */
+  readonly likeness: string;
 }
 
 /** A snapshot as the engine keeps it: the tree the harness sees, and a binding for every node in it. */
@@ -182,16 +188,21 @@ const WINDOW_CONTROLS = new Set(['Close', 'Minimize', 'Zoom', 'Full Screen']);
 /** The largest a title-bar button is, in points: macOS draws them 14 to 16 points across. */
 const WINDOW_CONTROL_SIZE = 20;
 
+/** How far down from the window's top edge a title-bar button can reach, in points: the title bar, or a unified title bar and toolbar, is at most this tall. */
+const TITLE_BAR_HEIGHT = 52;
+
 /**
  * A window's own title-bar button: a button straight under the window, with
- * no developer id, named only for what it does to the window, and the size
- * of a title-bar button. Left out, so `getByRole('button', 'Close')` finds
- * the app's Close button and not the window's; an app's own button of the
- * same name is larger, and one with no bounds is kept.
+ * no developer id, named only for what it does to the window, the size of a
+ * title-bar button, and in the window's title bar. Left out, so
+ * `getByRole('button', 'Close')` finds the app's Close button and not the
+ * window's; an app's own button of the same name is larger or lower in the
+ * window, and one with no bounds, or in a window with none, is kept.
  */
-function windowControl(raw: RawNode): boolean {
+function windowControl(raw: RawNode, window: Rect | undefined): boolean {
   const bounds = raw.bounds;
   return (
+    window !== undefined &&
     raw.role === 'button' &&
     raw.native_id === undefined &&
     raw.name !== undefined &&
@@ -200,8 +211,27 @@ function windowControl(raw: RawNode): boolean {
     label(raw.description) === undefined &&
     bounds !== undefined &&
     bounds.width <= WINDOW_CONTROL_SIZE &&
-    bounds.height <= WINDOW_CONTROL_SIZE
+    bounds.height <= WINDOW_CONTROL_SIZE &&
+    bounds.y >= window.y &&
+    bounds.y + bounds.height <= window.y + TITLE_BAR_HEIGHT
   );
+}
+
+/** How far apart, at most, two neighbouring title-bar buttons are, left edge to left edge, in points: macOS spaces them about 23. */
+const WINDOW_CONTROL_GAP = 30;
+
+/**
+ * The window's own title-bar buttons among its direct children: each a
+ * `windowControl` beside another of a different name, in one row, as macOS
+ * draws Close, Minimize, and Zoom together. agent-desktop reports no subrole
+ * that names them, so a lone small Close button, such as an app's own in a
+ * corner of the title bar, is kept.
+ */
+function titleBarButtons(tree: RawNode): ReadonlySet<RawNode> {
+  const candidates = (tree.children ?? []).filter((child) => windowControl(child, tree.bounds));
+  const beside = (a: RawNode, b: RawNode): boolean =>
+    a !== b && a.name !== b.name && a.bounds !== undefined && b.bounds !== undefined && Math.abs(a.bounds.y - b.bounds.y) <= 2 && Math.abs(a.bounds.x - b.bounds.x) <= WINDOW_CONTROL_GAP;
+  return new Set(candidates.filter((candidate) => candidates.some((other) => beside(candidate, other))));
 }
 
 /** A node agent-desktop reports but nothing reads: a wrapper with no name, value, id, ref, or text of its own. */
@@ -243,12 +273,13 @@ function identityOf(node: RawNode, named = false): string {
  */
 export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | undefined) => string): ProjectedScreen {
   const window = raw.tree.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+  const titleBar = titleBarButtons(raw.tree);
   const bindings = new Map<string, NodeBinding>();
   const secureRects: Rect[] = [];
   let unmaskable = false;
   let scrollTarget: string | undefined;
 
-  const project = (node: RawNode, id: string, stable: boolean): SemanticNode => {
+  const project = (node: RawNode, id: string, stable: boolean, likeness: string): SemanticNode => {
     const rawStates = new Set(node.states ?? []);
     const role = ROLE_MAP[node.role] ?? (node.role === 'unknown' ? undefined : node.role);
     const secure = rawStates.has('secure');
@@ -266,7 +297,8 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     // A control shows its name (a button's title) as its text, as on a device; an input's name is a label, not what it holds.
     const text = isText ? label(node.value ?? node.name) : INPUT_ROLES.has(node.role) ? undefined : name;
     // A checkbox's value is its state ("0", "1"), already in `checked`; a secure field's is never reported.
-    const value = secure || isText || CHECKABLE_ROLES.has(node.role) ? undefined : node.value;
+    // agent-desktop leaves out the value of an empty text field; it is the empty string, as inputValue() reads it, so getByDisplayValue('') finds the field.
+    const value = secure || isText || CHECKABLE_ROLES.has(node.role) ? undefined : node.role === 'textfield' ? (node.value ?? '') : node.value;
     const rect = node.bounds === undefined ? undefined : { x: node.bounds.x - window.x, y: node.bounds.y - window.y, width: node.bounds.width, height: node.bounds.height };
     if (secure) {
       // A box with no area masks nothing, so it proves nothing about a field that may still show.
@@ -292,13 +324,14 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
       ...(raw.window === undefined ? {} : { windowId: raw.window.id }),
       ...(rect === undefined ? {} : { rect }),
       stable,
+      likeness,
     });
     const kept: RawNode[] = [];
     const collect = (child: RawNode): void => {
       if (transparent(child)) for (const grandchild of child.children ?? []) collect(grandchild);
       else kept.push(child);
     };
-    for (const child of node.children ?? []) if (id !== ROOT_ID || !windowControl(child)) collect(child);
+    for (const child of node.children ?? []) if (id !== ROOT_ID || !titleBar.has(child)) collect(child);
     const tally = (named: boolean): Map<string, number> => {
       const counts = new Map<string, number>();
       for (const child of kept) counts.set(identityOf(child, named), (counts.get(identityOf(child, named)) ?? 0) + 1);
@@ -313,7 +346,7 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     const children = kept.map((child) => {
       const identity = plain.get(identityOf(child)) === 1 ? identityOf(child) : named.get(identityOf(child, true)) === 1 ? identityOf(child, true) : undefined;
       // A child's id is built on its parent's: under a look-alike, whose id is new every snapshot, so is the child's.
-      return project(child, idFor(identity === undefined ? undefined : `${id}/${identity}`), stable && identity !== undefined);
+      return project(child, idFor(identity === undefined ? undefined : `${id}/${identity}`), stable && identity !== undefined, `${likeness}/${plain.get(identityOf(child)) ?? 1}`);
     });
     return {
       ref: { id, revision: '' },
@@ -331,7 +364,7 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     };
   };
 
-  const root = project(raw.tree, ROOT_ID, true);
+  const root = project(raw.tree, ROOT_ID, true, '');
   return {
     root,
     bindings,

@@ -15,9 +15,6 @@ const READY_COMMAND = '/ready';
 /** Hidden marker that finds the reply to a `/ready` that fell short. */
 export const READY_MARKER = '<!-- review-ready -->';
 
-/** The account `GITHUB_TOKEN` comments as, as GraphQL names it. */
-const BOT_LOGIN = 'github-actions';
-
 const GUIDELINES = 'https://github.com/e2e-inc/e2e/blob/main/CONTRIBUTING.md#ready-for-human-review';
 
 const COMPLIANCE_LABEL = 'needs:compliance';
@@ -42,13 +39,6 @@ export interface Thread {
   url: string | null;
 }
 
-/** A PR comment or a review summary, with everyone who gave it a 👍. */
-export interface Feedback {
-  url: string;
-  author: string | null;
-  thumbs: (string | null)[];
-}
-
 export interface Candidate extends LabeledPullRequest {
   author: string | null;
   labels: string[];
@@ -59,32 +49,6 @@ export interface Candidate extends LabeledPullRequest {
    */
   runs: { status: string; conclusion: string | null }[];
   threads: Thread[];
-  feedback: Feedback[];
-}
-
-/** A PR comment as GraphQL returns it; a bot's `author.kind` is `Bot`. */
-export interface RawComment {
-  url: string;
-  body: string;
-  author: { login: string; kind: string } | null;
-  reactions: { nodes: { user: { login: string } | null }[] };
-}
-
-export interface RawReview extends RawComment {
-  state: string;
-}
-
-/**
- * The comments and review summaries an author has to acknowledge. Left out:
- * this workflow's own reply, reviews with no summary text, pending and
- * dismissed reviews, and bot review summaries, whose findings are threads.
- */
-export function feedbackFrom(comments: readonly RawComment[], reviews: readonly RawReview[]): Feedback[] {
-  const kept = [
-    ...comments.filter(({ author, body }) => !(author?.kind === 'Bot' && author.login === BOT_LOGIN && body.includes(READY_MARKER))),
-    ...reviews.filter(({ author, body, state }) => author?.kind !== 'Bot' && body.trim() !== '' && state !== 'PENDING' && state !== 'DISMISSED'),
-  ];
-  return kept.map(({ url, author, reactions }) => ({ url, author: author?.login ?? null, thumbs: reactions.nodes.map(({ user }) => user?.login ?? null) }));
 }
 
 /** The slice of an `issue_comment` payload the command reads. */
@@ -148,17 +112,15 @@ export function readyBlockers(pr: Candidate): string[] {
   if (held.length > 0) blockers.push(`${held.length} workflow run(s) waiting for a maintainer to approve them, so CI has not run on the latest commit`);
   if (done.length < pr.runs.length) blockers.push(`${pr.runs.length - done.length} workflow run(s) still running`);
   if (broken.length > 0) blockers.push(`${broken.length} workflow run(s) did not pass`);
-  // Review feedback is never cleared by the author alone and unseen: a thread
-  // has to be resolved, one somebody else opened needs the author's reply
-  // before the author resolves it, and a comment needs the author's 👍.
+  // A review thread is never cleared by the author alone and unseen: it has to
+  // be resolved, and one somebody else opened needs the author's reply before
+  // the author resolves it.
   const unresolved = pr.threads.filter(({ isResolved }) => !isResolved);
   if (unresolved.length > 0) blockers.push(`${unresolved.length} unresolved review thread(s): ${linked(unresolved)}`);
   const silenced = pr.threads.filter(
     ({ isResolved, resolvedBy, authors }) => isResolved && resolvedBy === pr.author && !authors.includes(pr.author),
   );
   if (silenced.length > 0) blockers.push(`${silenced.length} review thread(s) you resolved without a reply: ${linked(silenced)}`);
-  const unacknowledged = pr.feedback.filter(({ author, thumbs }) => author !== pr.author && !thumbs.includes(pr.author));
-  if (unacknowledged.length > 0) blockers.push(`${unacknowledged.length} comment(s) or review(s) without your 👍: ${linked(unacknowledged)}`);
   return blockers;
 }
 

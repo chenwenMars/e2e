@@ -59,6 +59,39 @@ it('enforces tree-only observation requests, projection, and unavailable-tree fa
   await expect(feed.observe()).rejects.toMatchObject({ code: 'POLICY_DENIED' });
 });
 
+it('flags a step whose screens listed a one-time-code field, and keeps the flag for the rest of the step', async () => {
+  const marked = node('root', { role: 'document', children: [node('box', { role: 'textbox', name: 'Digit 1', inputPurpose: 'one-time-code' })] });
+  const plain = node('root', { role: 'document', children: [node('box', { role: 'textbox', name: 'Digit 1' })] });
+  // Each `observe` settles over several captures, so a test changes the screen between calls, not between captures.
+  let screen = marked;
+  const signal = new AbortController().signal;
+  const feed = (): ObservationFeed => {
+    const runtime = {
+      engine: { signal, session: { observe: async () => observation(screen) } },
+      app: {}, redact: NO_REDACT, redactCut: NO_REDACT,
+      steps: new StepRecorder('attempt'),
+    } as unknown as AgentContext;
+    const accounting = {
+      api: 'agent.act', signal, checkpoint: () => undefined,
+      operation: () => ({ signal, timeoutMs: 1_000 }), remainingMs: () => 1_000,
+      metrics: { actionSteps: 0, contextBytes: 0, ledgerBytes: 0, observationBytes: 0 },
+    } as unknown as StepAccounting;
+    return new ObservationFeed(runtime, accounting, new OperationQueue(), {
+      pixelsAllowed: false, maxObservationBytes: 4_096, maxInputTokens: 10_000, instructionBytes: 0,
+    });
+  };
+  const withCode = feed();
+  await withCode.observe();
+  expect(withCode.oneTimeCodeShown).toBe(true);
+  // A later screen without the field leaves the step flagged: the code may be typed after the boxes are gone.
+  screen = plain;
+  await withCode.observe();
+  expect(withCode.oneTimeCodeShown).toBe(true);
+  const without = feed();
+  await without.observe();
+  expect(without.oneTimeCodeShown).toBe(false);
+});
+
 describe('prepareObservation', () => {
   it('keeps unavailable semantics separate from an empty tree and requires permitted evidence', () => {
     const pixels = { data: new Uint8Array(4), mediaType: 'image/png' as const, width: 2, height: 2, scale: 1 };

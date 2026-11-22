@@ -2,10 +2,9 @@ name: review-ready
 
 # `/ready` from a PR's author asks for the `Ready for Human Review` label,
 # which contributors from forks cannot add themselves. The job adds it when
-# the PR is mergeable and green with no change request, every review thread
-# replied to and resolved, and every comment from someone else acknowledged
-# (scripts/review-label/ready.ts, CONTRIBUTING.md), and otherwise replies
-# with what is missing.
+# the PR is mergeable and green with no change request and every review
+# thread replied to and resolved (scripts/review-label/ready.ts,
+# CONTRIBUTING.md), and otherwise replies with what is missing.
 #
 # issue_comment runs in this repository with a write token, whoever comments,
 # so the job is built to hold nothing worth taking and to run nothing a

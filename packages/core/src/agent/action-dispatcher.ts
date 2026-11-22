@@ -770,7 +770,10 @@ export class ActionDispatcher {
       const derived = derivedReason(action.value, this.options.instruction, this.options.params, {
         shown: this.feed.shownText(),
         pixels: this.feed.pixelsShown,
-        ...(action.name === 'type' ? { inputPurpose: action.node.inputPurpose } : {}),
+        // `typeText` names no field: in a step whose screens listed a one-time-code field, its value may be that code.
+        ...(action.name === 'type'
+          ? { inputPurpose: action.node.inputPurpose }
+          : this.feed.oneTimeCodeShown ? { inputPurpose: 'one-time-code' as const } : {}),
       });
       if (derived !== undefined) {
         trace.recordDerivedGap(derived);

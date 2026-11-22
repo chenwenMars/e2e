@@ -37,6 +37,14 @@ const KEY_NAMES: Readonly<Record<KeyName, string | undefined>> = {
   F12: 'f12',
 };
 
+/**
+ * The characters agent-desktop's macOS key map presses besides letters and
+ * digits. Any other one (`!`, `é`) has no key of its own there, and is
+ * refused before a locator's press focuses its control. `+` is not one: the
+ * combo syntax uses it as the separator.
+ */
+const PUNCTUATION = new Set([',', '.', '/', ';', "'", '[', ']', '\\', '-', '=', '`']);
+
 function modifierName(modifier: KeyModifier): string {
   switch (modifier) {
     case 'Shift':
@@ -65,7 +73,7 @@ export function toCombo(key: string): string {
     name = KEY_NAMES[parsed.key.name];
   } else if (parsed.key.char === ' ') {
     name = 'space';
-  } else if (parsed.key.char !== '+') {
+  } else if (/^[A-Za-z0-9]$/.test(parsed.key.char) || PUNCTUATION.has(parsed.key.char)) {
     // agent-desktop lower-cases a combo and adds Shift for a lone capital letter, so a capital needs no help.
     name = parsed.key.char;
   }

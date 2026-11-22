@@ -50,6 +50,7 @@ A Playwright key such as `testDir`, `baseURL`, `use`, `webServer`, or
 | `testDir`, `testMatch`, `testIgnore` | `tests`, globs from the project root; a leading `!` excludes |
 | `retries`, `workers`, `timeout` | the same names, with [other defaults](#defaults-that-differ); `workers` is an integer |
 | `expect.timeout`, `use.actionTimeout`, `globalTimeout` | `assertionTimeout`, `actionTimeout`, `maxDuration`; the `maxDuration` clock starts with the tests, not app startup |
+| `expect.toPass` | Top-level [`toPass`](/reference/config#topass) |
 | `maxFailures`, `use.headless: false` | `--max-failures <n>` and `--headed` on the CLI |
 | `reporter`, `outputDir` | `reporters: ['list', 'junit', htmlReporter()]`, with `htmlReporter` from `@e2e-dev/html-reporter`; also `dot`, `json`, and `markdown`; `output`, default `.e2e` |
 | `use.viewport`, `locale`, `timezoneId`, `colorScheme`, `reducedMotion`, `userAgent`, `testIdAttribute` | the same keys in `web({ ... })` |
@@ -138,7 +139,9 @@ run only in a browser, so a test that uses it declares
 | `expect(page).toHaveScreenshot()`, `expect(locator).toHaveScreenshot()` | `expect(screen).toHaveScreenshot()` and the locator form, see [Visual comparison](/visual-testing) |
 | `expect(value)` with `toBe()`, `toEqual()`, `toMatchObject()`, `toContain()`, `toHaveLength()`, `toHaveProperty()`, `toMatch()`, and the truthiness and number matchers | the same, see [value matchers](/reference/expect#value-matchers) |
 | `expect(locator, 'message')`, `expect(page, 'message').toHaveScreenshot()`, `expect(value, 'message')` | the same, `expect(screen, 'message')` for the page; the message opens the failure, see [locator matchers](/reference/expect#locator-matchers) |
-| `expect.any()`, `anything()`, `objectContaining()`, `arrayContaining()`, `stringMatching()`, `stringContaining()`, `expect.poll()`, `expect.soft()` | the same; `poll` takes one `interval` |
+| `expect.any()`, `anything()`, `objectContaining()`, `arrayContaining()`, `stringMatching()`, `stringContaining()`, `expect.poll()`, `expect.soft()` | the same |
+| `expect.poll(read, { intervals })` | the same. See [Polling a value](/reference/expect#polling-a-value) |
+| `expect(fn).toPass(options?)` | the same. See [Retrying a block](/reference/expect#retrying-a-block) |
 
 </Accordion>
 <Accordion title="Navigation and app">
@@ -261,7 +264,6 @@ purpose. Use the workaround, or keep the test in Playwright.
 
 | Playwright | Use today |
 | --- | --- |
-| `expect(fn).toPass()`, `expect.poll(fn, { intervals })` | `expect.poll(async () => { ...; return true }).toBe(true)` |
 | `toBeEmpty()`, `toBeEditable()`, `toBeInViewport()` | `toHaveValue('')` on a form control, `toHaveText('')` on other elements; `toBeEnabled()` and `.not.toHaveAttribute('readonly')`; `expect.poll` over `boundingBox()` |
 | `locator.screenshot()`, `{ fullPage, clip }`, `snapshotPathTemplate`, `ignoreSnapshots` | The viewport or one locator in `toHaveScreenshot`; a tag and `--exclude-tag` to skip visual tests |
 | `expect.configure()` | `{ timeout }` on each call |
@@ -372,6 +374,8 @@ purpose. Use the workaround, or keep the test in Playwright.
   and `isVisible()` take the first. Narrow with `filter` or `first()`.
 - `.not.toBeChecked()` passes on a button or a heading. Query the control
   by its role, so the assertion fails when the control changes kind.
+- If an `expect.poll` read throws, it's retried.
+- For `toPass`, you'll see only the steps inside each try in the report.
 - Sessions last one run. `test.setup` saves state under a name and
   `{ session }` restores it. The file is encrypted and deleted at cleanup,
   so there is no `.auth/user.json` to reuse.

@@ -30,5 +30,13 @@ describe('toCombo', () => {
     expect(() => toCombo('Insert')).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY' }));
     expect(() => toCombo('+')).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY' }));
     expect(() => toCombo('Hyper+a')).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY' }));
+    // No key of their own in agent-desktop's macOS key map.
+    for (const key of ['!', 'é', '?', 'ControlOrMeta+é']) expect(() => toCombo(key)).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY' }));
+  });
+
+  it('presses the punctuation agent-desktop has keys for', () => {
+    for (const key of [',', '.', '/', ';', "'", '[', ']', '\\', '-', '=', '`']) expect(toCombo(key)).toBe(key);
+    expect(toCombo('ControlOrMeta+,')).toBe('cmd+,');
+    expect(toCombo('7')).toBe('7');
   });
 });

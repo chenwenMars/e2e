@@ -8,7 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -53,6 +53,16 @@ function executableName(): string {
 /** The file an unpacked release is stamped with once its archive's digest checked out: the digest itself. */
 const STAMP = '.verified';
 
+/** Whether `file` is a regular file this process may run: a directory passes the execute check on macOS, being searchable, but cannot be run. */
+async function executableFile(file: string): Promise<boolean> {
+  try {
+    await access(file, constants.X_OK);
+    return (await stat(file)).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether the cache entry is a whole, checked release: stamped with the
  * pinned digest, its executable still executable, and on macOS the helper
@@ -62,8 +72,8 @@ const STAMP = '.verified';
 async function usable(directory: string, digest: string): Promise<boolean> {
   try {
     if ((await readFile(path.join(directory, STAMP), 'utf8')).trim() !== digest) return false;
-    await access(path.join(directory, executableName()), constants.X_OK);
-    if (process.platform === 'darwin') await access(path.join(directory, 'agent-desktop-macos-helper'), constants.X_OK);
+    if (!(await executableFile(path.join(directory, executableName())))) return false;
+    if (process.platform === 'darwin' && !(await executableFile(path.join(directory, 'agent-desktop-macos-helper')))) return false;
     return true;
   } catch {
     return false;
@@ -108,11 +118,7 @@ export function pinnedExecutable(env: Readonly<Record<string, string | undefined
 export async function resolveExecutable(binary: string | undefined, projectRoot: string, env: Readonly<Record<string, string | undefined>>): Promise<string> {
   if (binary !== undefined) {
     const resolved = path.resolve(projectRoot, binary);
-    try {
-      await access(resolved, constants.X_OK);
-    } catch {
-      throw new ConfigurationError('INVALID_CONFIG', `desktop({ binary }) names ${resolved}, which is not an executable file`);
-    }
+    if (!(await executableFile(resolved))) throw new ConfigurationError('INVALID_CONFIG', `desktop({ binary }) names ${resolved}, which is not an executable file`);
     return resolved;
   }
   const target = releaseTarget();
@@ -141,6 +147,7 @@ export async function installPinned(env: Readonly<Record<string, string | undefi
   }
   const directory = cacheDirectory(env, target);
   const executable = path.join(directory, executableName());
+  await sweepLeftovers(directory);
   if (await usable(directory, digest)) return executable;
   const archive = `agent-desktop-v${AGENT_DESKTOP_VERSION}-${target}.tar.gz`;
   const url = `https://github.com/vercel-labs/agent-desktop/releases/download/v${AGENT_DESKTOP_VERSION}/${archive}`;
@@ -184,6 +191,26 @@ async function download(url: string, archive: string, digest: string, directory:
   }
 }
 
+/** How old an unpack or a moved-aside entry must be before a later install removes it: no install still running is using one that old. */
+const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Removes the unpacks (`.partial-*`) and moved-aside entries (`.stale-*`)
+ * beside the cache entry that an install killed mid-way left behind, each
+ * a whole copy of agent-desktop. Only ones a day old go: an install running
+ * now may still be using a newer one. Best effort; a failure leaves them.
+ */
+async function sweepLeftovers(directory: string): Promise<void> {
+  const parent = path.dirname(directory);
+  const base = path.basename(directory);
+  for (const entry of await readdir(parent).catch(() => [] as string[])) {
+    if (!entry.startsWith(`${base}.partial-`) && !entry.startsWith(`${base}.stale-`)) continue;
+    const leftover = path.join(parent, entry);
+    const old = await stat(leftover).then((info) => Date.now() - info.mtimeMs > LEFTOVER_AGE_MS, () => false);
+    if (old) await rm(leftover, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /** How many times a publish looks again after another run changed the cache entry under it. */
 const PUBLISH_TRIES = 10;
 
@@ -196,8 +223,10 @@ const PUBLISH_TRIES = 10;
  * whole once moved (another run put it there meanwhile) goes back.
  */
 async function publish(staging: string, directory: string, digest: string): Promise<void> {
+  // Why the last rename into place failed: an entry another run put there, or something else (permissions, a full disk), which the error names.
+  let failure: NodeJS.ErrnoException | undefined;
   for (let tries = 0; tries < PUBLISH_TRIES; tries += 1) {
-    if (await rename(staging, directory).then(() => true, () => false)) return;
+    if (await rename(staging, directory).then(() => true, (cause: unknown) => ((failure = cause as NodeJS.ErrnoException), false))) return;
     if (await usable(directory, digest)) return;
     // A damaged entry is moved aside, not deleted first, so the executable is missing only between two renames. Of two runs that move it, one fails and looks again.
     const aside = `${directory}.stale-${process.pid}-${randomUUID()}`;
@@ -206,5 +235,6 @@ async function publish(staging: string, directory: string, digest: string): Prom
     await rm(aside, { recursive: true, force: true });
   }
   if (await usable(directory, digest)) return;
-  throw new InfrastructureError('AGENT_DESKTOP_INSTALL_FAILED', `could not put agent-desktop in place at ${directory}: other runs kept changing it`);
+  const raced = failure === undefined || failure.code === 'EEXIST' || failure.code === 'ENOTEMPTY';
+  throw new InfrastructureError('AGENT_DESKTOP_INSTALL_FAILED', `could not put agent-desktop in place at ${directory}: ${raced ? 'other runs kept changing it' : failure?.message}`, failure === undefined ? {} : { cause: failure });
 }

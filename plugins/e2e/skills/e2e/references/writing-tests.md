@@ -318,7 +318,7 @@ Each action resolves one node, waits up to `config.actionTimeout` (30 s, or
 `press(key)`, `check()`, `uncheck()`,
 `selectOption(label | { label } | { value } | { index })` (one option; an
 array is `INVALID_ARGUMENT`), `focus()`, `blur()`, `hover()`, `setInputFiles(paths)`
-(relative to the project root; `[]` clears), `dragTo(locator)`, `scrollIntoView()`,
+(relative to the project root; `[]` clears; a missing path, or one under a directory the runner cannot search, is `INVALID_ARGUMENT`), `dragTo(locator)`, `scrollIntoView()`,
 `swipe({ direction, momentum? })`. Web only, `UNSUPPORTED_CAPABILITY` on a
 device: `blur`, `secondaryTap`, `selectOption`, `setInputFiles`, `scrollIntoView`,
 and `modifiers`.
@@ -367,17 +367,36 @@ continuously, or for the whole `timeout` when that is shorter, so it never
 returns sooner. `expect(locator, message?)`, `expect(screen, message?)`, and
 their `expect.soft` forms open each assertion failure with the message.
 `expect(value, message?)` is synchronous.
-`expect.poll(read, { timeout?, interval?, message? })` re-reads until a value
-matcher passes (`assertionTimeout` and 100 ms by default, stopping with the
+`expect.poll(read, { timeout?, interval?, intervals?, message? })` re-reads until a value
+matcher passes (`assertionTimeout` and `[100, 250, 500, 1000]` ms by default, stopping with the
 attempt); a throwing read keeps polling, and it is not a report step. A
 poll that the body or a hook returns without awaiting is cancelled and fails
 that phase with `STEP_NOT_AWAITED`.
+Use `intervals: [<ms>]` in place of the deprecated `interval` option.
 `timeout: 0` on a locator or fixture action, `waitFor`, a matcher, or
 `expect.poll` sets no deadline of its own: the test timeout
 (`cleanupTimeout` in `afterEach`) still bounds it, and `expect.poll` with 0
-outside a test is `INVALID_CONFIG`. A negative or non-finite `timeout` is
+outside a test, hook, or hosted session is `INVALID_CONFIG`. A negative or non-finite `timeout` is
 `INVALID_ARGUMENT` (`INVALID_CONFIG` from `expect.poll`); `agent.*` calls
 take a positive `timeout` only.
+
+Use `await expect(fn, message?).toPass({ timeout?, intervals? })` when
+several assertions must pass together. The block is retried until it
+completes without throwing. Use hard assertions inside the block. Keep
+inner locator timeouts short. With `.not.toPass()`, the assertion
+passes on the first throw or rejection. With `expect.soft(fn).toPass()`,
+you can keep a timeout failure and continue the test body.
+
+Set call options to override the corresponding fields in `config.toPass`.
+The defaults are the phase deadline and pauses of `[100, 250, 500, 1000]` ms.
+Pass a positive `timeout` outside an attempt or hook. In the report, you
+can see the steps from each try, including failed steps. At the cutoff,
+running steps in a `toPass` try or poll read are cancelled.
+
+The config defaults and hook deadline apply to both `expect.poll` and
+`toPass` in `beforeAll`, `afterAll`, and worker fixture teardown. A call
+`timeout` above 2147483647 ms is `INVALID_CONFIG`.
+
 `expect.soft(x)` keeps a failure instead of throwing; the attempt fails
 after the body with every soft failure listed. If the body then calls
 `test.skip`, the attempt still fails, with the skip reason in its `skip`.
@@ -679,5 +698,5 @@ them. A predicate function is `INVALID_ARGUMENT`.
   enough for the slowest case (topic `agent` lists its model and budget
   limits), or a matcher with a longer `timeout` when a locator names the
   state exactly.
-- `await` every step call and `expect.poll`, else `STEP_NOT_AWAITED` at the line of the call.
+- `await` every step call, `expect.poll`, and `toPass`, else `STEP_NOT_AWAITED` at the line of the call.
 - Assert the fact a model produced with `toContain`, not its exact sentence.

@@ -9,12 +9,15 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
+  ConfigurationError,
   EngineError,
+  OBSERVED_NAME_LIMIT,
+  OBSERVED_TEXT_LIMIT,
   resolveExpression,
   type EngineAppInfo,
   type EngineAttemptContext,
@@ -69,6 +72,7 @@ const EXIT_WAIT_MS = 500;
 /** How long a launch waits for its process to appear, and then for the app's window to become readable, before it reports why it did not. */
 const LAUNCH_READY_MS = 10_000;
 
+
 /**
  * How long agent-desktop may look for an option in a list. A select of an
  * option that exists answers in well under a second; one of an option that
@@ -88,6 +92,9 @@ const NOT_STARTED = new Error('open started nothing');
 /** The cause of a read that found the app's windows but could read none of them. */
 const UNREADABLE = new Error('no window of the app could be read');
 
+/** The cause of a read whose window list did not find the app, while its process still runs. */
+const UNLISTED = new Error('the window list did not find the running app');
+
 /** The cause of a read of an app that quit since it launched. */
 const QUIT = new Error('the app quit');
 
@@ -96,6 +103,9 @@ const STATE_PREFIX = 'e2e-agent-desktop-';
 
 /** The file in a state directory that names the process that owns it. */
 const OWNER_FILE = 'owner';
+
+/** What the owner file holds once its worker gave the directory up: a later sweep takes it, though the process that wrote it may still run another worker. */
+const ABANDONED = 'abandoned';
 
 /** The file in a state directory that names the app the worker launched and its launch token, so a sweep can quit an app a killed worker left running. */
 const APP_FILE = 'app.json';
@@ -113,6 +123,9 @@ const INHERITED_ENV = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPD
 
 /** Launch arguments every launch gets first: no window or document the app saved at its last quit comes back. */
 const FRESH_STATE_ARGUMENTS = ['-ApplePersistenceIgnoreState', 'YES'];
+
+/** The most text agent-desktop's `type` takes, in UTF-8 bytes (its `MAX_TEXT_LEN`). */
+const MAX_TYPE_BYTES = 10_000;
 
 /** How many node bindings stay usable; the oldest go first. */
 const MAX_BINDINGS = 4096;
@@ -256,6 +269,8 @@ export class DesktopSurface {
   private projectRoot = process.cwd();
   /** The app's bundle id or name: the target's `bundleId`, or the bundle id read from its `appPath`. */
   private launchTarget: string | undefined;
+  /** Whether the app is launched in the foreground: with `desktop({ headed })`, or a run that asked for a visible surface (`--headed`). Physical input stays with `desktop({ headed })` alone, since the engine declares it when it is created. */
+  private foreground = false;
   /** The `.app` bundle an `appPath` names, resolved; the launched process must run from it. */
   private bundle: string | undefined;
   /** The process name agent-desktop reported at launch, which window lookups filter by before they keep the launched process's own. */
@@ -264,6 +279,9 @@ export class DesktopSurface {
   private pid: number | undefined;
   /** agent-desktop's identity of that process, which a later process given the same id does not share. */
   private instance: string | undefined;
+  /** When that process started, as `ps` prints it, and the token its launch put in its environment: what shows it is still the launch's once the app list no longer shows it. */
+  private started: string | undefined;
+  private token: string | undefined;
   /**
    * A launch whose outcome is unknown (it timed out, or failed after it may
    * have started the app): its token, so the next quit can still find and
@@ -303,6 +321,16 @@ export class DesktopSurface {
   async init(info: EngineInitInfo): Promise<void> {
     this.projectRoot = info.projectRoot;
     this.app = info.app;
+    // An engine handle can serve one host after another: nothing of the last one's app carries over. A launch it could not settle stays in its launch record, which the sweep below takes.
+    this.bundle = undefined;
+    this.appName = undefined;
+    this.pid = undefined;
+    this.instance = undefined;
+    this.started = undefined;
+    this.token = undefined;
+    this.pending = undefined;
+    this.forget();
+    this.foreground = this.options.headed || info.headed;
     const executable = await resolveExecutable(this.options.binary, info.projectRoot, info.env);
     this.appEnv = inheritedEnv(info.env);
     // agent-desktop keeps the text of plain fields in its state directory: a worker that was killed left its own behind.
@@ -367,7 +395,7 @@ export class DesktopSurface {
     } finally {
       // An app that would not quit, or a launch whose process was never found, stays named in the launch record, which the next run's sweep quits; the text agent-desktop kept of the app's fields goes either way.
       const leftRunning = !quit && (this.pid !== undefined || this.pending !== undefined);
-      if (this.home !== undefined) await (leftRunning ? keepOnlyRecord(this.home) : rm(this.home, { recursive: true, force: true })).catch(() => undefined);
+      if (this.home !== undefined) await (leftRunning ? abandon(this.home) : rm(this.home, { recursive: true, force: true })).catch(() => undefined);
       this.home = undefined;
       this.cli = undefined;
       this.attempt = undefined;
@@ -421,7 +449,8 @@ export class DesktopSurface {
 
   /**
    * `app.open()`: the copy of the app the engine launched is quit, and the
-   * app launched fresh, in the background unless `headed`, with the target's
+   * app launched fresh, in the background unless `headed` or the run's
+   * `--headed`, with the target's
    * launch arguments. A copy the engine did not launch (the developer's own)
    * is left alone, and never read or driven. A launch that failed after the
    * app started still leaves the engine owning the new process, so the end
@@ -454,6 +483,8 @@ export class DesktopSurface {
     }
     // The process now shown to be the launch's, with when it started, so a later run can quit it even when its environment cannot be read, and never a later process given the same id.
     const started = this.pid === undefined ? undefined : await startedAt(this.pid, operation.signal);
+    this.started = started;
+    this.token = launch.token;
     if (this.pid !== undefined && started !== undefined) await this.writeRecord({ token: launch.token, pid: this.pid, started });
     this.forget();
     await this.windowReadable(operation);
@@ -474,7 +505,7 @@ export class DesktopSurface {
    */
   private async runningCopies(target: string, operation: Pick<OperationContext, 'signal' | 'timeoutMs'>): Promise<ReadonlySet<number> | undefined> {
     // agent-desktop matches the app the way its launch does (any case, the localized name too), so every copy the launch could hand over to is listed.
-    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', target], { label: 'list apps', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
+    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', target, '--timeout-ms', String(this.toolBudget(operation))], { label: 'list apps', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
     if (complete === false) return undefined;
     return new Set((apps ?? []).filter((app) => typeof app.pid === 'number').map((app) => app.pid!));
   }
@@ -482,8 +513,8 @@ export class DesktopSurface {
   /** Launches an installed app by bundle id or name through agent-desktop, which reports the process it started. */
   private async launchById(launch: Launch, operation: OperationContext): Promise<void> {
     const { target, token } = launch;
-    // In the background unless physical input is on: the app never takes the keyboard from whoever is at the Mac.
-    const args = ['launch', target, '--no-attach', ...(this.options.headed ? ['--activate'] : []), '--timeout', String(this.toolBudget(operation)), `--env=${LAUNCH_TOKEN}=${token}`];
+    // In the background unless `headed` or the run's `--headed`: otherwise the app never takes the keyboard from whoever is at the Mac.
+    const args = ['launch', target, '--no-attach', ...(this.foreground ? ['--activate'] : []), '--timeout', String(this.toolBudget(operation)), `--env=${LAUNCH_TOKEN}=${token}`];
     for (const argument of [...FRESH_STATE_ARGUMENTS, ...(this.app.launchArguments ?? [])]) args.push(`--arg=${argument}`);
     let launched: { app?: string; pid?: number; process_instance?: string };
     try {
@@ -525,8 +556,8 @@ export class DesktopSurface {
    */
   private async openBundle(bundle: string, launch: Launch, operation: OperationContext): Promise<void> {
     if (operation.timeoutMs <= 0) throw new EngineError('OPERATION_TIMEOUT', `opening ${bundle}: the operation's budget ran out before it was sent`, { retryable: false, cause: NOT_SENT });
-    // `-g` keeps the app in the background unless physical input is on; `open` hands the app its own environment, so it runs with the trimmed one.
-    const args = [...(this.options.headed ? [] : ['-g']), '-n', '--env', `${LAUNCH_TOKEN}=${launch.token}`, bundle, '--args', ...FRESH_STATE_ARGUMENTS, ...(this.app.launchArguments ?? [])];
+    // `-g` keeps the app in the background unless `headed` or the run's `--headed`; `open` hands the app its own environment, so it runs with the trimmed one.
+    const args = [...(this.foreground ? [] : ['-g']), '-n', '--env', `${LAUNCH_TOKEN}=${launch.token}`, bundle, '--args', ...FRESH_STATE_ARGUMENTS, ...(this.app.launchArguments ?? [])];
     try {
       await execFileAsync('open', args, { signal: operation.signal, timeout: operation.timeoutMs, env: this.appEnv });
     } catch (cause) {
@@ -573,20 +604,23 @@ export class DesktopSurface {
    */
   private async claim(launch: Launch, operation: Pick<OperationContext, 'signal' | 'timeoutMs'>): Promise<boolean | undefined> {
     const { target, token, before } = launch;
-    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', target], { label: 'list apps', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
+    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', target, '--timeout-ms', String(this.toolBudget(operation))], { label: 'list apps', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
     for (const app of apps ?? []) {
       if (typeof app.pid !== 'number') continue;
       // A copy that ran before the launch is never its own, whatever its environment says.
       if (before?.has(app.pid) === true) continue;
-      if ((await carriesToken(app.pid, token, operation.signal)) === true) return this.take(app, target);
+      if ((await carriesToken(app.pid, token, operation.signal)) === true) return this.take(app, target, token);
     }
     return complete === false ? undefined : false;
   }
 
-  private take(app: RawApp, target: string): true {
+  /** Takes a process shown to carry the launch's token as the engine's own, the token with it, which shows it is still the launch's once the app list leaves it out. */
+  private take(app: RawApp, target: string, token: string): true {
     this.appName = app.name ?? target;
     this.pid = app.pid;
     this.instance = app.process_instance;
+    this.token = token;
+    this.started = undefined;
     return true;
   }
 
@@ -604,41 +638,64 @@ export class DesktopSurface {
     const budgetBound = operation.timeoutMs < LAUNCH_READY_MS;
     const deadline = Date.now() + Math.min(operation.timeoutMs, LAUNCH_READY_MS);
     let sawWindow = false;
+    // Whether a read finished and listed no window of the app: only that shows it opened none. A read that ran out of time saw nothing.
+    let listedNone = false;
+    let timedOut = false;
     while (Date.now() < deadline) {
       if (operation.signal.aborted) throw new EngineError('CANCELLED', `opening ${this.appName ?? 'the app'} was cancelled`, { retryable: false });
       let screen: ProjectedScreen | undefined;
+      let read = false;
       try {
         // Each read gets what is left of the readiness wait, not of the whole operation, shared by its commands.
         screen = await this.capture(withDeadline({ ...operation, timeoutMs: Math.max(deadline - Date.now(), 0) }));
+        read = true;
       } catch (cause) {
         // The last read ran out of budget: the window never became readable in time.
-        if (cause instanceof EngineError && cause.code === 'OPERATION_TIMEOUT') break;
-        // A window not readable yet, or an app that quit, is what this wait looks at below.
-        if (!(cause instanceof EngineError && (cause.cause === UNREADABLE || cause.cause === QUIT))) throw cause;
+        if (cause instanceof EngineError && cause.code === 'OPERATION_TIMEOUT') {
+          timedOut = true;
+          break;
+        }
+        // A window not readable yet, an app the window list missed, or an app that quit, is what this wait looks at below.
+        if (!(cause instanceof EngineError && (cause.cause === UNREADABLE || cause.cause === QUIT || cause.cause === UNLISTED))) throw cause;
         if (cause.cause === UNREADABLE) sawWindow = true;
       }
       if (screen !== undefined) return;
+      if (read) listedNone = true;
       // An app that quit (or crashed) on its own never shows a window.
       if (this.pid !== undefined && !alive(this.pid)) {
         this.forget();
         this.pid = undefined;
         this.instance = undefined;
+        this.started = undefined;
+        this.token = undefined;
         throw new EngineError('ENGINE_FAILURE', `${this.appName ?? 'the app'} quit right after it launched, before it showed a window`, { retryable: false });
       }
       await sleep(Math.min(LAUNCH_POLL_MS, Math.max(deadline - Date.now(), 0)), operation.signal);
     }
     // The open's own budget ran out first: that is a timeout, not a window that cannot be read.
     if (budgetBound) throw new EngineError('OPERATION_TIMEOUT', `${this.appName ?? 'the app'} launched, but the open ran out of time before its window could be read`, { retryable: false });
-    if (!sawWindow && !this.options.headed) {
+    // A locked screen hides every window from accessibility, and can list none or time out: neither read tells it from an app with no window, so macOS is asked.
+    if ((await screenLocked(operation.signal)) === true) {
+      throw new EngineError('ENGINE_FAILURE', `${this.appName ?? 'the app'} launched, but the Mac's screen is locked, so no window can be read through accessibility; unlock it and run again`, { retryable: false });
+    }
+    if (!sawWindow && listedNone && !this.foreground) {
       throw new EngineError(
         'ENGINE_FAILURE',
-        `${this.appName ?? 'the app'} launched in the background and opened no window. Some apps, such as document-based ones, show a window only once they come forward; set desktop({ headed: true }) for them`,
+        `${this.appName ?? 'the app'} launched in the background and opened no window. Some apps, such as document-based ones, show a window only once they come forward; set desktop({ headed: true }) for them, or run with --headed`,
+        { retryable: false },
+      );
+    }
+    // In the foreground there is no background to blame: the app listed no window at all, which a locked screen can cause too.
+    if (!sawWindow && listedNone) {
+      throw new EngineError(
+        'ENGINE_FAILURE',
+        `${this.appName ?? 'the app'} launched, but listed no window within ${LAUNCH_READY_MS / 1000} s: it may open none (a menu-bar app) or take longer to, or on macOS the screen may be locked`,
         { retryable: false },
       );
     }
     throw new EngineError(
       'ENGINE_FAILURE',
-      `${this.appName ?? 'the app'} launched, but its window cannot be read through accessibility. On macOS the screen may be locked, or the window may be off screen`,
+      `${this.appName ?? 'the app'} launched, but its window cannot be read through accessibility${timedOut ? ' (a read ran out of time)' : ''}. On macOS the screen may be locked, or the window may be off screen`,
       { retryable: false },
     );
   }
@@ -674,16 +731,6 @@ export class DesktopSurface {
   }
 
   /**
-   * Quits the app the engine launched, forcefully: a test needs it gone, not
-   * asked to save. It is ended by its process id, so another instance of the
-   * same app (the developer's own copy) is left alone, and waited for, so the
-   * next launch cannot find it still running. The process is looked up
-   * first: one that exited on its own, or whose id the OS gave to another
-   * process since, is not running any more, and nothing is killed. Until the
-   * process is known to be gone, the engine keeps it as its own, so a quit
-   * that failed is tried again.
-   */
-  /**
    * Runs launches and quits of this surface one at a time: two at once would
    * each launch a copy into the one process id and launch record the engine
    * keeps, and the end of the attempt would quit only one of them.
@@ -699,6 +746,16 @@ export class DesktopSurface {
     return this.serially(() => this.quitNow(signal, timeoutMs));
   }
 
+  /**
+   * Quits the app the engine launched, forcefully: a test needs it gone, not
+   * asked to save. It is ended by its process id, so another instance of the
+   * same app (the developer's own copy) is left alone, and waited for, so the
+   * next launch cannot find it still running. The process is looked up
+   * first: one that exited on its own, or whose id the OS gave to another
+   * process since, is not running any more, and nothing is killed. Until the
+   * process is known to be gone, the engine keeps it as its own, so a quit
+   * that failed is tried again.
+   */
   private async quitNow(signal: AbortSignal, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     const pending = this.pending;
@@ -740,14 +797,43 @@ export class DesktopSurface {
     const { pid, instance, appName } = this;
     this.forget();
     if (pid === undefined || appName === undefined) return;
-    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', appName], { label: `find ${appName}`, input: false, signal, timeoutMs });
-    const running = apps?.some((app) => app.pid === pid && (instance === undefined || app.process_instance === instance)) === true;
+    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', appName, '--timeout-ms', String(this.toolBudget({ timeoutMs }))], { label: `find ${appName}`, input: false, signal, timeoutMs });
+    const listed = apps?.some((app) => app.pid === pid && (instance === undefined || app.process_instance === instance)) === true;
     // An inventory that skipped some processes cannot say the app is gone; it stays the engine's, to quit again.
-    if (!running && complete === false) throw new EngineError('ENGINE_FAILURE', `could not tell whether the app (process ${pid}) is still running: agent-desktop listed the apps only in part`, { retryable: false });
+    if (!listed && complete === false) throw new EngineError('ENGINE_FAILURE', `could not tell whether the app (process ${pid}) is still running: agent-desktop listed the apps only in part`, { retryable: false });
+    // The list showing the id as another process is evidence it is not the launch's; the list leaving it out is not.
+    const reused = instance !== undefined && apps?.some((app) => app.pid === pid && app.process_instance !== instance) === true;
+    const running = listed || (!reused && alive(pid) && (await this.stillLaunched(pid, signal)));
     if (running && !(await killed([pid], deadline, signal))) throw new EngineError('ENGINE_FAILURE', `the app (process ${pid}) did not exit`, { retryable: false });
     this.pid = undefined;
     this.instance = undefined;
+    this.started = undefined;
+    this.token = undefined;
     if (this.home !== undefined) await rm(path.join(this.home, APP_FILE), { force: true }).catch(() => undefined);
+  }
+
+  /**
+   * Whether a live process the app list left out is still the one the
+   * launch started. A complete list leaves out a process macOS no longer
+   * presents as an app (one that set its activation policy to prohibited),
+   * so its absence does not show it exited: its start time, or else its
+   * launch token, does. A process that cannot be looked up throws, and stays
+   * the engine's, so a quit tries again and the launch record stays.
+   */
+  private async stillLaunched(pid: number, signal: AbortSignal): Promise<boolean> {
+    const unknown = (): EngineError => new EngineError('ENGINE_FAILURE', `could not tell whether process ${pid}, which the app list no longer shows, is still the app the engine launched; quitting tries again`, { retryable: false });
+    if (this.started !== undefined) {
+      const now = await startedAt(pid, signal);
+      if (now === undefined) {
+        if (!alive(pid)) return false;
+        throw unknown();
+      }
+      return now === this.started;
+    }
+    if (this.token === undefined) throw unknown();
+    const carriers = await processesCarrying(this.token, signal);
+    if (carriers === undefined) throw unknown();
+    return carriers.includes(pid);
   }
 
   /** Every binding of the screen before: after a launch or a quit, none names a control that still exists. */
@@ -807,7 +893,7 @@ export class DesktopSurface {
    * again until its deadline.
    */
   private async capture(operation: OperationContext, windowId = this.chosenWindow, forMask = false): Promise<ProjectedScreen | undefined> {
-    const windows = await this.ownWindows(operation);
+    const windows = await this.ownWindows(operation, true);
     const chosen = windowId !== undefined && windowId === this.chosenWindow;
     if (chosen && !windows.some((window) => window.id === windowId)) throw this.chosenClosed();
     if (windows.length === 0 && this.pid !== undefined) await this.requireRunning(operation);
@@ -853,21 +939,38 @@ export class DesktopSurface {
     const quit = (): EngineError => new EngineError('INVALID_STATE', `${appName ?? 'the app'} quit (process ${pid}); open it again with app.open()`, { retryable: false, cause: QUIT });
     if (!alive(pid)) throw quit();
     if (instance === undefined || appName === undefined) return;
-    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', appName], { label: `find ${appName}`, input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
+    const { apps, complete } = await this.run<{ apps?: readonly RawApp[]; complete?: boolean }>(['list-apps', '--app', appName, '--timeout-ms', String(this.toolBudget(operation))], { label: `find ${appName}`, input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
     if (apps?.some((app) => app.pid === pid && app.process_instance === instance) === true) return;
     if (complete === false) throw new EngineError('NODE_STALE', `could not tell whether ${appName} still runs: agent-desktop listed the apps only in part`, { retryable: true, cause: UNREADABLE });
+    // A complete list leaves out a process macOS no longer presents as an app (a prohibited activation policy), which may come back: while it is still the launch's, the read is tried again.
+    const reused = apps?.some((app) => app.pid === pid && app.process_instance !== instance) === true;
+    if (!reused && alive(pid) && (await this.stillLaunched(pid, operation.signal))) {
+      throw new EngineError('NODE_STALE', `${appName} (process ${pid}) still runs, but agent-desktop does not list it as an app now; reading again`, { retryable: true, cause: UNLISTED });
+    }
     throw quit();
   }
 
-  /** The windows of the process the engine launched; none before `app.open()` or after the app quit. */
-  private async ownWindows(operation: Pick<OperationContext, 'signal' | 'timeoutMs'>): Promise<readonly RawWindow[]> {
+  /**
+   * The windows of the process the engine launched; none before
+   * `app.open()` or after the app quit. agent-desktop lists a running app
+   * with no window as an empty list, and answers `APP_NOT_FOUND` only when
+   * no running app has the name. `strict` is for a read of the screen,
+   * where that answer must not pass for an empty one: an app that quit is
+   * `INVALID_STATE`, and one that still runs, which the list missed, a
+   * retryable `NODE_STALE`.
+   */
+  private async ownWindows(operation: Pick<OperationContext, 'signal' | 'timeoutMs'>, strict = false): Promise<readonly RawWindow[]> {
     const { pid, appName } = this;
     if (pid === undefined || appName === undefined) return [];
     let listed: readonly RawWindow[];
     try {
-      listed = await this.run<readonly RawWindow[]>(['list-windows', '--app', appName], { label: 'list windows', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs, raw: true });
+      listed = await this.run<readonly RawWindow[]>(['list-windows', '--app', appName, '--timeout-ms', String(this.toolBudget(operation))], { label: 'list windows', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs, raw: true });
     } catch (cause) {
-      if (cause instanceof AgentDesktopFailure && NO_WINDOW_CODES.has(cause.code)) return [];
+      if (cause instanceof AgentDesktopFailure && NO_WINDOW_CODES.has(cause.code)) {
+        if (!strict) return [];
+        await this.requireRunning(operation);
+        throw new EngineError('NODE_STALE', `agent-desktop found no running app named ${appName}, though process ${pid} still runs; reading again`, { retryable: true, cause: UNLISTED });
+      }
       throw translate(cause, 'list windows', false);
     }
     const { instance } = this;
@@ -889,13 +992,16 @@ export class DesktopSurface {
     }
     this.pointWindow = screen.windowId;
     this.remember(screen.bindings.values());
+    let withheld = false;
     const pixels = options?.pixels === true ? await this.pixelsFor(screen, operation).catch((cause: unknown) => {
       if (cause instanceof EngineError && cause.code === 'OPERATION_TIMEOUT') throw cause;
+      withheld = true;
       return undefined;
     }) : undefined;
+    // Pixels withheld still report the regions masked, none, so the harness reads masking it could not prove (MASKING_UNPROVEN), not a missing screenshot.
     return {
       ...this.snapshotOf(screen),
-      ...(pixels === undefined ? {} : { pixels: pixels.pixels, maskedRegionCount: pixels.masked }),
+      ...(pixels === undefined ? (withheld ? { maskedRegionCount: 0 } : {}) : { pixels: pixels.pixels, maskedRegionCount: pixels.masked }),
     };
   }
 
@@ -903,7 +1009,7 @@ export class DesktopSurface {
     const app = this.appName;
     const location = app === undefined ? screen.title : screen.title === undefined ? app : `${app} › ${screen.title}`;
     return {
-      root: screen.root,
+      root: bounded(screen.root),
       viewport: screen.viewport,
       ...(screen.truncated ? { truncated: true } : {}),
       ...(location === undefined ? {} : { location }),
@@ -1035,12 +1141,8 @@ export class DesktopSurface {
           if (windows.length > 1 && home.is_focused !== true) {
             throw notActionable(`node ${binding.id} is in a window that cannot be shown to be the app's key window, so the key could land in another window`);
           }
-          // Focusing can hand focus on (a dialog it opens): the key goes only when the control still holds it. A control with an identity keeps its id; a look-alike has a new id in every read, so it is found by role and place.
-          const now = await this.capture(operation, window);
-          const held = [...(now?.bindings.values() ?? [])].some(
-            (candidate) => candidate.states?.focused === true && (binding.stable ? candidate.id === binding.id : candidate.role === binding.role && sameRect(candidate.rect, binding.rect)),
-          );
-          if (!held) throw notActionable(`node ${binding.id} did not keep keyboard focus, so the key would land on another control`);
+          // Focusing can hand focus on (a dialog it opens): the key goes only when the control still holds it.
+          if (!(await this.holdsFocus(binding, window, operation))) throw notActionable(`node ${binding.id} did not keep keyboard focus, so the key would land on another control`);
           await this.sendKey(combo, window, `press ${action.key}`, operation);
         } catch (cause) {
           // The focus already moved: a retry of the whole press would focus the control a second time, which an app's focus handler sees.
@@ -1091,50 +1193,101 @@ export class DesktopSurface {
   }
 
   /**
+   * Whether the control a binding names holds keyboard focus in a fresh read
+   * of its window. A control with an identity keeps its id; a look-alike has
+   * a new id in every read, so it is found by role and place, with as many
+   * twins around it as before: a twin that went could have let another take
+   * its place.
+   */
+  private async holdsFocus(binding: NodeBinding, window: string, operation: OperationContext): Promise<boolean> {
+    const now = await this.capture(operation, window);
+    return [...(now?.bindings.values() ?? [])].some(
+      (candidate) =>
+        candidate.states?.focused === true &&
+        (binding.stable ? candidate.id === binding.id : candidate.role === binding.role && sameRect(candidate.rect, binding.rect) && candidate.likeness === binding.likeness),
+    );
+  }
+
+  /**
    * Chooses an option of a list or dropdown with agent-desktop's `select`,
    * never by setting the value, which would put a missing option in an
-   * editable combo box as free text. A stale ref is `NODE_STALE`, so the
+   * editable combo box as free text: agent-desktop's select does just that
+   * for a combo box whose value is settable, so one is refused. A stale ref is `NODE_STALE`, so the
    * harness locates the list again. For a pop-up button agent-desktop opens
-   * the menu to find the option; when it cannot, it leaves the menu open,
-   * which is closed again here. A failure after the menu opened stays one
-   * that may have chosen something: a menu left open does not show which
-   * control opened it, or that the option is missing.
+   * the menu to find the option; when it cannot, it may leave the menu open,
+   * which is closed again here with Escape. A failure after the menu opened
+   * stays one that may have chosen something: a menu left open does not show
+   * which control opened it, or that the option is missing. A menu Escape
+   * cannot close (an app in the background takes no key) is named in the
+   * error, since it covers the window for the steps after.
    */
   private async select(binding: NodeBinding, label: string, operation: OperationContext): Promise<void> {
+    // An editable combo box takes any text: agent-desktop's select sets its value and reads it back, which a missing option passes as well.
+    if (binding.role === 'combobox' && binding.actions.includes('SetValue')) {
+      throw unsupported(`this combo box is editable and takes any text, so a select of "${label}" could not tell a missing option from a chosen one; fill() it and check its value`);
+    }
     const ref = this.refOf(binding, 'select');
     try {
       await this.run(['select', ref, '--timeout-ms', String(Math.min(this.toolBudget(operation), SELECT_WAIT_MS)), '--', label], { label: 'select', input: true, signal: operation.signal, timeoutMs: operation.timeoutMs, raw: true });
     } catch (cause) {
       // `select` answers ELEMENT_NOT_FOUND for an option it cannot find; a list that is gone is a stale ref.
       if (cause instanceof AgentDesktopFailure && cause.notDelivered && cause.code === 'ELEMENT_NOT_FOUND') throw notActionable(`the list has no option "${label}"`);
-      // A menu that cannot be closed leaves the select's own failure to report.
-      if (cause instanceof AgentDesktopFailure && !cause.notDelivered && (await this.closeOpenMenu(binding.windowId, operation).catch(() => false))) {
-        throw new EngineError('ACTION_MAY_HAVE_COMMITTED', `select "${label}": agent-desktop opened the list's menu and did not choose it; the list may have no option "${label}". The menu was closed`, { retryable: false, cause });
+      if (cause instanceof AgentDesktopFailure && !cause.notDelivered) {
+        const menu = await this.closeOpenMenu(binding.windowId, operation).catch(() => 'unknown' as const);
+        if (menu === 'closed') {
+          throw new EngineError('ACTION_MAY_HAVE_COMMITTED', `select "${label}": agent-desktop opened the list's menu and could not confirm a choice, so whether "${label}" was chosen is unknown; the list may have no option "${label}". The menu was closed`, { retryable: false, cause });
+        }
+        if (menu === 'unconfirmed') {
+          throw new EngineError('ACTION_MAY_HAVE_COMMITTED', `select "${label}": ${cause.message} (the input may have reached the app). Escape was sent to close the list's menu, but whether it closed could not be told`, { retryable: false, cause });
+        }
+        if (menu === 'open' || menu === 'refused') {
+          const why =
+            menu === 'open'
+              ? 'Escape did not close it'
+              : this.options.headed
+                ? 'agent-desktop sent no Escape to close it'
+                : "the app's window is not the active one, so no Escape could be sent to close it; desktop({ headed: true }) closes it with Escape";
+          throw new EngineError('ACTION_MAY_HAVE_COMMITTED', `select "${label}": ${cause.message} (the input may have reached the app). The list's menu is still open: ${why}`, { retryable: false, cause });
+        }
       }
       throw translate(cause, `select "${label}"`, true);
     }
   }
 
   /**
-   * Closes a menu the launched process has open, with Escape. True only when
-   * a menu was open and is closed now; false when there was none, or it
-   * cannot be told whose it is (another copy shares the app's name).
+   * Closes a menu the launched process has open, with Escape: `closed` when
+   * one was open and is closed now, `none` when there was none, `open` when
+   * one is still open after the Escape, `unconfirmed` when the Escape went
+   * but whether the menu closed cannot be told, `refused` when no Escape could be
+   * sent (agent-desktop sends a key only to the active window), and
+   * `unknown` when it cannot be told whose a menu is (another copy shares
+   * the app's name).
    */
-  private async closeOpenMenu(window: string | undefined, operation: OperationContext): Promise<boolean> {
+  private async closeOpenMenu(window: string | undefined, operation: OperationContext): Promise<'closed' | 'none' | 'open' | 'unconfirmed' | 'refused' | 'unknown'> {
     const { appName, pid } = this;
-    if (appName === undefined || pid === undefined || window === undefined) return false;
+    if (appName === undefined || pid === undefined || window === undefined) return 'unknown';
     const menus = async (): Promise<number | undefined> => {
-      const listed = await this.run<{ pid?: number; surfaces?: readonly { type?: string }[] }>(['list-surfaces', '--app', appName], { label: 'list surfaces', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs }).catch(() => undefined);
+      const listed = await this.run<{ pid?: number; surfaces?: readonly { type?: string; unclassified?: readonly string[] }[] }>(['list-surfaces', '--app', appName], { label: 'list surfaces', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs }).catch(() => undefined);
       if (listed?.pid !== pid) return undefined;
+      // A window agent-desktop could not check for a menu (a busy app) says so in `unclassified`: whether a menu is open there is unknown, not no.
+      if ((listed.surfaces ?? []).some((surface) => surface.unclassified?.includes('menu') === true)) return undefined;
       return (listed.surfaces ?? []).filter((surface) => surface.type?.includes('menu') === true).length;
     };
-    if (((await menus()) ?? 0) === 0) return false;
-    await this.sendKey('escape', window, 'close menu', operation);
-    // A menu takes a moment to close after Escape.
+    const before = await menus();
+    if (before === undefined) return 'unknown';
+    if (before === 0) return 'none';
+    const sent = await this.sendKey('escape', window, 'close menu', operation).then(
+      () => 'sent' as const,
+      // A failure that may have reached the app is an Escape sent; any other sent nothing.
+      (cause: unknown) => (cause instanceof EngineError && cause.code === 'ACTION_MAY_HAVE_COMMITTED' ? ('sent' as const) : ('refused' as const)),
+    );
+    if (sent === 'refused') return 'refused';
+    // A menu takes a moment to close after Escape. The last look decides: one that could not tell leaves it unknown.
     const until = Date.now() + Math.min(MENU_CLOSE_MS, operation.timeoutMs);
     for (;;) {
-      if ((await menus()) === 0) return true;
-      if (Date.now() + LAUNCH_POLL_MS >= until) return false;
+      const open = await menus();
+      if (open === 0) return 'closed';
+      if (Date.now() + LAUNCH_POLL_MS >= until) return open === undefined ? 'unconfirmed' : 'open';
       await sleep(LAUNCH_POLL_MS, operation.signal);
     }
   }
@@ -1158,8 +1311,11 @@ export class DesktopSurface {
     // Physical input lands on whatever is frontmost at the point: bring the window forward first.
     await this.run(['focus-window', '--window-id', target.id, '--headed'], { label: 'focus window', input: true, signal: operation.signal, timeoutMs: operation.timeoutMs });
     // Coming forward can move the window (onto another space, out from under the menu bar): the click is measured from where it is now.
-    const focused = (await this.ownWindows(operation)).find((candidate) => candidate.id === target.id)?.bounds;
-    if (focused === undefined) throw notActionable('the window the point was taken from closed as it was brought forward; observe again');
+    const forward = (await this.ownWindows(operation)).find((candidate) => candidate.id === target.id);
+    const focused = forward?.bounds;
+    if (forward === undefined || focused === undefined) throw notActionable('the window the point was taken from closed as it was brought forward; observe again');
+    // A click carries no window, only screen coordinates: if another window (a sheet, a panel the app raised) took focus as this one came forward, it could be the one under the point.
+    if (forward.is_focused !== true) throw notActionable('another window took focus as the window the point was taken from was brought forward, and could be under the point; observe again');
     if (point.x >= focused.width || point.y >= focused.height) {
       throw notActionable(`(${point.x}, ${point.y}) is outside the ${focused.width}x${focused.height} window; a click there would land on another app`);
     }
@@ -1178,11 +1334,28 @@ export class DesktopSurface {
 
   /** The keyboard capability's `type` (declared with `headed` only): keystrokes into the focused field, which a fresh snapshot names. */
   async typeText(text: string, options: { readonly replace: boolean }, context: OperationContext): Promise<void> {
+    // What agent-desktop's type refuses, refused before anything is sent: with replace, the select-all and delete would already have emptied the field.
+    if (Buffer.byteLength(text, 'utf8') > MAX_TYPE_BYTES) throw notActionable(`agent-desktop types at most ${MAX_TYPE_BYTES} bytes of text at once; this is ${Buffer.byteLength(text, 'utf8')}`);
+    if (text.includes('\0')) throw notActionable('agent-desktop cannot type a NUL character');
     const operation = withDeadline(context);
     const screen = await this.capture(operation);
     const focused = screen === undefined ? undefined : [...screen.bindings.values()].find((binding) => binding.ref !== undefined && binding.states?.focused === true);
     if (focused === undefined) throw notActionable('no field has keyboard focus; tap or focus the field first');
-    if (options.replace) await this.refCommand('clear', focused, operation);
+    // agent-desktop types only into a control that offers TypeText; a list or button with focus would take the select-all and delete as commands.
+    if (!focused.actions.includes('TypeText')) {
+      throw notActionable(`the ${focused.role ?? 'control'}${focused.name === undefined ? '' : ` "${focused.name}"`} that has keyboard focus takes no text; tap or focus a text field first`);
+    }
+    if (options.replace) {
+      // Cleared as on a keyboard, select all and then delete: the app's key handlers see it, and a field that takes keys but refuses an accessibility write is cleared too.
+      const window = focused.windowId ?? (await this.ownWindow(operation))?.id;
+      if (window === undefined) throw this.chosenWindow === undefined ? invalidState('the app is not running; open it with app.open()') : this.chosenClosed();
+      await this.sendKey('cmd+a', window, 'select all', operation);
+      // The app may move focus on select all: the delete goes only to the field that still holds it.
+      await afterChange('delete the selection', async () => {
+        if (!(await this.holdsFocus(focused, window, operation))) throw notActionable('the field lost keyboard focus after select all, so no delete was sent');
+        await this.sendKey('backspace', window, 'delete the selection', operation);
+      });
+    }
     // Keystrokes, which only physical input sends: without it agent-desktop sets the text, and the app's key handlers never run.
     const type = (): Promise<unknown> => this.tryRef('type', focused, operation, [], text, true);
     if (options.replace) await afterChange('type', type);
@@ -1197,6 +1370,8 @@ export class DesktopSurface {
     const window = await this.ownWindow(operation);
     if (window === undefined) throw this.chosenWindow === undefined ? invalidState('the app is not running; open it with app.open()') : this.chosenClosed();
     await this.sendKey(combo, window.id, `press ${key}`, operation);
+    // As after every other agent action: the app reacts to the key before the agent reads the screen again.
+    await this.settle(operation);
   }
 
   /**
@@ -1252,7 +1427,8 @@ export class DesktopSurface {
     const screen = this.options.interactiveOnly ? await this.capture(operation, observed.windowId, true) : observed;
     if (screen?.windowId === undefined) throw new EngineError('ENGINE_FAILURE', 'the window could not be read whole to find its secure fields; screenshot withheld', { retryable: false });
     const secure = screen.secureRects;
-    if (secure === undefined) throw new EngineError('ENGINE_FAILURE', 'a secure field on screen has no bounds to mask; screenshot withheld', { retryable: false });
+    // A refusal of policy, as on the mobile engine: the image could hold a credential, so it never leaves the engine.
+    if (secure === undefined) throw new ConfigurationError('POLICY_DENIED', 'a secure field on screen has no bounds to mask, so the screenshot is withheld');
     // A snapshot cut short can leave out a secure field, which would then go unmasked.
     if (screen.truncated) throw new EngineError('ENGINE_FAILURE', 'the snapshot did not read the whole window, so a secure field may be missing from it; screenshot withheld', { retryable: false });
     const directory = await mkdtemp(path.join(this.home ?? tmpdir(), 'shot-'));
@@ -1281,7 +1457,7 @@ export class DesktopSurface {
   // --- plumbing ---
 
   /** agent-desktop's own wait inside one command: the operation's budget less a margin, so it answers before it is killed. */
-  private toolBudget(operation: OperationContext): number {
+  private toolBudget(operation: Pick<OperationContext, 'timeoutMs'>): number {
     return Math.max(operation.timeoutMs - ANSWER_MARGIN_MS, MIN_TOOL_MS);
   }
 
@@ -1414,8 +1590,12 @@ async function sweepStateDirectories(): Promise<void> {
   for (const entry of entries) {
     if (!entry.startsWith(STATE_PREFIX)) continue;
     const directory = path.join(root, entry);
-    const owner = Number((await readFile(path.join(directory, OWNER_FILE), 'utf8').catch(() => '')).trim());
-    const stale = Number.isInteger(owner) && owner > 0 ? !alive(owner) : await stat(directory).then((info) => Date.now() - info.mtimeMs > ORPHAN_AGE_MS, () => false);
+    // A shared temporary directory (`/tmp` when TMPDIR is unset) holds other users' entries too: a record this user did not write names no launch of its own, and its process id must not be killed with this user's rights.
+    if (!(await ownDirectory(directory))) continue;
+    const ownerText = (await readFile(path.join(directory, OWNER_FILE), 'utf8').catch(() => '')).trim();
+    const owner = Number(ownerText);
+    const stale =
+      ownerText === ABANDONED || (Number.isInteger(owner) && owner > 0 ? !alive(owner) : await stat(directory).then((info) => Date.now() - info.mtimeMs > ORPHAN_AGE_MS, () => false));
     if (!stale) continue;
     // A record cut short by the kill that left it names no process: the directory still goes.
     const parsed: unknown = await readFile(path.join(directory, APP_FILE), 'utf8').then((text): unknown => JSON.parse(text)).catch(() => undefined);
@@ -1438,6 +1618,24 @@ async function sweepStateDirectories(): Promise<void> {
     const settled = known && (await killed(owned, Date.now() + 2_000, signal));
     await (settled ? rm(directory, { recursive: true, force: true }) : keepOnlyRecord(directory)).catch(() => undefined);
   }
+}
+
+/** Whether `directory` is a real directory (not a symlink) that belongs to the user this process runs as. */
+async function ownDirectory(directory: string): Promise<boolean> {
+  const info = await lstat(directory).catch(() => undefined);
+  if (info === undefined || !info.isDirectory()) return false;
+  return process.getuid === undefined || info.uid === process.getuid();
+}
+
+/**
+ * Gives up a state directory whose launch record still names an app: only
+ * the record stays, and the owner file says the directory has no worker any
+ * more, so the next sweep takes it even while this process runs on, as a
+ * program that opens one host after another does.
+ */
+async function abandon(directory: string): Promise<void> {
+  await keepOnlyRecord(directory);
+  await writeFile(path.join(directory, OWNER_FILE), ABANDONED);
 }
 
 /** Removes everything in a state directory but its owner file and launch record: the text agent-desktop kept of the app's fields. */
@@ -1464,6 +1662,17 @@ async function killed(pids: readonly number[], until: number, signal: AbortSigna
 }
 
 /**
+ * Whether macOS reports the console session's screen locked (ioreg's
+ * `CGSSessionScreenIsLocked`); undefined when that cannot be told, off macOS
+ * or when ioreg fails.
+ */
+async function screenLocked(signal: AbortSignal): Promise<boolean | undefined> {
+  const listed = await execFileAsync('ioreg', ['-n', 'Root', '-d1', '-a'], { signal, maxBuffer: 16 * 1024 * 1024 }).catch(() => undefined);
+  const match = /<key>CGSSessionScreenIsLocked<\/key>\s*<(true|false)\/>/.exec(listed?.stdout ?? '');
+  return match === null ? undefined : match[1] === 'true';
+}
+
+/**
  * When a process started, as `ps` prints it: with its id, what tells it
  * from a later process the OS gives the same id. Undefined when it is not
  * running or `ps` failed.
@@ -1486,6 +1695,31 @@ async function afterChange(label: string, run: () => Promise<unknown>): Promise<
   } catch (cause) {
     throw new EngineError('ACTION_MAY_HAVE_COMMITTED', `${label}: ${(cause as Error).message} (an earlier command of this step changed the app)`, { retryable: false, cause });
   }
+}
+
+/**
+ * An observation tree with each field cut at the contract's limit, the end
+ * dropped: a name at `OBSERVED_NAME_LIMIT`, text, a value, and a selection at
+ * `OBSERVED_TEXT_LIMIT`. The harness reads a field exactly at its limit as
+ * one that may have been cut (and redacts a secret it may end with), and one
+ * long label can no longer crowd the controls after it out of what the agent
+ * reads. `locate` matches on the whole tree, and single-node reads carry the
+ * whole value.
+ */
+function bounded(node: SemanticNode): SemanticNode {
+  const cut = (text: string | undefined, limit: number): { readonly text?: string } => (text === undefined ? {} : { text: text.length > limit ? text.slice(0, limit) : text });
+  const name = cut(node.name, OBSERVED_NAME_LIMIT).text;
+  const text = cut(node.text, OBSERVED_TEXT_LIMIT).text;
+  const value = cut(node.value, OBSERVED_TEXT_LIMIT).text;
+  const selection = cut(node.selection, OBSERVED_TEXT_LIMIT).text;
+  return {
+    ...node,
+    ...(name === undefined ? {} : { name }),
+    ...(text === undefined ? {} : { text }),
+    ...(value === undefined ? {} : { value }),
+    ...(selection === undefined ? {} : { selection }),
+    ...(node.children === undefined ? {} : { children: node.children.map(bounded) }),
+  };
 }
 
 /** Whether two rects are the same; two missing rects are not. */

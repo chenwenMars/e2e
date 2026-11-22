@@ -52,9 +52,9 @@ as `test.describe`, `test.beforeEach`, and the rest:
 
 - A per-test hook imported from `e2e` is typed with the [built-in fixtures](#fixtures)
   every engine has.
-- `@e2e-dev/web` and `@e2e-dev/mobile` export `test`, `describe`, and all
-  four hooks typed with their `browser` or `device` fixture, so a test file
-  registers from one import.
+- `@e2e-dev/web`, `@e2e-dev/mobile`, and `@e2e-dev/desktop` export `test`,
+  `describe`, and all four hooks typed with their `browser`, `device`, or
+  `desktop` fixture, so a test file registers from one import.
 - A `test` you extended with your own fixtures registers hooks that see them
   through `test.beforeEach`.
 

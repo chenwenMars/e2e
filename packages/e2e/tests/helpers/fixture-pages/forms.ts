@@ -80,14 +80,15 @@ ${widget ? `    setTimeout(() => {
 }
 
 /**
- * Six one-digit boxes the app marks as a one-time code, and the code it
- * issued for this load. The status reads the verdict once every box holds a
- * digit, so a replay that typed another load's code shows as it would to a
- * user.
+ * Six one-digit boxes, marked as a one-time code unless `marked` is false,
+ * and the code the app issued for this load. The status reads the verdict
+ * once every box holds a digit, so a replay that typed another load's code
+ * shows as it would to a user.
  */
-function renderOneTimeCode(code: string): string {
+function renderOneTimeCode(code: string, marked = true): string {
+  const purpose = marked ? ' autocomplete="one-time-code"' : '';
   const boxes = [1, 2, 3, 4, 5, 6]
-    .map((n) => `<input aria-label="Digit ${String(n)}" inputmode="numeric" maxlength="1" autocomplete="one-time-code" oninput="check()" />`)
+    .map((n) => `<input aria-label="Digit ${String(n)}" inputmode="numeric" maxlength="1"${purpose} oninput="check()" />`)
     .join('\n    ');
   return `<!doctype html>
 <html>
@@ -355,6 +356,8 @@ export const FORM_PAGES: Record<string, PageRenderer> = {
   // pages ask for it: the page issues a new code on every load, so a run
   // that typed the last load's code reads "Incorrect code".
   '/one-time-code': () => renderOneTimeCode(String(randomInt(1_000_000)).padStart(6, '0')),
+  // The same boxes with no declared purpose: nothing marks the code they take.
+  '/one-time-code-plain': () => renderOneTimeCode(String(randomInt(1_000_000)).padStart(6, '0'), false),
   '/unanchored': constant(UNANCHORED_PAGE),
   '/repeats': (_state, url) =>
     renderRepeats(url.searchParams.get('reverse') === '1' || url.searchParams.get('variant') === 'b', url.searchParams.get('still') !== '1'),

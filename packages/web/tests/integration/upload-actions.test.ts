@@ -3,10 +3,10 @@
  * engine acts on: a file input and a label for one take the files without a
  * click, a button that opens a hidden input's chooser is clicked and the
  * chooser takes them, an empty list clears either, and a button that opens
- * nothing fails.
+ * nothing or a path that does not exist fails.
  */
 
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright-core';
@@ -67,6 +67,16 @@ function state(): Promise<{ files: string; clicks: number }> {
 
 const COUNT_CLICKS = '<script>window.clicks = 0; document.addEventListener("click", () => window.clicks++, true)</script>';
 
+/** Node's own message for a path that cannot be stat'ed, which the engine reports as is. */
+function statFailure(target: string): string {
+  try {
+    statSync(target);
+  } catch (cause) {
+    return (cause as Error).message;
+  }
+  throw new Error(`${target} exists`);
+}
+
 describe.each(KINDS)('through the %s target', (kind) => {
   it('sets a file input directly', async () => {
     await page.setContent(`<input id="avatar" type="file">${COUNT_CLICKS}`);
@@ -105,6 +115,39 @@ describe.each(KINDS)('through the %s target', (kind) => {
     expect((await state()).files).toBe('');
     expect(await page.evaluate(() => (window as unknown as { events: string[] }).events)).toEqual(['input', 'change']);
   });
+
+  it.each([
+    ['a file input', '<input id="avatar" type="file">', '#avatar'],
+    ['a button over a hidden input', `<button id="pick" type="button" onclick="document.getElementById('avatar').click()">Choose avatar</button><input id="avatar" type="file" hidden>`, '#pick'],
+  ])('fails a path that does not exist as INVALID_ARGUMENT before it touches %s', async (_name, html, selector) => {
+    await page.setContent(`${html}${COUNT_CLICKS}`);
+    for (const missing of [path.join(path.dirname(file), 'missing.png'), path.join(file, 'inside-a-file.png')]) {
+      const error = await upload(await targetOf(kind, selector), [file, missing]);
+      expect(error).toMatchObject({ code: 'INVALID_ARGUMENT', category: 'test', message: `setInputFiles path does not exist or is under a directory the runner cannot search: ${statFailure(missing)}` });
+      expect((error as Error).message).toContain(missing);
+    }
+    expect(await state()).toEqual({ files: '', clicks: 0 });
+  });
+
+  // Permission bits do not stop a Windows or root process, so only a non-root POSIX runner sees `EACCES`.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'fails a path under a directory it may not search as INVALID_ARGUMENT',
+    async () => {
+      await page.setContent(`<input id="avatar" type="file">${COUNT_CLICKS}`);
+      const locked = path.join(path.dirname(file), `locked-${kind}`);
+      mkdirSync(locked);
+      const hidden = path.join(locked, 'avatar.png');
+      writeFileSync(hidden, 'png');
+      chmodSync(locked, 0o000);
+      try {
+        const error = await upload(await targetOf(kind, '#avatar'), [hidden]);
+        expect(error).toMatchObject({ code: 'INVALID_ARGUMENT', category: 'test', message: `setInputFiles path does not exist or is under a directory the runner cannot search: EACCES: permission denied, stat '${hidden}'` });
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+      expect(await state()).toEqual({ files: '', clicks: 0 });
+    },
+  );
 
   it('fails when the button opens no file chooser', async () => {
     await page.setContent(`<button id="pick" type="button">Choose avatar</button><input id="avatar" type="file" hidden>${COUNT_CLICKS}`);

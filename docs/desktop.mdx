@@ -98,7 +98,9 @@ export default {
 
 Import `test` from `@e2e-dev/desktop`. By default, `app.open()` leaves the
 app in the background. Use `desktop({ headed: true })` for apps that need to
-come forward before they show a window. When the engine launched it
+come forward before they show a window. `e2e run --headed` also launches
+the app in the foreground, but only `desktop({ headed: true })` turns on the
+physical input described below. When the engine launched it
 before, it quits that copy first. A copy you opened yourself is left alone,
 and the engine never reads or drives it. Every test ends with the app quit,
 and no window the app saved at its last quit comes back.
@@ -138,12 +140,12 @@ the one `screen` reads (`desktop.useWindow(window)`), and quits the app
 
 | Area | On a desktop target |
 | --- | --- |
-| Input | The app runs in the background, and actions use the accessibility API, so your pointer, focus, and typing stay where they are. An app that opens no window in the background, such as a document-based one, fails to open; it needs `headed: true` |
+| Input | The app runs in the background, and actions use the accessibility API, so your pointer, focus, and typing stay where they are. An app that opens no window in the background, such as a document-based one, fails to open; it needs `headed: true` or `--headed` |
 | Physical input | `doubleTap`, `hover`, `press`, point taps, and typing into whatever has focus need `desktop({ headed: true })`, which brings the app forward and uses the real pointer and keyboard |
-| Keys | agent-desktop sends a key only to the active window, which an app in the background never has, so `press` needs `headed: true`. The engine never sends a key by the app's name, which could reach another copy of it. A key goes to a control only while that control has focus, in the window the app sends keys to |
-| Select | `selectOption` takes an option's label, not an index |
+| Keys | agent-desktop sends a key only to the active window, which an app in the background never has. The engine never sends a key by the app's name, which could reach another copy of it. A key goes to a control only while that control has focus, in the window the app sends keys to. `press` takes the named keys, letters, digits, and ``, . / ; ' [ ] \ - = ` ``, and refuses any other character, such as `!` or `é`, before the control gets focus |
+| Select | `selectOption` takes an option's label, not an index. It refuses an editable combo box, which takes any text: `fill()` it instead. A pop-up button with no such option can leave its menu open. The engine closes it with Escape, which reaches the app only while its window is active, as `headed: true` makes it; otherwise the error says the menu is still open |
 | Windows | `screen` reads one window of the app: the one `desktop.useWindow()` picked, else the focused one, else the first visible one. Sheets are part of their window. The window's own Close, Minimize, and Zoom buttons are left out |
-| Reading | Only an app with no window open reads as an empty screen. A window that cannot be read never does, so `not.toBeVisible()` cannot pass on it. A locator reads again until its timeout while the screen is locked or the window is closing. So does one on a window read only in part, which is deeper than `maxDepth` levels or took too long to read, since its matches cannot be counted. A step on an app that quit fails |
+| Reading | Only an app with no window open reads as an empty screen. A window that cannot be read never does, so `not.toBeVisible()` cannot pass on it. A locator reads again until its timeout while the screen is locked or the window is closing, and `app.open()` on a locked screen fails and says so. So does one on a window read only in part, which is deeper than `maxDepth` levels or took too long to read, since its matches cannot be counted. A step on an app that quit fails |
 | Menu bar | The app's menu bar cannot be read yet. Use a key shortcut with `press` and `headed: true` |
 | Web content | Text in a browser window, an Electron app, or a web view is not supported. Test web apps with `@e2e-dev/web` |
 | Workers | One per target, because its workers would share one screen. Two desktop targets run at the same time. With `headed: true` they would share the pointer and keyboard too, so set `workers: 1` in the config |

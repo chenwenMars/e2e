@@ -25,13 +25,20 @@ const HEADED_ACTIONS: readonly LocatorActionKind[] = [...ACTIONS, 'press', 'doub
 const HEADED_POINTER_ACTIONS: readonly PointerActionKind[] = ['tap', 'doubleTap', 'secondaryTap', 'hover'];
 
 /**
+ * The handle `desktop()` returns. Declared here so a config's inferred type
+ * names this package: a project sees `@e2e-dev/core` only through its
+ * dependencies, and TypeScript cannot write that path in a declaration.
+ */
+export interface DesktopEngine extends EngineHandle<DesktopFixtures> {}
+
+/**
  * Creates one desktop engine: it drives the target's macOS app on this
  * machine, one worker at a time. A test launches the app with `app.open()`;
  * every test ends with the app quit. A config that names it loads on any OS,
  * so its other targets still run elsewhere; the target itself fails to start
  * on any OS but macOS.
  */
-export function desktop(options: DesktopOptions = {}): EngineHandle<DesktopFixtures> {
+export function desktop(options: DesktopOptions = {}): DesktopEngine {
   const resolved = resolveOptions(options);
   const platform = 'macos';
   const surface = new DesktopSurface(resolved, platform);

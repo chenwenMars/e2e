@@ -3,13 +3,11 @@ import { test } from 'node:test';
 import {
   READY_MARKER,
   blockedComment,
-  feedbackFrom,
   readyBlockers,
   readyRequest,
   safeName,
   type Candidate,
   type CommentPayload,
-  type RawComment,
   type Thread,
 } from './gates.ts';
 
@@ -23,7 +21,6 @@ const pr = (overrides: Partial<Candidate> = {}): Candidate => ({
   checks: [{ name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }],
   runs: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
   threads: [],
-  feedback: [],
   ...overrides,
 });
 
@@ -148,52 +145,6 @@ test('blocks on a thread the author resolved without answering it', () => {
     thread({ resolvedBy: 'cubic-dev-ai[bot]', authors: ['cubic-dev-ai'] }),
   ];
   assert.deepEqual(readyBlockers(pr({ threads: passing })), []);
-});
-
-test('blocks on a comment or review from someone else without the author\'s thumbs-up', () => {
-  const feedback = [
-    { url: 'https://github.com/c/1', author: 'grace', thumbs: [] },
-    { url: 'https://github.com/c/2', author: 'e2e-github', thumbs: ['grace', null] },
-    { url: 'https://github.com/c/3', author: 'grace', thumbs: ['grace', 'ada'] },
-    { url: 'https://github.com/c/4', author: 'ada', thumbs: [] },
-    { url: 'https://github.com/c/5', author: null, thumbs: [] },
-  ];
-  assert.deepEqual(readyBlockers(pr({ feedback })), [
-    "3 comment(s) or review(s) without your 👍: [1](https://github.com/c/1), [2](https://github.com/c/2), [3](https://github.com/c/5)",
-  ]);
-});
-
-test('collects comments and human review summaries, not its own reply or bot summaries', () => {
-  const raw = (login: string, kind: string, body: string, thumbs: string[] = []): RawComment => ({
-    url: `https://github.com/${login}`,
-    body,
-    author: { login, kind },
-    reactions: { nodes: thumbs.map((thumb) => ({ user: { login: thumb } })) },
-  });
-  const feedback = feedbackFrom(
-    [
-      raw('github-actions', 'Bot', `${READY_MARKER}\nnot yet`),
-      raw('github-actions', 'Bot', 'policy comment'),
-      raw('mallory', 'User', `${READY_MARKER} pasted`),
-      raw('e2e-github', 'Bot', 'summary', ['ada']),
-    ],
-    [
-      { ...raw('grace', 'User', 'needs tests'), state: 'COMMENTED' },
-      { ...raw('hopper', 'User', '  '), state: 'COMMENTED' },
-      { ...raw('linus', 'User', 'old'), state: 'DISMISSED' },
-      { ...raw('ken', 'User', 'draft'), state: 'PENDING' },
-      { ...raw('cubic-dev-ai', 'Bot', '3 issues found'), state: 'COMMENTED' },
-    ],
-  );
-  assert.deepEqual(
-    feedback.map(({ author, thumbs }) => [author, thumbs]),
-    [
-      ['github-actions', []],
-      ['mallory', []],
-      ['e2e-github', ['ada']],
-      ['grace', []],
-    ],
-  );
 });
 
 test('never echoes a check name as written', () => {

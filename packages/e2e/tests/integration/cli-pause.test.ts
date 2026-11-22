@@ -559,7 +559,7 @@ test('pauses in a step', async ({ app, agent, screen }) => {
     );
     const ran = e2e(dir, ['run']);
     expect(ran.exitCode, ran.stdout + ran.stderr).toBe(1);
-    expect(ran.stdout).toContain('ACTION_FAILED: screen.pause() was called inside another step (an onAction hook or a project tool) or an expect.poll read');
+    expect(ran.stdout).toContain('ACTION_FAILED: screen.pause() was called inside another step (an onAction hook or a project tool), an expect.poll read, or a toPass block');
     expect(ran.stdout).not.toContain('Paused (');
   }, 60_000);
 });

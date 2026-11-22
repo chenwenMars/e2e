@@ -28,6 +28,8 @@
  *   any value typed into a field the app marks as a one-time code: the app
  *   issues that code per run, and a code split over one box per digit puts a
  *   single digit in each fill, which no screen shows as a word of its own.
+ *   Typing into the focused field names no field, so in a step whose screens
+ *   listed a one-time-code field its value is judged as if it went into one.
  * - `date`: a date or a clock time, which the model reckons from today.
  *
  * A bare word inside a sentence is none of these: "one" typed on a page that
@@ -57,7 +59,12 @@ export interface StepEvidence {
    * read off the image and counts as derived.
    */
   readonly pixels?: boolean;
-  /** The purpose the engine reported for the field the value went into (`SemanticNode.inputPurpose`). */
+  /**
+   * The purpose of the field the value went into: the one the engine reported
+   * for it (`SemanticNode.inputPurpose`), or, for typing into the focused
+   * field, which names none, `one-time-code` once a screen of the step listed
+   * such a field (`ObservationFeed.oneTimeCodeShown`).
+   */
   readonly inputPurpose?: SemanticNode['inputPurpose'] | undefined;
 }
 

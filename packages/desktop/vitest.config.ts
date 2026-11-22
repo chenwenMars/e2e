@@ -15,6 +15,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['tests/unit/**/*.test.ts'],
+          // A private os.tmpdir() per test file, and a screen that reads as unlocked: see the setup files.
+          setupFiles: ['tests/helpers/private-tmpdir.ts', 'tests/helpers/unlocked-screen.ts'],
           testTimeout: 30_000,
           hookTimeout: 30_000,
           pool: 'forks',

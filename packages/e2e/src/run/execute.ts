@@ -12,7 +12,7 @@ import type { ExecutorAttempt } from '@e2e-dev/core/lib/agent/executor';
 import { isModelUnreachable } from '@e2e-dev/core/lib/agent/error';
 import { withAiTraceScope } from '@e2e-dev/core/lib/internal/ai-trace';
 import { resultId, timestamp, uuidv7 } from '@e2e-dev/core/lib/internal/ids';
-import { Deadline, withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
+import { abortError, cancelledError, Deadline, withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
 import { createAgentCacheContext, settleStagedTraces } from '@e2e-dev/core/lib/cache/context';
 import { storedRecordingsFor, type StoredRecordings } from '@e2e-dev/core/lib/cache/rekeyed';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
@@ -726,9 +726,9 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
                   `target "${this.target.name}" has no engine state capability for session.save()`,
                 );
               }
-              const state = await session.captureState(
-                this.op(attemptId, this.config.actionTimeout, attemptAbort.signal),
-              );
+              const signal = budget.signal;
+              const state = await session.captureState(this.op(attemptId, this.config.actionTimeout, signal));
+              if (signal.aborted) throw abortError(signal, cancelledError);
               context.staging.stage(
                 name,
                 state,
@@ -802,6 +802,10 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
           owner: 'suite',
           testKind: pair.test.kind,
           assertionTimeout: this.config.assertionTimeout,
+          toPass: this.config.toPass,
+          recordSecondaryError: (error) => {
+            secondaryErrors.push(serializeError(error, { phase, projectRoot: this.config.projectRoot, redact }));
+          },
           budget,
           soft,
           ...(context.kind === 'ordinary'

@@ -15,14 +15,11 @@ import { readFileSync } from 'node:fs';
 import {
   READY_MARKER,
   blockedComment,
-  feedbackFrom,
   readyBlockers,
   readyRequest,
   type Candidate,
   type Check,
   type CommentPayload,
-  type RawComment,
-  type RawReview,
 } from './gates.ts';
 import { addReadyLabel, graphql, removeReadyLabel, setMarkerComment } from './github.ts';
 import { staleReasons } from './stale.ts';
@@ -47,8 +44,6 @@ interface PullRequest {
     resolvedBy: { login: string } | null;
     comments: { nodes: { url: string; author: { login: string } | null }[] };
   }>;
-  comments: Connection<RawComment>;
-  reviews: Connection<RawReview>;
   commits: {
     nodes: {
       commit: {
@@ -59,9 +54,7 @@ interface PullRequest {
   };
 }
 
-const FEEDBACK = 'url body author { login kind: __typename } reactions(content: THUMBS_UP, first: 100) { nodes { user { login } } }';
-
-const QUERY = `query($owner: String!, $name: String!, $number: Int!, $threads: String, $comments: String, $reviews: String, $checks: String) {
+const QUERY = `query($owner: String!, $name: String!, $number: Int!, $threads: String, $checks: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       state isDraft mergeable headRefOid
@@ -71,14 +64,6 @@ const QUERY = `query($owner: String!, $name: String!, $number: Int!, $threads: S
       reviewThreads(first: 50, after: $threads) {
         pageInfo { hasNextPage endCursor }
         nodes { isResolved resolvedBy { login } comments(first: 100) { nodes { url author { login } } } }
-      }
-      comments(first: 50, after: $comments) {
-        pageInfo { hasNextPage endCursor }
-        nodes { ${FEEDBACK} }
-      }
-      reviews(first: 50, after: $reviews) {
-        pageInfo { hasNextPage endCursor }
-        nodes { state ${FEEDBACK} }
       }
       commits(last: 1) {
         nodes {
@@ -101,16 +86,14 @@ const QUERY = `query($owner: String!, $name: String!, $number: Int!, $threads: S
 }`;
 
 /**
- * The PR as it is now, with every review thread, comment, review, and check
+ * The PR as it is now, with every review thread and every check
  * on its head. `moved` when a push landed between pages, which leaves checks
  * from two heads mixed together.
  */
 async function snapshot(number: number): Promise<Candidate & { state: string; head: string; moved: boolean }> {
   const threads: Candidate['threads'] = [];
-  const comments: RawComment[] = [];
-  const reviews: RawReview[] = [];
   const checks: Check[] = [];
-  const cursors: Record<'threads' | 'comments' | 'reviews' | 'checks', string | null> = { threads: null, comments: null, reviews: null, checks: null };
+  const cursors: Record<'threads' | 'checks', string | null> = { threads: null, checks: null };
   let head: string | undefined;
   for (;;) {
     const data: { repository: { pullRequest: PullRequest } } = await graphql(QUERY, { number, ...cursors });
@@ -127,12 +110,10 @@ async function snapshot(number: number): Promise<Candidate & { state: string; he
         url: thread.comments.nodes[0]?.url ?? null,
       });
     }
-    comments.push(...pr.comments.nodes);
-    reviews.push(...pr.reviews.nodes);
     for (const context of contexts?.nodes ?? []) checks.push({ ...context, name: context.name ?? context.context ?? '' });
-    const pages = { threads: pr.reviewThreads.pageInfo, comments: pr.comments.pageInfo, reviews: pr.reviews.pageInfo, checks: contexts?.pageInfo };
+    const pages = { threads: pr.reviewThreads.pageInfo, checks: contexts?.pageInfo };
     let more = false;
-    for (const key of ['threads', 'comments', 'reviews', 'checks'] as const) {
+    for (const key of ['threads', 'checks'] as const) {
       cursors[key] = pages[key]?.endCursor ?? cursors[key];
       more ||= pages[key]?.hasNextPage === true;
     }
@@ -151,7 +132,6 @@ async function snapshot(number: number): Promise<Candidate & { state: string; he
       labels: pr.labels.nodes.map(({ name }) => name),
       verdicts: pr.latestOpinionatedReviews.nodes.map(({ state, author }) => ({ state, author: author?.login ?? null })),
       threads,
-      feedback: feedbackFrom(comments, reviews),
       checks,
     };
   }

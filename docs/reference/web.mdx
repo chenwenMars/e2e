@@ -98,6 +98,7 @@ web({ browser: 'firefox' }); // default: 'chromium'
 | Throws | When |
 | --- | --- |
 | `INVALID_CONFIG` | `browser: provider` together with `connect`. |
+| `INVALID_CONFIG` | A name other than `'chromium'`, `'firefox'`, or `'webkit'`, or a value that is neither a name nor a provider. |
 
 #### `chromiumSandbox`
 
@@ -130,6 +131,10 @@ web({ viewport: { width: 390, height: 844 } }); // default: { width: 1280, heigh
 `null` emulates no size, so the page fills the browser window
 ([`WebOptions`](#weboptions)). [`browser.setViewport`](#setviewport) still
 fixes one.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_CONFIG` | A value that is not `null` or `{ width, height }` in whole pixels, each at least 1, or a size with any other key. |
 
 #### `screencast`
 

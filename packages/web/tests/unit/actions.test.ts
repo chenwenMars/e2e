@@ -5,11 +5,20 @@
  * support.ts).
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Locator as PwLocator, Page } from 'playwright-core';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EngineError, TestError, type LocatorAction } from '@e2e-dev/core/engine';
 import { classifyActionError, dispatchLocatorAction, dispatchPointerAction } from '../../src/actions.ts';
 import { dispatchedInput, type ActionTarget } from '../../src/support.ts';
+
+/** A real file: setInputFiles stats every path before it touches the element. */
+const UPLOAD_DIR = mkdtempSync(path.join(tmpdir(), 'e2e-actions-'));
+const UPLOAD = path.join(UPLOAD_DIR, 'a.txt');
+writeFileSync(UPLOAD, 'a');
+afterAll(() => rmSync(UPLOAD_DIR, { recursive: true, force: true }));
 
 vi.mock('node:timers/promises', () => ({
   setTimeout: (ms: number, value?: unknown, options?: { signal?: AbortSignal }) =>
@@ -235,18 +244,18 @@ describe('dispatchLocatorAction', () => {
 
   it('uploads through a file chooser it awaits before clicking a button', async () => {
     const { element, target, page, chooser, calls } = stubUpload(false);
-    await dispatchLocatorAction(target, { kind: 'setInputFiles', paths: ['/tmp/a.txt'] }, OPERATION, lookup);
+    await dispatchLocatorAction(target, { kind: 'setInputFiles', paths: [UPLOAD] }, OPERATION, lookup);
     expect(calls).toEqual(['waitForEvent', 'click', 'setFiles']);
     expect(page.waitForEvent).toHaveBeenCalledWith('filechooser', { timeout: expect.any(Number) });
-    expect(chooser.setFiles).toHaveBeenCalledWith(['/tmp/a.txt'], { timeout: expect.any(Number) });
+    expect(chooser.setFiles).toHaveBeenCalledWith([UPLOAD], { timeout: expect.any(Number) });
     expect(element.setInputFiles).not.toHaveBeenCalled();
     expect(element.dispose).toHaveBeenCalled();
   });
 
   it('sets a file input directly', async () => {
     const { element, target, page } = stubUpload(true);
-    await dispatchLocatorAction(target, { kind: 'setInputFiles', paths: ['/tmp/a.txt'] }, OPERATION, lookup);
-    expect(element.setInputFiles).toHaveBeenCalledWith(['/tmp/a.txt'], { timeout: expect.any(Number) });
+    await dispatchLocatorAction(target, { kind: 'setInputFiles', paths: [UPLOAD] }, OPERATION, lookup);
+    expect(element.setInputFiles).toHaveBeenCalledWith([UPLOAD], { timeout: expect.any(Number) });
     expect(element.click).not.toHaveBeenCalled();
     expect(page.waitForEvent).not.toHaveBeenCalled();
   });
@@ -255,7 +264,7 @@ describe('dispatchLocatorAction', () => {
     const { target, page } = stubUpload(false);
     page.waitForEvent.mockRejectedValue(Object.assign(new Error('Timeout 7ms exceeded'), { name: 'TimeoutError' }));
     await expect(
-      dispatchLocatorAction(target, { kind: 'setInputFiles', paths: ['/tmp/a.txt'] }, OPERATION, lookup),
+      dispatchLocatorAction(target, { kind: 'setInputFiles', paths: [UPLOAD] }, OPERATION, lookup),
     ).rejects.toMatchObject({ code: 'NOT_ACTIONABLE', message: expect.stringContaining('opened no file chooser') });
   });
 
@@ -266,7 +275,7 @@ describe('dispatchLocatorAction', () => {
     page.waitForEvent.mockReturnValue(new Promise((resolve) => (openChooser = resolve)));
     const upload = dispatchLocatorAction(
       target,
-      { kind: 'setInputFiles', paths: ['/tmp/a.txt'] },
+      { kind: 'setInputFiles', paths: [UPLOAD] },
       { timeoutMs: 1000, signal: cancel.signal },
       lookup,
     );
@@ -285,7 +294,7 @@ describe('dispatchLocatorAction', () => {
     Object.assign(page, { waitForEvent: () => pending });
     element.click.mockRejectedValue(new Error('element is not enabled'));
     await expect(
-      dispatchLocatorAction(target, { kind: 'setInputFiles', paths: ['/tmp/a.txt'] }, OPERATION, lookup),
+      dispatchLocatorAction(target, { kind: 'setInputFiles', paths: [UPLOAD] }, OPERATION, lookup),
     ).rejects.toThrow('element is not enabled');
     rejectChooser(Object.assign(new Error('Timeout 7ms exceeded'), { name: 'TimeoutError' }));
     await new Promise((resolve) => setTimeout(resolve, 0));

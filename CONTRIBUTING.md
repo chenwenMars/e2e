@@ -81,9 +81,6 @@ with what is missing, when all of these hold:
 - Every review thread, from a maintainer or a review bot, is resolved. Fix it
   or reply with why it does not apply, then resolve it. A thread someone else
   opened does not count if you resolved it without replying.
-- Every comment from someone else, and every review summary a person wrote,
-  has your 👍, which says you read it. For a review summary, react in the web UI
-  or with the GraphQL `addReaction` mutation on the review's `node_id`.
 
 The label vouches for one commit. A push, a merge conflict, a maintainer's
 review that requests changes, or a move back to draft removes it; comment `/ready` again

@@ -468,9 +468,8 @@ thread handled, and labeled `Ready for Human Review`. "It compiles" and
 - On a PR from a fork you cannot add the label. Comment exactly `/ready` as
   the PR's author once the gates in
   [CONTRIBUTING.md](./CONTRIBUTING.md#ready-for-human-review) hold: green,
-  conflict-free, every review thread replied to and resolved, every comment
-  from anyone else acknowledged with your 👍. The workflow refuses
-  it otherwise and lists what is open. Never resolve a thread or react just to
+  conflict-free, every review thread replied to and resolved. The workflow
+  refuses it otherwise and lists what is open. Never resolve a thread just to
   pass: handle the feedback first.
 - Never merge or approve.
 - When a reviewer (human or bot) corrects the same thing twice, encode it:

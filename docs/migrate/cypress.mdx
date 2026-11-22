@@ -100,6 +100,7 @@ describe('todos', () => {
 | `.type('text')`, `.type('{enter}')`, `.clear().type('text')` | `.pressSequentially('text')` appends with key events, `.press('Enter')`, `.fill('text')` |
 | `.select('Pro')` | `.selectOption('Pro')` matches the label; a value needs `{ value: 'pro' }`, an index `{ index: 1 }` |
 | `.should('be.visible')`, `be.checked`, `be.disabled`, `be.focused`, `exist` | `await expect(locator).toBeVisible()`, `toBeChecked()`, `toBeDisabled()`, `toBeFocused()`, `toBeAttached()` |
+| `.should($el => ...)` | Use [`expect(fn).toPass()`](/reference/expect#retrying-a-block) for several assertions. Use [`expect.poll`](/reference/expect#polling-a-value) for a single changing value |
 | `have.text`, `contain`, `have.value`, `have.attr`, `have.length`, `not.exist` | `toHaveText`, `toContainText`, `toHaveValue`, `toHaveAttribute`, `toHaveCount(n)`, `toHaveCount(0)` |
 | `cy.url().should('include', p)`, `cy.title()` | `expect(browser).toHaveURL(/p/)`, `expect(browser).toHaveTitle(t)` |
 | `cy.intercept('/api/users', body)` | `browser.route('**/api/users', route => route.fulfill({ json: body }))`, a glob on the full URL |
@@ -118,7 +119,7 @@ Planned gaps are on the roadmap, and Not yet gaps have no date. Not planned gaps
 | Cypress | Use today |
 | --- | --- |
 | `.find('css')`, `.filter('css')`, `.not('css')` | Chain a `getBy*` query, or write one selector: `browser.locator('li.active >> .title')` |
-| `.invoke()`, `.its()`, `.then($el => ...)`, `.should($el => ...)` | `getAttribute()`, `textContent()`, `inputValue()`, else `browser.evaluate`; wrap in `expect.poll` to retry |
+| `.invoke()`, `.its()`, `.then($el => ...)` | `getAttribute()`, `textContent()`, `inputValue()`, else `browser.evaluate`; wrap in `expect.poll` to retry |
 | `have.class`, `have.css`, `have.prop`, `be.empty` | `expect(browser).toHaveClass(locator, /regexp/)`, `expect(locator).toHaveText('')`; else `expect.poll(() => browser.evaluate(...))` |
 | `.trigger()`, `cy.scrollTo()`, `.blur()` | `hover()`, `dragTo()`, `scrollIntoView()`, `press('Tab')`; else `browser.evaluate` |
 | `cy.intercept({ headers })` and other header matchers | Check `route.request.headers` in the handler, else call `route.fallback()` |

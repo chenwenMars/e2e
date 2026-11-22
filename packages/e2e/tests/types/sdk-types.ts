@@ -223,6 +223,9 @@ customExecutorObservation.keyboardVisible satisfies boolean | undefined;
 ({ targets, cache: 'read-write' }) satisfies E2EConfig;
 ({ targets, failOnSkippedFailure: true }) satisfies E2EConfig;
 ({ targets, maxDuration: 900_000 }) satisfies E2EConfig;
+({ targets, toPass: { timeout: 200, intervals: [10, 20] } }) satisfies E2EConfig;
+// @ts-expect-error Only timeout and intervals are valid in toPass config.
+({ targets, toPass: { timeout: 200, interval: 10 } }) satisfies E2EConfig;
 ({ targets, cache: { mode: 'read-only', store: remoteStore, dir: 'shared-cache' } }) satisfies E2EConfig;
 ({ targets: [{ platform: 'ios' }] }) satisfies E2EConfig;
 // @ts-expect-error specVersion is gone; the runner version is the format version
@@ -522,8 +525,24 @@ declare const pollMatcherNames: Exclude<keyof PollExpectation<string>, 'not'>;
 declare const valueMatcherNames: Exclude<keyof ValueExpectation<string>, 'not'>;
 pollMatcherNames satisfies typeof valueMatcherNames;
 valueMatcherNames satisfies typeof pollMatcherNames;
-void (expect.poll(() => 'x', { timeout: 15_000, interval: 250, message: 'never settled' }).toBe('x') satisfies Promise<void>);
+void (expect.poll(() => 'x', { timeout: 15_000, intervals: [250], message: 'never settled' }).toBe('x') satisfies Promise<void>);
+void (expect.poll(() => 'x', { interval: 250 }).toBe('x') satisfies Promise<void>);
 void (expect.poll(async () => 1).not.toBeGreaterThan(1) satisfies Promise<void>);
+void (expect.poll(() => 1, { intervals: [10, 50] as const }).toBe(1) satisfies Promise<void>);
+const block = async () => 1;
+void (expect(block, 'eventually').toPass({ intervals: [10, 50], timeout: 500 }) satisfies Promise<void>);
+void (expect(block).not.toPass() satisfies Promise<void>);
+void (expect.soft(block).toPass() satisfies Promise<void>);
+void (expect.soft(block).not.toPass() satisfies Promise<void>);
+expect(block).toBe(block);
+// @ts-expect-error A function is required for toPass.
+void expect('x').toPass();
+// @ts-expect-error Only the value matchers are available after expect.poll.
+void expect.poll(() => 1).toPass();
+// @ts-expect-error Set the message in expect(fn, message).
+void expect(block).toPass({ message: 'retry' });
+// @ts-expect-error The value overload is selected for a value of type any.
+void expect(JSON.parse('{}')).toPass();
 // @ts-expect-error the matcher is typed by what the read returns
 void expect.poll(() => 'x').toBe(1);
 // @ts-expect-error poll takes a read function, not the value itself
@@ -1120,6 +1139,8 @@ void (expect(await readBody()).toMatchSchema(userSchema) satisfies { id: number 
 void (expect.soft(await readBody()).toMatchSchema(userSchema) satisfies { id: number } | undefined);
 void (expect(JSON.parse('{}')).toMatchSchema(userSchema) satisfies { id: number });
 void (expect.soft(JSON.parse('{}')).toMatchSchema(userSchema) satisfies { id: number } | undefined);
+// @ts-expect-error A function isn't inferred from a return-only generic.
+void expect(await readBody()).toPass();
 
 // describe and the hooks are top-level imports too, typed as their test.* forms.
 describe('group', { tags: ['smoke'] }, () => {

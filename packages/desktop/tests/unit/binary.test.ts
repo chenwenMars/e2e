@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { installPinned, pinnedExecutable } from '../../src/binary.ts';
+import { installPinned, pinnedExecutable, resolveExecutable } from '../../src/binary.ts';
 
 /** Runs before every rename the install makes, so a test can hold one at a chosen point while another run goes ahead. */
 const hooks = vi.hoisted(() => ({ beforeRename: (_from: string, _to: string): Promise<void> => Promise.resolve() }));
@@ -193,6 +193,48 @@ describe('the pinned agent-desktop', () => {
       expect(moved).toHaveLength(2);
       expect(execFileSync(first, { encoding: 'utf8' }).trim()).toBe('1.3.1');
       expect(readdirSync(path.dirname(entry))).toEqual([path.basename(entry)]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('names why the unpack could not be put in place, when it is not another run', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'e2e-desktop-cache-'));
+    try {
+      const { bytes, digests } = release(home);
+      vi.stubGlobal('fetch', () => Promise.resolve(new Response(new Uint8Array(bytes))));
+      const env = { HOME: home, USERPROFILE: home, XDG_CACHE_HOME: path.join(home, 'cache'), LOCALAPPDATA: path.join(home, 'local') };
+      const entry = path.dirname(pinnedExecutable(env)!);
+      hooks.beforeRename = (_from, to) => (to === entry ? Promise.reject(Object.assign(new Error(`EACCES: permission denied, rename -> '${to}'`), { code: 'EACCES' })) : Promise.resolve());
+      await expect(installPinned(env, new AbortController().signal, () => undefined, digests)).rejects.toMatchObject({ code: 'AGENT_DESKTOP_INSTALL_FAILED', message: expect.stringMatching(/EACCES: permission denied/), cause: expect.objectContaining({ code: 'EACCES' }) });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the unpacks and moved-aside entries a killed install left a day ago, and keeps newer ones', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'e2e-desktop-cache-'));
+    try {
+      const { bytes, digests } = release(home);
+      vi.stubGlobal('fetch', () => Promise.resolve(new Response(new Uint8Array(bytes))));
+      const env = { HOME: home, USERPROFILE: home, XDG_CACHE_HOME: path.join(home, 'cache'), LOCALAPPDATA: path.join(home, 'local') };
+      const entry = path.dirname(pinnedExecutable(env)!);
+      mkdirSync(path.dirname(entry), { recursive: true });
+      const leftovers = ['.partial-old', '.stale-1-old', '.partial-new'].map((suffix) => `${entry}${suffix}`);
+      for (const leftover of leftovers) mkdirSync(leftover);
+      const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      for (const leftover of leftovers.slice(0, 2)) utimesSync(leftover, dayAgo, dayAgo);
+      await installPinned(env, new AbortController().signal, () => undefined, digests);
+      expect(leftovers.map((leftover) => existsSync(leftover))).toEqual([false, false, true]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a directory as the binary, though the execute check passes on a searchable one', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'e2e-desktop-cache-'));
+    try {
+      await expect(resolveExecutable(home, process.cwd(), {})).rejects.toMatchObject({ code: 'INVALID_CONFIG', message: expect.stringMatching(/not an executable file/) });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
