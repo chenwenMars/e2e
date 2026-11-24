@@ -23,6 +23,7 @@
     "packages/web/tests/types/keyboard.ts",
     "packages/web/tests/types/media.ts",
     "packages/web/tests/types/routes.ts",
+    "packages/web/tests/types/webmcp.ts",
     "packages/web/tests/types/clear-cookies.ts",
     "packages/web/tests/types/downloads.ts",
     "packages/web/tests/types/app.ts",
@@ -54,7 +55,7 @@
     "@expo/repack-app",
     "@oxc-project/runtime"
   ],
-  "ignoreBinaries": ["eas"],
+  "ignoreBinaries": ["eas", "vhs"],
   "ignoreExports": [
     {
       "file": "packages/core/src/types.ts",

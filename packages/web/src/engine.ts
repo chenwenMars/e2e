@@ -102,6 +102,7 @@ export function web(options: WebOptions = {}): WebEngine {
   if (options.initScripts !== undefined) validateInitScripts(options.initScripts);
   if (options.viewport !== undefined && options.viewport !== null) validatePixelSize('web({ viewport })', options.viewport);
   if (options.screencast !== undefined) validateScreencast(options.screencast);
+  if (options.webmcp !== undefined) validateWebmcp(options, provider);
   const reconnecting = options.connect?.reconnectEndpoint !== undefined;
   // A per-attempt lease rides the same persistent context as `reconnectEndpoint`, with the same limits.
   const recoverable = reconnecting || provider?.scope === 'attempt';
@@ -131,8 +132,8 @@ export function web(options: WebOptions = {}): WebEngine {
     readStyle: (ref, properties, operation) => surface.readStyle(ref, properties, operation),
     locate: (expression, operation) => surface.locate(expression, operation),
     perform: (ref, action, operation) => surface.perform(ref, action, operation),
-    // A browser honors the SPI v1 actions and blur; `actions.ts` dispatches each.
-    actions: [...LOCATOR_ACTION_KINDS, 'blur'],
+    // A browser honors the SPI v1 actions plus blur and in-memory uploads; `actions.ts` dispatches each.
+    actions: [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads'],
     // Playwright holds each modifier for the click.
     tapModifiers: true,
     // A page takes every pointer action of the contract at a bare point too.
@@ -192,6 +193,7 @@ const WEB_OPTION_KEYS: readonly string[] = Object.keys({
   colorScheme: true,
   reducedMotion: true,
   initScripts: true,
+  webmcp: true,
 } satisfies Record<keyof WebOptions, true>);
 
 /** The options applied when the engine creates a browser context, which a persistent context never is. */
@@ -358,6 +360,27 @@ function isLanguageTag(tag: string): boolean {
 function validateTimezoneId(timezoneId: unknown): void {
   if (typeof timezoneId !== 'string' || timezoneId === '' || !isTimeZone(timezoneId)) {
     throw new ConfigurationError('INVALID_CONFIG', `web({ timezoneId }) must be an IANA time zone such as "Europe/Berlin", got ${JSON.stringify(timezoneId)}`);
+  }
+}
+
+/**
+ * `webmcp` changes how the browser is launched, so it needs a browser the
+ * engine launches, and one that has WebMCP: WebKit does not.
+ */
+function validateWebmcp(options: WebOptions, provider: BrowserProvider | undefined): void {
+  if (typeof options.webmcp !== 'boolean') {
+    throw new ConfigurationError('INVALID_CONFIG', `web({ webmcp }) must be true or false, got ${JSON.stringify(options.webmcp)}`);
+  }
+  if (!options.webmcp) return;
+  const elsewhere = provider !== undefined ? `browser provider "${provider.name}"` : options.connect !== undefined ? 'connect' : undefined;
+  if (elsewhere !== undefined) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `web({ webmcp }) is a launch setting, and with ${elsewhere} the engine does not launch the browser; start that browser with --enable-features=WebMCP and remove webmcp`,
+    );
+  }
+  if (options.browser === 'webkit') {
+    throw new ConfigurationError('INVALID_CONFIG', 'web({ webmcp }) requires the chromium or firefox browser; WebKit does not implement WebMCP');
   }
 }
 

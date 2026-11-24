@@ -23,7 +23,7 @@ it('redacts process output when an older install already owns the output routing
     const secrets = new SecretLedger();
     secrets.register('apiToken', TOKEN);
     const claimed = claimProcessOutput(secrets);
-    claimed.showThrough({ show: (_stream, text) => shown.push(text), end: () => {} });
+    claimed.showThrough({ show: (_stream, text) => shown.push(text), showHanded: () => {}, end: () => {} });
     process.stdout.write(`token: ${TOKEN}\n`);
     claimed.end();
   } finally {
@@ -163,16 +163,28 @@ describe('RunnerOutput', () => {
     const { out, ledger, stdout } = output();
     ledger.register('apiToken', TOKEN);
     const shown: string[] = [];
-    out.showThrough({ show: (stream, text) => shown.push(`${stream}:${text}`), end: () => shown.push('end') });
+    out.showThrough({
+      show: (stream, text) => shown.push(`${stream}:${text}`),
+      showHanded: (stream, text) => shown.push(`handed ${stream}:${text}`),
+      end: () => shown.push('end'),
+    });
     let called = 0;
     out.write('stderr', `reporter: ${TOKEN}\n`, () => (called += 1));
     out.write('stdout', `unfinished ${TOKEN}`, () => (called += 1));
     out.printLine('a line of the runner');
+    // What a reporter prints while it is handed output goes to the view apart, never the terminal.
+    out.passThrough(() => out.write('stdout', `handed ${TOKEN}\n`, () => (called += 1)));
     out.showThrough(undefined);
     out.write('stdout', 'after\n', () => (called += 1));
     await new Promise((resolve) => process.nextTick(resolve));
-    expect(shown).toEqual(['stderr:reporter: <secret:apiToken>\n', 'stdout:a line of the runner\n', 'stdout:unfinished <secret:apiToken>', 'end']);
+    expect(shown).toEqual([
+      'stderr:reporter: <secret:apiToken>\n',
+      'stdout:a line of the runner\n',
+      'handed stdout:handed <secret:apiToken>\n',
+      'stdout:unfinished <secret:apiToken>',
+      'end',
+    ]);
     expect(stdout()).toBe('after\n');
-    expect(called).toBe(3);
+    expect(called).toBe(4);
   });
 });

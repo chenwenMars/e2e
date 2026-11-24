@@ -11,6 +11,8 @@ export interface FakeCall {
   readonly args: readonly string[];
   readonly stdin: string;
   readonly home?: string;
+  /** The command's `TMPDIR`. */
+  readonly tmpdir?: string;
   /** The names of the variables in the fake's environment. */
   readonly envNames: readonly string[];
 }

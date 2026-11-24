@@ -136,20 +136,32 @@ A test using this locator would fail with LOCATOR_NOT_FOUND. ...
 Use: screen.getByRole("button", "Sign in")
 ```
 
-## How it runs a test line
+## How it runs code
 
-The agent runs the lines no action printed, such as assertions, with
-`run_code` in the open session. The ones that pass join the `test_lines`
-draft. A wrong line fails in seconds, without a test run:
+The agent runs JavaScript in the open session with `run_code`: a loop over a
+list, a value read and computed on, an assertion no action printed. One call
+replaces many single actions:
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
+The lines that pass join the `test_lines` draft. A wrong line fails in
+seconds, without a test run:
 
 ```text wrap
-Statement 2 of 2 failed; the one before it passed. Each statement waited at most 5000 ms. ...
-1. passed: await screen.getByLabel('Full name').fill('Grace Hopper');
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
 2. failed: await screen.getByRole('button', 'Save').tap();
    LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
 ```
 
-The server parses the lines and never evaluates them as JavaScript. See
+The code is ordinary JavaScript on the objects a test body gets. See
 [`run_code`](/reference/mcp#run_code).
 
 ## Fix a failing test

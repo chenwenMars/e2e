@@ -23,7 +23,7 @@ import {
 import { requireKey } from '../internal/keys.ts';
 import { isPixelPoint, resolveScreenPoint } from '../internal/geometry.ts';
 import { describeExpression, expressionHints, filterSpine } from './expression.ts';
-import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, pollDelay, ReadWindow, sleep, StepDeadline, stepTimeout } from '../internal/time.ts';
+import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, pollDelay, pollReads, ReadWindow, sleep, StepDeadline, stepTimeout } from '../internal/time.ts';
 import { timestamp } from '../internal/ids.ts';
 import { obj } from '../internal/objects.ts';
 import { targetLabel } from '../cache/trace.ts';
@@ -212,6 +212,14 @@ export class LocatorEngine {
    */
   private checkAction(action: LocatorAction): void {
     if (!this.session.actions.has(action.kind)) {
+      if (action.kind === 'setInputFilePayloads') {
+        throw new ConfigurationError(
+          'UNSUPPORTED_CAPABILITY',
+          `in-memory files for setInputFiles are not available on this target; update its engine${
+            this.session.actions.has('setInputFiles') ? ' or pass a file path' : ''
+          }`,
+        );
+      }
       throw new ConfigurationError(
         'UNSUPPORTED_CAPABILITY',
         `the "${action.kind}" action is not available on this target: its engine declares ${
@@ -266,7 +274,8 @@ export class LocatorEngine {
           if (missingFrame === 'empty' && engineError.code === 'FRAME_NOT_FOUND') return [];
           if (!reads.deadline.expired()) {
             retried = cause;
-            await sleep(pollDelay(Date.now() - startedMs), this.signal);
+            const now = Date.now();
+            await sleep(Math.min(pollDelay(now - startedMs), reads.deadline.remaining(now)), this.signal);
             continue;
           }
         }
@@ -480,6 +489,11 @@ const ref = await this.singleOf(await this.resolveOnce(expression, reads, missin
     await this.performUntil(expression, action, this.deadline(timeoutMs));
   }
 
+  /** Reports whether the target engine declares this locator action. */
+  supports(kind: LocatorAction['kind']): boolean {
+    return this.session.actions.has(kind);
+  }
+
   /**
    * Fills a secret into exactly one match, and hands the value over only
    * once `authorize` has cleared the node it lands on. The node is read and
@@ -552,31 +566,29 @@ const ref = await this.singleOf(await this.resolveOnce(expression, reads, missin
     if (this.session.actions.has('scrollIntoView')) {
       await this.performUntil(expression, { kind: 'scrollIntoView' }, deadline);
     }
-    const notVisible = (cause?: unknown) =>
-      new TestError('LOCATOR_NOT_FOUND', `locator did not become visible with a box to act within: ${describeExpression(expression)}`, {
-        details: locatorDetails(expression, deadline.elapsed()),
-        ...(cause === undefined ? {} : { cause }),
-      });
-    const reads = this.reads(deadline);
-    const pollStartedMs = Date.now();
-    let sampled = false;
-    for (;;) {
-      let node: SemanticNode | null;
-      try {
-        ({ node } = await this.tryRead(expression, reads));
-      } catch (cause) {
-        if (sampled && reads.cutOff(cause)) throw notVisible(cause);
-        throw cause;
-      }
-      sampled = true;
-      if (isNodeVisible(node) && node.rect !== undefined) {
-        const origin = node.origin ?? node.rect;
-        await this.dispatchAt({ x: origin.x + offset.x, y: origin.y + offset.y }, action, deadline);
-        return;
-      }
-      if (deadline.expired()) throw notVisible();
-      await sleep(pollDelay(Date.now() - pollStartedMs), this.signal);
-    }
+    let origin: ViewportPoint | undefined;
+    await pollReads({
+      deadline,
+      signal: this.signal,
+      negated: false,
+      reads: this.reads(deadline),
+      evaluate: async (reads) => {
+        // A box read at the deadline could never be tapped: skip the read so the wait ends as LOCATOR_NOT_FOUND.
+        if (deadline.expired()) return false;
+        const { node } = await this.tryRead(expression, reads);
+        if (!isNodeVisible(node) || node.rect === undefined) return false;
+        origin = node.origin ?? node.rect;
+        return true;
+      },
+      onTimeout: (cause) =>
+        new TestError('LOCATOR_NOT_FOUND', `locator did not become visible with a box to act within: ${describeExpression(expression)}`, {
+          details: locatorDetails(expression, deadline.elapsed()),
+          ...(cause === undefined ? {} : { cause }),
+        }),
+    });
+    // pollReads returns only once `evaluate` answered true, which set `origin`.
+    const at = origin!;
+    await this.dispatchAt({ x: at.x + offset.x, y: at.y + offset.y }, action, deadline);
   }
 
   /** One pointer dispatch within a deadline, its engine error translated to the public taxonomy. */

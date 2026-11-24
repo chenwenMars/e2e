@@ -141,6 +141,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `device.launchApp({ url })`, `device.openURL({ url })` | `device.openLink(url)` |
 | `device.terminateApp()`, `sendToHome()`, `pressBack()` | `device.closeApp()`、`home()`、`back()` |
 | `device.setLocation(lat, lon)`, `setOrientation('landscape')` | `device.setLocation({ latitude, longitude })`、`setOrientation('landscape-left')` |
+| `device.shake()` | `device.shake()`（ローカルのシミュレーターまたはエミュレーター） |
 | `device.setBiometricEnrollment(true)` | `device.enrollBiometrics('faceid', true)` |
 | `device.matchFace()`, `unmatchFace()`, `matchFinger()`, `unmatchFinger()` | `device.setBiometrics('faceid' \| 'touchid', 'match' \| 'nonmatch')` |
 | `device.takeScreenshot()` | `app.screenshot('label')`。比較には [`toHaveScreenshot`](/visual-testing) |
@@ -168,7 +169,6 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `launchApp({ languageAndLocale })` | iOS では `app.launchArguments: ['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR']`。[別の言語でアプリを実行する](/mobile#run-the-app-in-another-language)を参照 |
 | Jest の `globalSetup`、`globalTeardown` | 実行前に依存サービスを起動 |
 | `device.reverseTcpPort()` | CI ステップで `adb reverse` |
-| `device.shake()` | - |
 | 1 つのキー・値マップとしての `launchArgs` | iOS は `['-key', 'value']`、Android は `['--es', 'key', 'value']` |
 | `.getAttributes()` | `.textContent()`、`.inputValue()`、`.isEnabled()`、`.isVisible()`、`.isChecked()`、`.boundingBox()` |
 | `device.setStatusBar()` | `xcrun simctl status_bar`。`toHaveScreenshot` はステータスバーを固定します |

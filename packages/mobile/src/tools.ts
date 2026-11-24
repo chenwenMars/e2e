@@ -14,6 +14,7 @@ import { EngineError, TestError, type EngineHandle } from '@e2e-dev/core/engine'
 import { rawSession, type DeviceSession } from './device.ts';
 import { surfaceOf } from './engine.ts';
 import { isAppNotInstalled } from './errors.ts';
+import { pressRemote, REMOTE_KEYS } from './remote.ts';
 import type { AgentDeviceSurface } from './surface.ts';
 
 /**
@@ -79,6 +80,18 @@ function appUnderTest(surface: AgentDeviceSurface): string {
   return app;
 }
 
+const abort = (options: { abortSignal?: AbortSignal }): AbortSignal | undefined => options.abortSignal;
+
+/** What every tool of a pack shares: the surface whose attempt is running, and the platforms the pack is offered on. */
+function pack(engines: readonly EngineHandle[]): { active(): AgentDeviceSurface; annotate(mutates: boolean): ToolAnnotations } {
+  const surfaces = engines.map(requireSurface);
+  const platforms = [...new Set(surfaces.map((surface) => surface.options.platform))];
+  return {
+    active: () => runningSurface(surfaces),
+    annotate: (mutates) => ({ mutates, platforms }),
+  };
+}
+
 /**
  * Builds the tool pack for one or more agent-device engines, keyed the way
  * an agents entry's `tools` expects. Pass every device engine a config
@@ -94,14 +107,7 @@ function appUnderTest(surface: AgentDeviceSurface): string {
 export function mobileTools(
   ...engines: readonly [EngineHandle, ...EngineHandle[]]
 ): Readonly<Record<string, DefinedTool>> {
-  const surfaces = engines.map(requireSurface);
-  const platforms = [...new Set(surfaces.map((surface) => surface.options.platform))];
-  const active = (): AgentDeviceSurface => runningSurface(surfaces);
-  const annotate = (mutates: boolean): ToolAnnotations => ({
-    mutates,
-    platforms,
-  });
-  const abort = (options: { abortSignal?: AbortSignal }): AbortSignal | undefined => options.abortSignal;
+  const { active, annotate } = pack(engines);
 
   return {
     open_app: defineTool(
@@ -151,6 +157,37 @@ export function mobileTools(
           const surface = active();
           await surface.command('alert', (client) => client.command.alert({ ...surface.selection(), action }), abort(options));
           return `Alert ${action}ed.`;
+        },
+      }),
+      annotate(true),
+    ),
+  };
+}
+
+/**
+ * The TV remote as an agent tool, for engines that drive an Android TV or an
+ * Apple TV: spread it beside `mobileTools`. It is a pack of its own, so a
+ * config with no TV offers no remote. Tools are offered by platform: when a
+ * phone target shares the TV's platform, put the pack on a named agent that
+ * the TV tests select.
+ */
+export function tvTools(
+  ...engines: readonly [EngineHandle, ...EngineHandle[]]
+): Readonly<Record<string, DefinedTool>> {
+  const { active, annotate } = pack(engines);
+  return {
+    tv_remote: defineTool(
+      deviceTool({
+        description:
+          "Press a button on the TV's remote, up to 20 times in one call. A TV has no touch screen: the D-pad (up, down, left, right) moves the focus and select activates what is focused. back and menu leave a screen, home opens the launcher, and the media keys control playback (an Apple TV has none).",
+        inputSchema: z.object({ key: z.enum(REMOTE_KEYS), times: z.number().int().min(1).max(20).optional() }),
+        execute: async ({ key, times = 1 }, options) => {
+          const surface = active();
+          const signal = abort(options) ?? new AbortController().signal;
+          for (let pressed = 0; pressed < times; pressed += 1) {
+            await surface.screenCommand('tv_remote', (client) => pressRemote(client, key, surface.selection()), signal);
+          }
+          return times === 1 ? `Pressed ${key} on the remote.` : `Pressed ${key} on the remote ${String(times)} times.`;
         },
       }),
       annotate(true),

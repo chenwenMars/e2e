@@ -88,8 +88,8 @@ export type Observation = ObservationMetadata & (
       readonly pixels?: ObservationPixels;
       /**
        * Why pixels the engine answered with are not here: its masked regions
-       * (`maskedRegionCount`) are fewer than the secure nodes, whether the
-       * engine sent the pixels or withheld them itself.
+       * (`maskedRegionCount`) are fewer than the secure nodes, or it withheld
+       * the pixels itself and sent the count alone.
        */
       readonly pixelsWithheld?: PixelsWithheld;
     }

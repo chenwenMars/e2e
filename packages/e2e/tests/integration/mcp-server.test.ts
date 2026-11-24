@@ -145,7 +145,13 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
   };
 
   const catalogLines = (text: string): string[] => text.split('\n').filter((line) => line.startsWith('- '));
-  const catalogNames = (text: string): string[] => catalogLines(text).map((line) => /^- (\S+?)(?: \{|:)/.exec(line)![1]!);
+  /** Every tool a catalog text names: one line each, and the single actions the opening text lists on one line. */
+  const catalogNames = (text: string): string[] =>
+    catalogLines(text).flatMap((line) =>
+      line.startsWith('- Single actions')
+        ? line.slice(line.indexOf(': ') + 2, -1).split('; ').map((signature) => signature.split(' ')[0]!)
+        : [/^- (\S+?)(?: \{|:)/.exec(line)![1]!],
+    );
 
   beforeAll(async () => {
     app = await startFixtureApp();
@@ -211,7 +217,6 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
     for (const [name, args, key] of [
       ['open_session', { headless: true }, 'headless'],
       ['tools', { all: true }, 'all'],
-      ['call', { tool: 'observe', verbose: true }, 'verbose'],
       ['close_session', { force: true }, 'force'],
     ] as const) {
       const refused = await invoke(name, args);
@@ -231,7 +236,7 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
     expect(opened.text).toContain('Credentials: "admin" (username "admin", password secret "admin.password")');
     expect(opened.text).toContain('Tools (run one with call {tool, args}; tools {tool} shows a tool\'s arguments):');
     expect(opened.text).toContain('Before you write or edit a test, read the writing-tests guide: the resource e2e://guide/writing-tests, or npx e2e guide writing-tests in a shell.');
-    expect(catalogNames(opened.text)).toEqual([
+    expect(catalogNames(opened.text).toSorted()).toEqual([
       'observe',
       'tap',
       'double_tap',
@@ -264,8 +269,7 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
       'test_lines',
       'start_recording',
       'stop_recording',
-    ]);
-    expect(opened.text).toMatch(/^- tap \{target, modifiers\?\}: Tap or click one node: the gesture for a button, link, menu item, tab, checkbox, row, or field\.$/m);
+    ].toSorted());
     expect(opened.text).toMatch(/^- locate \{role\?, name\?, text\?, label\?, placeholder\?, testId\?, exact\?\}: .* \[read-only\]$/m);
     expect(opened.text).toMatch(/Current screen \(revision b\d+, path \/, \d+ nodes\):/);
     expect(opened.text).toContain('button "Increment"');
@@ -274,7 +278,10 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
     const listed = await invoke('tools');
     expect(listed.isError, listed.text).toBe(false);
     expect(listed.text).toContain(`Session ${sessionId} on target "web": 32 tools.`);
-    expect(catalogLines(listed.text)).toEqual(catalogLines(opened.text));
+    expect(catalogNames(listed.text).toSorted()).toEqual(catalogNames(opened.text).toSorted());
+    expect(opened.text).toMatch(/\n- Single actions, each on a node id \(target\) or a point of the latest screenshot \(x, y\); tools lists what each does: tap \{target, modifiers\?\}; double_tap /);
+    expect(opened.text).not.toContain('- tap {');
+    expect(listed.text).toMatch(/^- tap \{target, modifiers\?\}: Tap or click one node: the gesture for a button, link, menu item, tab, checkbox, row, or field\.$/m);
     const detail = await invoke('tools', { tool: 'type_secret' });
     expect(detail.text).toContain('"admin.password" (password)');
     expect(detail.text).toContain('Arguments (JSON Schema):');
@@ -312,6 +319,13 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
     const decorated = await call('tap', { target: nodeId(after.text, /button "Increment"/), force: true });
     expect(decorated.isError).toBe(true);
     expect(decorated.text).toBe('INVALID_ARGUMENT: call tap: Unrecognized key: "force"; tools {tool: "tap"} shows its arguments');
+    // The arguments may sit beside the tool's name, under the same checks.
+    const beside = await invoke('call', { tool: 'locate', role: 'button', name: 'Increment' });
+    expect(beside.isError, beside.text).toBe(false);
+    const besideUnknown = await invoke('call', { tool: 'observe', verbose: true });
+    expect(besideUnknown.text).toBe('INVALID_ARGUMENT: call observe: Unrecognized key: "verbose"; tools {tool: "observe"} shows its arguments');
+    const both = await invoke('call', { tool: 'locate', args: { role: 'button' }, name: 'Increment' });
+    expect(both.text).toBe("INVALID_ARGUMENT: call locate: pass the tool's arguments in args or beside tool, not both (name)");
     const nameless = await call('teleport');
     expect(nameless.isError).toBe(true);
     expect(nameless.text).toContain('UNKNOWN_TOOL');
@@ -421,6 +435,21 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
     expect(closed.isError, closed.text).toBe(false);
   });
 
+  it('opens on a path of the app, and writes that opening as the first test line', async () => {
+    const both = await invoke('open_session', { path: '/echo', test: 'tests/a.e2e.ts' });
+    expect(both.isError).toBe(true);
+    expect(both.text).toContain('INVALID_ARGUMENT: open_session: test leaves the session on the screen where the test stopped');
+
+    const opened = await invoke('open_session', { path: '/echo' });
+    expect(opened.isError, opened.text).toBe(false);
+    expect(opened.text).toMatch(/Current screen \(revision b\d+, path \/echo, \d+ nodes\):/);
+    expect(opened.text).toContain('textbox "Token"');
+    const drafted = await call('test_lines');
+    expect(drafted.text.split('\n').filter((line) => line.startsWith('await '))).toEqual(['await app.open("/echo");']);
+    const closed = await invoke('close_session');
+    expect(closed.isError, closed.text).toBe(false);
+  });
+
   it('shows a generic secret filled into a plain textbox by name in locate and observe, never the plaintext', async () => {
     const opened = await invoke('open_session');
     expect(opened.isError, opened.text).toBe(false);
@@ -487,6 +516,9 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
   });
 
   it('catalogs and runs the project tools of a custom engine target, with only the verbs it declares', async () => {
+    const pathed = await invoke('open_session', { config: 'custom.config.ts', target: 'kiosk', path: '/menu' });
+    expect(pathed.isError).toBe(true);
+    expect(pathed.text).toContain('INVALID_ARGUMENT: open_session: path opens a page');
     const opened = await invoke('open_session', { config: 'custom.config.ts', target: 'kiosk' });
     expect(opened.isError, opened.text).toBe(false);
     expect(opened.text).toContain('platform kiosk, engine fake');

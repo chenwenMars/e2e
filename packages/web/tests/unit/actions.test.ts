@@ -8,7 +8,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { Locator as PwLocator, Page } from 'playwright-core';
+import type { ElementHandle, Locator as PwLocator, Page } from 'playwright-core';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EngineError, TestError, type LocatorAction } from '@e2e-dev/core/engine';
 import { classifyActionError, dispatchLocatorAction, dispatchPointerAction } from '../../src/actions.ts';
@@ -89,6 +89,18 @@ describe('classifyActionError', () => {
     const error = classifyActionError(pwTimeout(PRE_DISPATCH_LOG), TAP);
     expect(error).toMatchObject({ code: 'NOT_ACTIONABLE', retryable: false });
     expect(error.message).toContain('tap did not become actionable');
+  });
+
+  it('maps a selector Playwright cannot parse to INVALID_LOCATOR, not an engine fault', () => {
+    const raw = new Error('locator.click: Unknown engine "nope" while parsing selector "nope=button"');
+    const error = classifyActionError(raw, TAP);
+    expect(error).toMatchObject({ code: 'INVALID_LOCATOR', category: 'test', cause: raw });
+    expect(error.message).toBe('tap failed: locator.click: Unknown engine "nope" while parsing selector "nope=button"');
+  });
+
+  it('decides an unparsable selector before the message-shaped branches that would call it stale', () => {
+    const error = classifyActionError(new Error('locator.click: Unknown engine "nope" while parsing selector "nope=not found"'), TAP);
+    expect(error).toMatchObject({ code: 'INVALID_LOCATOR', category: 'test' });
   });
 
   it('cuts a not-actionable timeout to its headline and the last blocker the log names', () => {
@@ -188,7 +200,7 @@ function stubLocator(box = { x: 10, y: 20, width: 200, height: 100 }, aim: 'poin
 /** An upload target resolving to one element handle, recording the order of the chooser wait, the click, and the file set. */
 function stubUpload(fileInput: boolean) {
   const calls: string[] = [];
-  const chooser = { setFiles: vi.fn(async (_paths: string[], _options: unknown) => void calls.push('setFiles')) };
+  const chooser = { setFiles: vi.fn(async (_paths: Parameters<ElementHandle['setInputFiles']>[0], _options: unknown) => void calls.push('setFiles')) };
   const page = {
     waitForEvent: vi.fn((_event: string, _options: unknown): Promise<unknown> => {
       calls.push('waitForEvent');
@@ -197,7 +209,7 @@ function stubUpload(fileInput: boolean) {
   };
   const element = {
     evaluate: vi.fn(async () => fileInput),
-    setInputFiles: vi.fn(async (_paths: string[], _options: unknown) => undefined),
+    setInputFiles: vi.fn(async (_paths: Parameters<ElementHandle['setInputFiles']>[0], _options: unknown) => undefined),
     click: vi.fn(async (_options: unknown) => void calls.push('click')),
     dispose: vi.fn(async () => undefined),
   };
@@ -258,6 +270,23 @@ describe('dispatchLocatorAction', () => {
     expect(element.setInputFiles).toHaveBeenCalledWith([UPLOAD], { timeout: expect.any(Number) });
     expect(element.click).not.toHaveBeenCalled();
     expect(page.waitForEvent).not.toHaveBeenCalled();
+  });
+
+  it('shares the payload byte view with Playwright without copying or widening it', async () => {
+    const { element, target } = stubUpload(true);
+    const bytes = new Uint8Array([17, 0, 128, 255, 18]).subarray(1, 4);
+    await dispatchLocatorAction(target, { kind: 'setInputFilePayloads', files: [
+      { name: 'a.bin', mimeType: 'application/octet-stream', buffer: bytes },
+    ] }, OPERATION, lookup);
+    const files = element.setInputFiles.mock.calls[0]?.[0];
+    expect(Array.isArray(files)).toBe(true);
+    if (!Array.isArray(files)) throw new Error('expected file payload array');
+    const file = files[0];
+    if (file === undefined || typeof file === 'string') throw new Error('expected a file payload');
+    expect(file.buffer.buffer).toBe(bytes.buffer);
+    expect(file.buffer.byteOffset).toBe(bytes.byteOffset);
+    expect(file.buffer.byteLength).toBe(bytes.byteLength);
+    expect([...file.buffer]).toEqual([0, 128, 255]);
   });
 
   it('fails as NOT_ACTIONABLE when the click opens no file chooser', async () => {

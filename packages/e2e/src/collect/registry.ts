@@ -11,7 +11,7 @@ import { MAX_TIMER_MS } from '@e2e-dev/core/lib/internal/time';
 import { validateTitle } from '@e2e-dev/core/lib/internal/ids';
 import { realmSlot } from '@e2e-dev/core/lib/internal/realm-slot';
 import { expectedFailureOption, markRunningTestExpectedToFail } from '@e2e-dev/core/lib/internal/expected-failure';
-import { setRunningTestTimeout } from '@e2e-dev/core/lib/internal/test-timeout';
+import { setRunningTestTimeout, slowRunningTest } from '@e2e-dev/core/lib/internal/test-timeout';
 import { fixmeReason, parseModifierCall, skipRunningTest } from '../internal/skip.ts';
 import { formatEachTitle, readRows } from './each.ts';
 import { unknownKeyMessage } from '@e2e-dev/core/lib/internal/options';
@@ -878,6 +878,15 @@ function createTestAPI(chain: readonly FixtureDefinition[]): TestAPI {
     },
     setTimeout(timeout: number): void {
       setRunningTestTimeout(timeout);
+    },
+    slow(first?: string | boolean, second?: TestBody | string): void {
+      const call = parseModifierCall(first, second);
+      if (call.kind === 'register') {
+        throw new CollectionError(
+          'test.slow() takes no test: call test.slow() inside the test body to triple its timeout, or pass { timeout } as the test option',
+        );
+      }
+      slowRunningTest(call.condition);
     },
     skipIf(condition: unknown): TestRegistrar<object> {
       return registrar('test.skipIf()', readCondition('test.skipIf()', condition));

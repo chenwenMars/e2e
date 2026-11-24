@@ -117,6 +117,30 @@ describe.each(KINDS)('through the %s target', (kind) => {
   });
 
   it.each([
+    ['input', '<input id="avatar" type="file" multiple>', '#avatar'],
+    ['label', '<label id="pick" for="avatar">Choose</label><input id="avatar" type="file" multiple hidden>', '#pick'],
+    ['chooser', `<button id="pick" onclick="document.getElementById('avatar').click()">Choose</button><input id="avatar" type="file" multiple hidden>`, '#pick'],
+  ])('preserves in-memory file metadata and binary contents through a %s', async (_name, html, selector) => {
+    await page.setContent(html);
+    const files = [
+      { name: 'résumé.bin', mimeType: 'application/octet-stream', buffer: new Uint8Array([17, 0, 128, 255, 18]).subarray(1, 4) },
+      { name: 'empty.txt', mimeType: 'text/plain', buffer: new Uint8Array() },
+    ];
+    await dispatchLocatorAction(await targetOf(kind, selector), { kind: 'setInputFilePayloads', files },
+      { timeoutMs: 2000, signal: new AbortController().signal }, () => { throw new Error('no second target'); });
+    expect(await page.locator('#avatar').evaluate(async (node: HTMLInputElement) => Promise.all(
+      Array.from(node.files ?? [], async (picked) => ({
+        name: picked.name, mimeType: picked.type, bytes: Array.from(new Uint8Array(await picked.arrayBuffer())),
+      })),
+    ))).toEqual([
+      { name: 'résumé.bin', mimeType: 'application/octet-stream', bytes: [0, 128, 255] },
+      { name: 'empty.txt', mimeType: 'text/plain', bytes: [] },
+    ]);
+    expect(await upload(await targetOf(kind, selector), [])).toBeUndefined();
+    expect(await page.locator('#avatar').evaluate((node: HTMLInputElement) => node.files?.length)).toBe(0);
+  });
+
+  it.each([
     ['a file input', '<input id="avatar" type="file">', '#avatar'],
     ['a button over a hidden input', `<button id="pick" type="button" onclick="document.getElementById('avatar').click()">Choose avatar</button><input id="avatar" type="file" hidden>`, '#pick'],
   ])('fails a path that does not exist as INVALID_ARGUMENT before it touches %s', async (_name, html, selector) => {

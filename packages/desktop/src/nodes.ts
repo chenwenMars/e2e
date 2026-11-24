@@ -70,6 +70,10 @@ export interface NodeBinding {
    * place is the same one only if no twin around it came or went.
    */
   readonly likeness: string;
+  /** The developer id (`AXIdentifier`), which a look-alike found again by its place must still carry. */
+  readonly testId?: string;
+  /** Read with `-i`, whose ids and look-alike counts a check of the same control must read the same way to compare. */
+  readonly interactive: boolean;
 }
 
 /** A snapshot as the engine keeps it: the tree the harness sees, and a binding for every node in it. */
@@ -82,6 +86,8 @@ export interface ProjectedScreen {
   /** Rects of the secure fields, in the viewport's points, for masking. Undefined when a secure field has no bounds to mask. */
   readonly secureRects: readonly Rect[] | undefined;
   readonly truncated: boolean;
+  /** The read ran out of time (`complete: false`), which the next read may not; a tree cut only at its depth limit is cut the same way every time. */
+  readonly cutShort: boolean;
   readonly windowId?: string;
   readonly title?: string;
   /** The first scrollable node, which the observation root's swipe scrolls. */
@@ -167,9 +173,6 @@ const INPUT_ROLES = new Set(['textfield', 'combobox', 'slider', 'incrementor', '
 
 /** Roles agent-desktop reads text into `value`, which the contract calls `text`. */
 const TEXT_ROLES = new Set(['statictext', 'heading']);
-
-/** Roles a swipe on the observation root scrolls, in preference order. */
-const SCROLLABLE_ROLES = new Set(['scrollarea', 'list', 'listbox', 'table', 'outline', 'grid', 'webarea']);
 
 const STATE_NAMES = ['focused', 'disabled', 'secure', 'expanded', 'selected', 'hidden', 'pressed'] as const;
 
@@ -269,9 +272,25 @@ function identityOf(node: RawNode, named = false): string {
  * The window is always `root`.
  * Wrappers nothing reads (anonymous groups) are dropped
  * and their children lifted, so the model reads the controls, not the
- * scaffolding, and the window's title-bar buttons are left out.
+ * scaffolding, and the window's title-bar buttons are left out. Every node
+ * of a `minimized` window is hidden: accessibility still reads its controls,
+ * but nothing of it is on screen. `interactive` marks the bindings of a read
+ * agent-desktop pruned (`-i`), whose tree, and so whose ids and look-alike
+ * counts, differ from a whole read's. `onLookAlike` hears each identity a
+ * look-alike sibling made shared, for a caller that must retire it, keyed by
+ * the id the parent held before (`priorIdOf` looks it up without handing one
+ * out), since a read cut short gives that parent a fresh one.
  */
-export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | undefined) => string): ProjectedScreen {
+export function projectSnapshot(
+  raw: RawSnapshot,
+  idFor: (identity: string | undefined) => string,
+  {
+    minimized = false,
+    interactive = false,
+    onLookAlike,
+    priorIdOf,
+  }: { readonly minimized?: boolean; readonly interactive?: boolean; readonly onLookAlike?: (identity: string) => void; readonly priorIdOf?: (identity: string) => string | undefined } = {},
+): ProjectedScreen {
   const window = raw.tree.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
   const titleBar = titleBarButtons(raw.tree);
   const bindings = new Map<string, NodeBinding>();
@@ -279,19 +298,27 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
   let unmaskable = false;
   let scrollTarget: string | undefined;
 
-  const project = (node: RawNode, id: string, stable: boolean, likeness: string): SemanticNode => {
+  // `hiddenAbove`: an ancestor is hidden, a wrapper left out included, so nothing under it is on screen; the resolver reads each node's own state only.
+  // `prior`: the id the node held before, which a cut gave it a fresh one in place of; look-alikes under it are reported against that id, which their identities are kept under.
+  const project = (node: RawNode, id: string, stable: boolean, likeness: string, hiddenAbove: boolean, prior: string | undefined): SemanticNode => {
     const rawStates = new Set(node.states ?? []);
     const role = ROLE_MAP[node.role] ?? (node.role === 'unknown' ? undefined : node.role);
     const secure = rawStates.has('secure');
     const states: Record<string, boolean> = {};
     for (const state of STATE_NAMES) if (rawStates.has(state)) states[state] = true;
-    if (rawStates.has('offscreen')) states.hidden = true;
+    if (rawStates.has('offscreen') || minimized || hiddenAbove) states.hidden = true;
+    // A control collapsed to no width or height draws nothing, and agent-desktop will not act on it. Only a leaf: a container with no box can still hold drawn children, listed or cut off at the depth limit.
+    if (id !== ROOT_ID && node.bounds !== undefined && (node.bounds.width <= 0 || node.bounds.height <= 0) && (node.children ?? []).length === 0 && (node.children_count ?? 0) === 0) states.hidden = true;
     // A mixed checkbox is neither checked nor unchecked: no state, so check() and uncheck() always reach the control.
     if (CHECKABLE_ROLES.has(node.role) && !rawStates.has('indeterminate')) states.checked = rawStates.has('checked') || node.value === '1';
     else if (rawStates.has('checked')) states.checked = true;
     if (node.role === 'combobox' || node.role === 'disclosure' || node.role === 'menubutton') {
       if (node.available_actions?.includes('Expand') === true || node.available_actions?.includes('Collapse') === true) states.expanded = rawStates.has('expanded');
     }
+    // agent-desktop marks a text field whose value cannot be set `readonly`, and offers SetValue on one whose value can. A combo box takes text only when its value can be set; a pop-up menu takes none, which is not read-only, so it gets no state, as on a device.
+    const settable = node.available_actions?.includes('SetValue') === true;
+    if (node.role === 'textfield' && (settable || rawStates.has('readonly'))) states.readonly = !settable;
+    else if (node.role === 'combobox' && settable) states.readonly = false;
     const isText = TEXT_ROLES.has(node.role);
     const name = label(node.name ?? (isText ? node.value : undefined));
     // A control shows its name (a button's title) as its text, as on a device; an input's name is a label, not what it holds.
@@ -313,7 +340,8 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     const description = label(node.description);
     if (description !== undefined) attributes.description = description;
     if (node.native_id !== undefined) attributes['native-id-kind'] = node.native_id.kind;
-    if (scrollTarget === undefined && node.ref_id !== undefined && SCROLLABLE_ROLES.has(node.role)) scrollTarget = id;
+    // A swipe on the window scrolls the first node agent-desktop offers Scroll, which it scrolls only then and only while visible and enabled: a list with no scroll mechanism, or a pane off screen, would refuse it.
+    if (scrollTarget === undefined && node.ref_id !== undefined && node.available_actions?.includes('Scroll') === true && states.hidden !== true && states.disabled !== true) scrollTarget = id;
     bindings.set(id, {
       id,
       ...(node.ref_id === undefined ? {} : { ref: node.ref_id }),
@@ -325,13 +353,24 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
       ...(rect === undefined ? {} : { rect }),
       stable,
       likeness,
+      interactive,
+      ...(node.native_id === undefined || node.native_id.value === '' ? {} : { testId: node.native_id.value }),
     });
     const kept: RawNode[] = [];
-    const collect = (child: RawNode): void => {
-      if (transparent(child)) for (const grandchild of child.children ?? []) collect(grandchild);
-      else kept.push(child);
+    const underHidden = new Set<RawNode>();
+    // Whether a wrapper left out had children the read cut off: its unread children are this node's, and one could be a twin of a listed one.
+    let wrapperCut = false;
+    const collect = (child: RawNode, throughHidden: boolean): void => {
+      if (transparent(child)) {
+        if (childrenCut(child)) wrapperCut = true;
+        const hiddenWrapper = throughHidden || child.states?.includes('hidden') === true || child.states?.includes('offscreen') === true;
+        for (const grandchild of child.children ?? []) collect(grandchild, hiddenWrapper);
+      } else {
+        kept.push(child);
+        if (throughHidden) underHidden.add(child);
+      }
     };
-    for (const child of node.children ?? []) if (id !== ROOT_ID || !titleBar.has(child)) collect(child);
+    for (const child of node.children ?? []) if (id !== ROOT_ID || !titleBar.has(child)) collect(child, false);
     const tally = (named: boolean): Map<string, number> => {
       const counts = new Map<string, number>();
       for (const child of kept) counts.set(identityOf(child, named), (counts.get(identityOf(child, named)) ?? 0) + 1);
@@ -343,10 +382,19 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     // look-alike that still matches has no identity: if the first of two
     // "Delete" buttons goes, the second must not take over its id, so each
     // look-alike gets a new id every snapshot.
+    // A node whose children the read cut off lists only some of them: one that looks unique may have a twin the read did not reach, so none takes an id.
+    const cut = childrenCut(node) || wrapperCut;
     const children = kept.map((child) => {
-      const identity = plain.get(identityOf(child)) === 1 ? identityOf(child) : named.get(identityOf(child, true)) === 1 ? identityOf(child, true) : undefined;
-      // A child's id is built on its parent's: under a look-alike, whose id is new every snapshot, so is the child's.
-      return project(child, idFor(identity === undefined ? undefined : `${id}/${identity}`), stable && identity !== undefined, `${likeness}/${plain.get(identityOf(child)) ?? 1}`);
+      const seen = plain.get(identityOf(child)) === 1 ? identityOf(child) : named.get(identityOf(child, true)) === 1 ? identityOf(child, true) : undefined;
+      const identity = cut ? undefined : seen;
+      // An identity two siblings share may pass on to neither, even where their names tell them apart now.
+      if (prior !== undefined && (plain.get(identityOf(child)) ?? 0) > 1) onLookAlike?.(`${prior}/${identityOf(child)}`);
+      if (prior !== undefined && (named.get(identityOf(child, true)) ?? 0) > 1) onLookAlike?.(`${prior}/${identityOf(child, true)}`);
+      // A child's id is built on its parent's: under a look-alike, whose id is new every snapshot, so is the child's, and no identity is kept for it.
+      const childStable = stable && identity !== undefined;
+      const childId = idFor(childStable ? `${id}/${identity}` : undefined);
+      const childPrior = childStable ? childId : prior !== undefined && seen !== undefined ? priorIdOf?.(`${prior}/${seen}`) : undefined;
+      return project(child, childId, childStable, `${likeness}/${plain.get(identityOf(child)) ?? 1}`, states.hidden === true || underHidden.has(child), childPrior);
     });
     return {
       ref: { id, revision: '' },
@@ -364,7 +412,8 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     };
   };
 
-  const root = project(raw.tree, ROOT_ID, true, '');
+  const root = project(raw.tree, ROOT_ID, true, '', false, ROOT_ID);
+  const title = label(raw.tree.name) ?? label(raw.window?.title);
   return {
     root,
     bindings,
@@ -372,8 +421,10 @@ export function projectSnapshot(raw: RawSnapshot, idFor: (identity: string | und
     viewport: { width: window.width, height: window.height },
     secureRects: unmaskable ? undefined : secureRects,
     truncated: raw.complete === false || raw.truncated === true || hasTruncatedSubtree(raw.tree),
+    cutShort: raw.complete === false || raw.truncated === true,
     ...(raw.window === undefined ? {} : { windowId: raw.window.id }),
-    ...(raw.window?.title === undefined || raw.window.title === '' ? {} : { title: raw.window.title }),
+    // The window's accessibility root carries its title; the window list's, which agent-desktop copies here, is the app's name without Screen Recording permission.
+    ...(title === undefined ? {} : { title }),
     ...(scrollTarget === undefined ? {} : { scrollTarget }),
   };
 }
@@ -384,9 +435,11 @@ function headingLevel(node: RawNode): { level?: number } {
   return match === null ? {} : { level: Number(match[1]) };
 }
 
+/** Whether the read listed only some of a node's children: agent-desktop flags the node, or counts more children than it listed at the depth limit. */
+function childrenCut(node: RawNode): boolean {
+  return node.subtree_truncated === true || (node.children_count !== undefined && node.children_count > (node.children?.length ?? 0));
+}
+
 function hasTruncatedSubtree(node: RawNode): boolean {
-  if (node.subtree_truncated === true) return true;
-  // At the depth limit agent-desktop counts the children it did not list.
-  if (node.children_count !== undefined && node.children_count > (node.children?.length ?? 0)) return true;
-  return (node.children ?? []).some(hasTruncatedSubtree);
+  return childrenCut(node) || (node.children ?? []).some(hasTruncatedSubtree);
 }

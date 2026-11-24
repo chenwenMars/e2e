@@ -77,6 +77,7 @@ await expect(screen.getByTestId('cart-empty'), 'the cart is empty').toBeVisible(
 | [`toBeAttached`](#tobeattached) | Waits for one match to exist |
 | [`toBeEnabled`](#tobeenabled-and-tobedisabled) | Waits for enabled state |
 | [`toBeDisabled`](#tobeenabled-and-tobedisabled) | Waits for disabled state |
+| [`toBeEditable`](#tobeeditable) | Waits for an enabled control that is not read-only |
 | [`toBeChecked`](#tobechecked-tobeselected-and-tobeexpanded) | Waits for checked state |
 | [`toBeSelected`](#tobechecked-tobeselected-and-tobeexpanded) | Waits for selected state |
 | [`toBeExpanded`](#tobechecked-tobeselected-and-tobeexpanded) | Waits for expanded state |
@@ -135,6 +136,40 @@ Playwright's `toBeDisabled` gives:
   that fieldset's first `<legend>`.
 - `aria-disabled="true"` on an ancestor disables the widgets below it until
   an `aria-disabled="false"` cuts the chain.
+
+#### `toBeEditable`
+
+Waits for an enabled control that is not read-only.
+
+```ts
+await expect(screen.getByLabel('Email')).toBeEditable();
+await expect(screen.getByLabel('Order id')).toBeEditable({ editable: false }); // read-only or disabled
+```
+
+- Read-only is the state the engine reports. The web engine follows
+  Playwright's rules for native controls and `aria-readonly`, using e2e's
+  roles and the disabled state that `toBeEnabled()` reports. An `input`, `textarea`, or
+  `select` reads its `readonly` attribute alone, with any value. An element
+  of a role that takes `aria-readonly` (`textbox`, `searchbox`, `combobox`,
+  `listbox`, `checkbox`, `switch`, `slider`, `spinbutton`, `gridcell`, and
+  the rest) reads `aria-readonly="true"`, in any case. An editing host reads
+  it only by its ARIA role, explicit or from its tag (a `td` in a grid is a
+  `gridcell`); a plain `<div contenteditable>` has none. Any other editing
+  host, and any element inside one, is never read-only.
+- A disabled node is not editable either, as
+  [`toBeEnabled`](#tobeenabled-and-tobedisabled) reads it.
+- Any other node, such as a button, has no read-only state. It fails the
+  matcher, negated too, and the failure message says so.
+- On a device, a text field has a read-only state only where the platform
+  reports whether it takes text, as Android does. iOS does not, so an iOS
+  field fails the matcher rather than pass as a guess.
+- On a Mac, a text field is read-only when macOS reports its value cannot be
+  set. A combo box is editable when it takes text; a pop-up menu, which takes
+  none, has no read-only state.
+- The engines report this state from the `@e2e-dev/web`,
+  `@e2e-dev/mobile`, and `@e2e-dev/desktop` releases that need `e2e`
+  0.25.0. With an older engine, every node fails with
+  `no read-only state`: update the engine with `e2e`.
 
 #### `toBeChecked`, `toBeSelected`, and `toBeExpanded`
 
@@ -942,6 +977,8 @@ export interface AsyncExpectation {
   toBeEnabled(options?: { enabled?: boolean; timeout?: number }): Promise<void>;
   /** Waits for disabled state. */
   toBeDisabled(options?: { timeout?: number }): Promise<void>;
+  /** Waits for an enabled control that is not read-only; `editable: false` waits for a disabled or read-only one. A node with no read-only state, a button included, fails either way. */
+  toBeEditable(options?: { editable?: boolean; timeout?: number }): Promise<void>;
   /** Waits for checked state; `checked: false` waits for unchecked state. */
   toBeChecked(options?: { checked?: boolean; timeout?: number }): Promise<void>;
   /** Waits for selected state. */

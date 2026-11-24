@@ -56,6 +56,13 @@ export type JsonValue =
   | { readonly [key: string]: JsonValue }
   | readonly JsonValue[];
 
+/** An in-memory file to attach without writing it to disk. */
+export interface FilePayload {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly buffer: Buffer;
+}
+
 export type Capability = string;
 
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
@@ -614,8 +621,8 @@ export interface Locator extends Omit<Screen, 'tree' | 'debug' | 'pause'> {
   blur(options?: ActionOptions): Promise<void>;
   /** Hovers over exactly one matching actionable node. */
   hover(options?: ActionOptions): Promise<void>;
-  /** Sets the files of exactly one file input, or of a control that opens a file chooser; paths resolve from the project root, and an empty array clears the input. */
-  setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promise<void>;
+  /** Sets the files of exactly one file input, or of a control that opens a file chooser; paths resolve from the project root, payloads supply bytes in memory, and an empty array clears the input. */
+  setInputFiles(files: string | readonly string[] | FilePayload | readonly FilePayload[], options?: ActionOptions): Promise<void>;
   /** Drags exactly one node to exactly one target. */
   dragTo(target: Locator, options?: ActionOptions): Promise<void>;
   /** Scrolls exactly one node into view. */
@@ -980,6 +987,15 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
   fail(condition: boolean, reason?: string): void;
   fail(reason?: string): void;
   /**
+   * Triples the running test's timeout in force when `condition` is true (or
+   * always), as Playwright's `test.slow()` does: once per attempt, so a
+   * second call does nothing. In a `beforeAll` hook it triples that hook's
+   * timeout. Otherwise it follows `setTimeout`'s rules; `reason` is not
+   * reported.
+   */
+  slow(condition: boolean, reason?: string): void;
+  slow(reason?: string): void;
+  /**
    * Inside a running test or a `beforeEach` hook: gives the test a timeout
    * of `timeout` ms, counted from the start of the attempt like the
    * `timeout` option, which it replaces for this attempt. A timeout shorter
@@ -1085,6 +1101,14 @@ export interface AsyncExpectation {
   toBeEnabled(options?: { enabled?: boolean; timeout?: number }): Promise<void>;
   /** Waits for disabled state. */
   toBeDisabled(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Waits for an enabled control that is not read-only; `editable: false`
+   * waits for a disabled or read-only one. Only a node the engine reports a
+   * read-only state for is read (on the web, an input, textarea, select,
+   * editing host, or a role that takes `aria-readonly`); any other node fails
+   * either way.
+   */
+  toBeEditable(options?: { editable?: boolean; timeout?: number }): Promise<void>;
   /** Waits for checked state; `checked: false` waits for unchecked state. */
   toBeChecked(options?: { checked?: boolean; timeout?: number }): Promise<void>;
   /** Waits for selected state. */

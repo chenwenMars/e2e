@@ -135,20 +135,32 @@ A test using this locator would fail with LOCATOR_NOT_FOUND. ...
 Use: screen.getByRole("button", "Sign in")
 ```
 
-## Jak spouští řádek testu
+## Jak spouští kód
 
-Řádky, které žádná akce nevypsala, například aserce, agent spouští přes
-`run_code` v otevřené relaci. Ty, které projdou, se přidají do návrhu
-`test_lines`. Špatný řádek selže během pár sekund, bez běhu testů:
+Agent spouští v otevřené relaci JavaScript přes `run_code`: smyčku přes
+seznam, hodnotu, kterou přečte a dál s ní počítá, aserci, kterou žádná akce
+nevypsala. Jedno volání nahradí mnoho jednotlivých akcí:
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
+Řádky, které projdou, se přidají do návrhu `test_lines`. Špatný řádek selže
+během pár sekund, bez běhu testů:
 
 ```text wrap
-Statement 2 of 2 failed; the one before it passed. Each statement waited at most 5000 ms. ...
-1. passed: await screen.getByLabel('Full name').fill('Grace Hopper');
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
 2. failed: await screen.getByRole('button', 'Save').tap();
    LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
 ```
 
-Server řádky parsuje a nikdy je nevyhodnocuje jako JavaScript. Viz
+Kód je běžný JavaScript nad objekty, které dostává tělo testu. Viz
 [`run_code`](/reference/mcp#run_code).
 
 ## Oprava selhávajícího testu

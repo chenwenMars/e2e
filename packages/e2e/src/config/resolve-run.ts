@@ -50,9 +50,9 @@ export function resolveConfig(
  * built-ins only, keeping the options of one the config configured: a
  * third-party reporter has no id to name on the command line, so a CI flag
  * choosing `list,junit` never drops the upload a config asked for. One
- * reporter at most prints to each terminal stream: a `list` or `dot` id,
- * or its factory called without a `stream`, prints to stderr beside
- * `json`, leaving stdout to the report. An id named twice runs once.
+ * interactive reporter at most shows the run. A `list`, `dot`, or `line` id, or
+ * its factory called without a `stream`, prints to stderr beside `json`,
+ * leaving stdout to the report. An id named twice runs once.
  * Workers resolve this too and never call a reporter, which the factories
  * allow: constructing one has no side effects.
  */
@@ -65,7 +65,7 @@ function resolveReporters(raw: E2EConfig, cli: RunCliOverrides): readonly Report
     );
   }
   // A built-in named by id is made once the selection is known, since
-  // `list` and `dot` print to stderr beside `json`.
+  // `list`, `dot`, and `line` print to stderr beside `json`.
   type Built = { readonly id: BuiltinReporter; readonly reporter: Reporter | undefined };
   const builtins: Built[] = [];
   const others: Reporter[] = [];
@@ -89,13 +89,20 @@ function resolveReporters(raw: E2EConfig, cli: RunCliOverrides): readonly Report
         });
   const stream = chosen.some((entry) => entry.id === 'json') ? 'stderr' : 'stdout';
   const reporters = [...chosen.map((entry) => entry.reporter ?? builtinReporter(entry.id, stream)), ...others];
-  for (const printsTo of ['stdout', 'stderr'] as const) {
-    const printers = reporters.filter((reporter) => reporter.printsTo === printsTo);
-    if (printers.length < 2) continue;
-    const names = printers.map((reporter) => `"${reporter.name}"`);
+  const showing = reporters.filter((reporter) => reporter.interactive === true);
+  if (showing.length > 1) {
+    const names = showing.map((reporter) => `"${reporter.name}"`);
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `reporters ${names.slice(0, -1).join(', ')} and ${names.at(-1)} both print to ${printsTo}, where they would garble each other; run one of them`,
+      `reporters ${names.slice(0, -1).join(', ')} and ${names.at(-1)} are all interactive: each would show the run in the terminal, everything printed twice; run one of them`,
+    );
+  }
+  // A view by id moved to stderr above; one told to print to stdout would garble the document.
+  const onStdout = chosen.find((entry) => entry.reporter !== undefined && builtinMark(entry.reporter)?.stream === 'stdout');
+  if (onStdout !== undefined && chosen.some((entry) => entry.id === 'json')) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `reporters "${onStdout.id}" and "json" both print to stdout, where the run would garble the report; drop the stream option or run one of them`,
     );
   }
   return reporters;
@@ -118,7 +125,7 @@ function resolveReporter(entry: unknown, label: string): BuiltinReporter | Repor
   if (!isReporter(entry)) {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `${label} must be a built-in id (${BUILTIN_REPORTERS.join(', ')}) or a reporter: a name, an optional printsTo of "stdout" or "stderr", and at least one of onEvent, onOutput, onStepPrompt, reportFiles, onRunFinished, and onSummary`,
+      `${label} must be a built-in id (${BUILTIN_REPORTERS.join(', ')}) or a reporter: a name, an optional interactive flag, and at least one of onEvent, reportFiles, onRunFinished, and onSummary`,
     );
   }
   return entry;
@@ -172,12 +179,12 @@ function isTestFilter(value: unknown): value is TestFilter {
   return typeof name === 'string' && typeof filter === 'function';
 }
 
-/** Structural reporter check: a non-empty name, `printsTo` a terminal stream when present, and at least one hook, each a function when present. */
+/** Structural reporter check: a non-empty name, `interactive` a boolean when present, and at least one hook, each a function when present. */
 function isReporter(value: unknown): value is Reporter {
   if (typeof value !== 'object' || value === null) return false;
-  const { name, printsTo, onEvent, onOutput, onStepPrompt, reportFiles, onRunFinished, onSummary } = value as Record<keyof Reporter, unknown>;
+  const { name, interactive, onEvent, reportFiles, onRunFinished, onSummary } = value as Record<keyof Reporter, unknown>;
   if (typeof name !== 'string' || name.length === 0) return false;
-  if (printsTo !== undefined && printsTo !== 'stdout' && printsTo !== 'stderr') return false;
-  const hooks = [onEvent, onOutput, onStepPrompt, reportFiles, onRunFinished, onSummary];
+  if (interactive !== undefined && typeof interactive !== 'boolean') return false;
+  const hooks = [onEvent, reportFiles, onRunFinished, onSummary];
   return hooks.every((hook) => hook === undefined || typeof hook === 'function') && hooks.some((hook) => hook !== undefined);
 }

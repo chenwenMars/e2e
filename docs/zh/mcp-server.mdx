@@ -116,18 +116,29 @@ A test using this locator would fail with LOCATOR_NOT_FOUND. ...
 Use: screen.getByRole("button", "Sign in")
 ```
 
-## 如何运行测试代码行
+## 如何运行代码
 
-智能体通过 `run_code` 在已打开的会话中运行操作未输出的代码行，例如断言。通过的代码行会加入 `test_lines` 草稿。错误的代码行会在几秒内失败，无需运行测试：
+智能体通过 `run_code` 在已打开的会话中运行 JavaScript：遍历列表的循环、读取并参与计算的值、操作未输出的断言。一次调用可替代多次单独操作：
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
+通过的代码行会加入 `test_lines` 草稿。错误的代码行会在几秒内失败，无需运行测试：
 
 ```text wrap
-Statement 2 of 2 failed; the one before it passed. Each statement waited at most 5000 ms. ...
-1. passed: await screen.getByLabel('Full name').fill('Grace Hopper');
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
 2. failed: await screen.getByRole('button', 'Save').tap();
    LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
 ```
 
-服务器会解析这些代码行，绝不会将它们作为 JavaScript 求值。参阅 [`run_code`](/reference/mcp#run_code)。
+代码是在测试体所得对象上运行的普通 JavaScript。参阅 [`run_code`](/reference/mcp#run_code)。
 
 ## 修复失败的测试
 

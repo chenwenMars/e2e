@@ -53,7 +53,8 @@ target, so a test can `requires: ['browser']`. Browser options:
 such as `de-DE` and `Europe/Berlin`), `colorScheme` and `reducedMotion` (the
 `prefers-color-scheme` and `prefers-reduced-motion` every page reports, from
 first paint; `browser.emulateMedia` changes them in a test), `initScripts` (scripts every document
-runs before the page's own), and
+runs before the page's own), `webmcp` (`true` launches Chromium or Firefox with
+WebMCP on, for `browser.webmcp`), and
 `connect` — attach to a remote browser over CDP instead of launching a local
 one.
 

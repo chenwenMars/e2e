@@ -156,6 +156,13 @@ mobile({ platform: 'ios', device: ['iPhone 17', 'iPhone 17 Pro'] });
   agent-device session is skipped. A booted device nothing holds, such as
   one you are using by hand, is still in the pool: name the device to keep
   the run off it.
+- A booted device another agent-device session claims between the inventory
+  and the warm-up, such as a host that opened at the same moment, is swapped
+  for the next free one. With none free, a run with several workers goes on
+  with one worker fewer. A device that was only busy with a short-lived
+  agent-device command, such as an install, stays bound, and its worker
+  tries it again when it starts. A named device or a provider's lease is
+  never swapped.
 - [Hosted devices](/mobile#hosted-devices) has the `DeviceProvider` contract
   and an example provider.
 
@@ -252,7 +259,7 @@ mobile({ platform: 'ios', transition: 800 }); // default: 500
 
 If the control changes during the wait, the action finds it again within its timeout before acting.
 
-`back`, `home`, `alert`, `dismissKeyboard`, `setOrientation`, and `fold` on
+`back`, `home`, `shake`, `alert`, `dismissKeyboard`, `setOrientation`, and `fold` on
 [`device`](#device) change the screen, so they count as actions for this
 budget the way a tap does. A control that arrives with the screen they reveal
 waits out the budget before the next action lands on it.
@@ -457,6 +464,8 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`viewport`](#viewport) | `Promise<ViewportSize>` |
 | [`home`](#home) | `Promise<void>` |
 | [`back`](#back) | `Promise<void>` |
+| [`pressRemote`](#pressremote) | `Promise<void>` |
+| [`shake`](#shake) | `Promise<void>` |
 | [`alert`](#alert) | `Promise<void>` |
 | [`dismissKeyboard`](#dismisskeyboard) | `Promise<void>` |
 | [`isKeyboardShown`](#iskeyboardshown) | `Promise<boolean>` |
@@ -464,7 +473,7 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`setClipboard`](#setclipboard) | `Promise<void>` |
 
 Every async method is a recorded step named `device.<method>`, bounded by
-`config.actionTimeout`. `back`, `home`, `alert`, `dismissKeyboard`,
+`config.actionTimeout`. `back`, `home`, `pressRemote`, `shake`, `alert`, `dismissKeyboard`,
 `setOrientation`, and `fold` count as actions for the
 [`transition`](#transition) budget. Each entry below shows its member's
 declaration; the types they use are under [Types](#device-fixture).
@@ -964,6 +973,54 @@ back(): Promise<void>;
 await device.back();
 ```
 
+#### `pressRemote`
+
+```ts
+/**
+ * Presses one TV remote button: the D-pad's `'up'`, `'down'`, `'left'`,
+ * `'right'`, and `'select'`, `'back'`, `'menu'`, `'home'`, and the media
+ * keys such as `'play-pause'`. Android TV takes every button and an Apple
+ * TV the D-pad, `back`, `menu`, and `home`, where `back` and `menu` are the
+ * same Siri Remote button; any other button or device is
+ * `UNSUPPORTED_CAPABILITY`. A name outside the list is `INVALID_ARGUMENT`.
+ */
+pressRemote(key: RemoteKey): Promise<void>;
+```
+
+```ts
+await device.pressRemote('down');
+await device.pressRemote('select');
+await device.pressRemote('play-pause');
+```
+
+Most Android TV remotes carry one Play button that toggles: that is
+`play-pause`. `play` is the dedicated Play key.
+
+#### `shake`
+
+```ts
+/**
+ * Shakes the device once: the simulator's shake gesture on an iPhone or
+ * iPad simulator, a swing of the accelerometer on an Android phone or
+ * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
+ * device a provider drives through its own backend. It resolves once the
+ * shake is sent, so assert on what the app shows next.
+ */
+shake(): Promise<void>;
+```
+
+```ts
+await device.shake();
+await expect(screen.getByText('Report a problem')).toBeVisible();
+```
+
+An app reads the shake the way it reads one on a real device: a React Native dev build opens its dev menu, and an app with a shake handler runs it.
+
+| Throws | When |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | The device is not one agent-device can shake: a physical device, a TV or watch target, or a device a provider drives through its own backend, such as a WebDriver session or a provider's own iOS simulator. |
+| `ENGINE_FAILURE` | The Android emulator's console refused the shake, as an image with no accelerometer does. |
+
 #### `alert`
 
 ```ts
@@ -1087,6 +1144,22 @@ tools: mobileTools(iphone, pixel),
 | `open_app` | gap | Bring an app to the foreground by id, optionally relaunched. Without an id it returns to the target's app. A link is refused, as it is for `device.openApp`. |
 | `swipe` | gap | Free-form swipe between two points in logical pixels. |
 | `alert` | gap | Accept or dismiss a system alert; prefer a listed button, whose tap replays. |
+
+`tvTools(...engines)` adds the TV remote for engines that drive an Android TV
+or an Apple TV. It is a pack of its own, so a config with no TV offers no
+remote.
+
+```ts
+tools: { ...mobileTools(tv), ...tvTools(tv) },
+```
+
+Tools are offered by platform. When a phone target shares the TV's platform,
+put `tvTools` on a [named agent](/reference/config#agents) and select it on
+the TV tests.
+
+| Tool | Replay | Purpose |
+| --- | --- | --- |
+| `tv_remote` | gap | Press a [remote button](#pressremote) by `key`, up to 20 `times` in one call. |
 
 | Throws | When |
 | --- | --- |
@@ -1341,6 +1414,25 @@ export type DevicePermission =
   | 'siri'
   | 'media-library';
 
+/** A TV remote key `device.pressRemote` takes. */
+export type RemoteKey =
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'select'
+  | 'back'
+  | 'menu'
+  | 'home'
+  | 'play'
+  | 'pause'
+  | 'play-pause'
+  | 'stop'
+  | 'rewind'
+  | 'fast-forward'
+  | 'next'
+  | 'previous';
+
 /** Orientations `setOrientation` accepts. */
 export type DeviceOrientation = 'portrait' | 'portrait-upside-down' | 'landscape-left' | 'landscape-right';
 
@@ -1408,7 +1500,7 @@ export interface DeviceSelection {
 `beforeEach`, `afterEach`, `beforeAll`, and `afterAll`, typed with the `device`
 fixture. A device keeps its state between tests, so `device`, `app`, and
 `screen` are [worker fixtures](/reference/test#worker-fixtures), and
-`beforeAll` and `afterAll` get them. `mobileTools` comes from
+`beforeAll` and `afterAll` get them. `mobileTools` and `tvTools` come from
 `@e2e-dev/mobile/tools`.
 
 ## Related

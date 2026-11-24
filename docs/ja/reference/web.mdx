@@ -57,6 +57,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 | [`colorScheme`](#media-emulation) | `'light' \| 'dark' \| 'no-preference'` | ブラウザ自身の値 |
 | [`reducedMotion`](#media-emulation) | `'reduce' \| 'no-preference'` | ブラウザ自身の値 |
 | [`initScripts`](#init-scripts) | `WebInitScript[]` | - |
+| [`webmcp`](#webmcp) | `boolean` | `false` |
 
 - `web()` ターゲットには `app.url` が必須です。デバイス用のキー（`bundleId`、`appPath`、`launchArguments`）は拒否します。`app.permissions` は、ブラウザが許可できる権限名に対する `'grant'` だけを受け付けます。[`permissions`](/reference/config#permissions) を参照してください。
 - `app.url` を持つターゲットは `browser` ターゲットなので、`requires: ['browser']` で Web ターゲットを選択できます。
@@ -400,6 +401,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`waitForDownloads`](#waitfordownloads) | `Promise<{ path, absolutePath, … }[]>` |
 | [`keyboard`](#keyboard) | `{ press, down, up, type }` |
 | [`mouse`](#mouse) | `{ move, wheel, down, up }` |
+| [`webmcp`](#webmcp) | `{ tools, callTool }` |
 
 各メンバーの時間上限は[設定](/reference/config)で決まります。
 
@@ -407,7 +409,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 - `waitForURL`: [`assertionTimeout`](/reference/config#assertiontimeout)。
 - それ以外: [`actionTimeout`](/reference/config#actiontimeout)。`locator` と `frameLocator` はページに触れず、時間上限を使いません。
 
-`goto`、`reload`、`back`、`forward`、`waitForResponse`、`waitForPopup`、`waitForDownload`、`waitForDownloads` は、`{ timeout }` で上書きできます。ただし、テストの期限（`afterEach` 内では `cleanupTimeout`）が上限で、`0` はその期限まで待ちます。`url`、`title`、`evaluate`、`addInitScript`、`route`、`unroute`、`unrouteAll`、`cookies`、`setCookies`、`clearCookies`、`setViewport`、`emulateMedia`、`onDialog`、`newTab`、`BrowserTab` のメソッド、`keyboard.*`、`mouse.*` に上書きオプションはありません。
+`goto`、`reload`、`back`、`forward`、`waitForResponse`、`waitForPopup`、`waitForDownload`、`waitForDownloads` は、`{ timeout }` で上書きできます。ただし、テストの期限（`afterEach` 内では `cleanupTimeout`）が上限で、`0` はその期限まで待ちます。`url`、`title`、`evaluate`、`addInitScript`、`route`、`unroute`、`unrouteAll`、`cookies`、`setCookies`、`clearCookies`、`setViewport`、`emulateMedia`、`onDialog`、`newTab`、`BrowserTab` のメソッド、`keyboard.*`、`mouse.*`、`webmcp.*` に上書きオプションはありません。
 
 #### `goto`
 
@@ -902,6 +904,61 @@ await browser.mouse.up();
 
 `wheel` を含む各メソッドの説明は [`Browser`](#browser-interface) にあります。
 
+#### WebMCP
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) は、ページが `document.modelContext`（Firefox では `navigator.modelContext`）にツールを登録するための実験的なブラウザ API です。`browser.webmcp` は、アクティブなタブのページが登録したツールを一覧し、モデルを介さずにテストコードから呼び出します。
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{ engine: web({ webmcp: true }), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+```ts
+const tools = await browser.webmcp.tools();
+expect(tools.map((tool) => tool.name)).toContain('add');
+
+const result = await browser.webmcp.callTool('add', { a: 2, b: 40 });
+expect(result).toEqual({ content: [{ type: 'text', text: '42' }] });
+```
+
+- `web({ webmcp: true })` は、Chromium を `--enable-features=WebMCP` 付きで、Firefox を `dom.modelcontext` の設定付きで起動します。有効にすると、ほとんどのブラウザにまだない API がすべてのページに見えるため、デフォルトでは無効です。WebKit は WebMCP に対応していません。このオプションはエンジンが起動するブラウザ専用です。[`connect`](#connect) やプロバイダー経由のブラウザは、その引数を付けて自分で起動してください。
+- ページはセキュアコンテキスト（`https:` または `localhost`）である必要があります。そうでなければ `document.modelContext` がなく、どちらの呼び出しも `UNSUPPORTED_CAPABILITY` で失敗します。エンジンはページ自体に問い合わせるため、`connect` やプロバイダー経由のブラウザが WebMCP なしで起動されている場合も同じように失敗します。
+- `tools()` は、現在登録されているツールを返します。各ツールには `name`、`description` と、ページが指定した場合は `inputSchema`、`annotations` が含まれます。何も登録していないページでは空のリストになります。順序はブラウザ依存で、Chromium と Firefox で異なります。
+- `callTool(name, input)` は、ツールの `execute` が解決した値で解決します。通常は `content` 配列を持つオブジェクトです。`input` は JSON オブジェクトで、省略するか `null` を渡すと、ツールには空のオブジェクトが渡されます。`isError: true` の結果はそのまま返り、何も返さないツールでは `null` になります。結果は JSON なので、ツールが `undefined` のままにしたプロパティは含まれません。Chromium は結果を JSON テキストとして渡すため、`'42'` のような JSON の文字列で解決するツールの結果は、パースされた値になります。
+- ページを別の URL に遷移させるツールは、応答する前に呼び出しを終わらせます。呼び出しは新しいページの読み込み後に `ACTION_FAILED` で失敗し、ツールが実行された可能性があることをメッセージで伝えます。時間切れの時点でまだ実行中のツールも同じように失敗します。
+- どちらもアクティブなタブのメインフレームが対象で、その中のフレームは対象外です。
+- 名前、説明、スキーマ、結果はページ由来なので、信頼できない入力として扱ってください。
+
+```ts
+/** A tool a page registered through WebMCP, as the page describes it. */
+export interface WebMcpTool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool's input, when the page gave one. */
+  readonly inputSchema?: JsonValue;
+  /** Hints the page gives about the tool. */
+  readonly annotations?: {
+    /** The tool changes no state. */
+    readonly readOnly?: boolean;
+    /** The tool's output may carry third-party content. */
+    readonly untrustedContent?: boolean;
+    /** The tool takes a consequential action, such as placing an order. */
+    readonly consequential?: boolean;
+  };
+}
+```
+
+| エラー | 発生条件 |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | ページに WebMCP がない場合。ブラウザが WebMCP なしで動作しているか、ページがセキュアコンテキストではありません。どちらであるかと対処方法はメッセージに記載されます。 |
+| `ACTION_FAILED` | `callTool`: その名前のツールをページが登録していない場合（登録済みのツールがメッセージに列挙されます）、ツールが例外を投げた場合、またはページの遷移や時間切れによってツールが応答する前に呼び出しが終わった場合。 |
+| `INVALID_ARGUMENT` | `callTool`: `name` が空でない文字列でない場合、`input` が JSON オブジェクトでない場合、またはツールが実行され、JSON で表せない値（`Date`、`BigInt`、`NaN`）で解決した場合。 |
+| `INVALID_CONFIG` | `connect`、ブラウザプロバイダー、または WebKit と `web({ webmcp: true })` を併用した場合。 |
+
 ## ブラウザのインストール
 
 パッケージは `playwright-core` を完全一致のバージョンに固定しているため、エンジンは常に検証済みの Playwright で動きます。アプリ自身が Playwright に依存する場合は、別のコピーを保持します。バージョンが一致するときだけ、ブラウザのキャッシュを共有します。
@@ -1063,6 +1120,8 @@ export interface WebOptions {
   readonly reducedMotion?: WebMedia['reducedMotion'];
   /** Scripts every document runs before the page's own. See [Init scripts](#init-scripts). */
   readonly initScripts?: readonly WebInitScript[];
+  /** Launches Chromium or Firefox with WebMCP, for `browser.webmcp`. See [WebMCP](#webmcp). */
+  readonly webmcp?: boolean;
 }
 ```
 
@@ -1193,6 +1252,13 @@ export interface Browser extends Expectable<BrowserExpectation> {
     down(): Promise<void>;
     /** Releases the primary pointer button. */
     up(): Promise<void>;
+  };
+  /** The tools the active tab's page registers through WebMCP. See [WebMCP](#webmcp). */
+  readonly webmcp: {
+    /** Returns the tools the page has registered now. */
+    tools(): Promise<readonly WebMcpTool[]>;
+    /** Calls one tool and resolves with what its `execute` resolved to. */
+    callTool(name: string, input?: { readonly [key: string]: JsonValue } | null): Promise<JsonValue>;
   };
 }
 ```

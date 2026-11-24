@@ -23,7 +23,6 @@ import {
   classifyError, ConfigurationError, E2EError, InfrastructureError, serializeError, TestError, TestTimeoutError, type ErrorPhase, type SerializedError,
 } from '@e2e-dev/core/lib/internal/errors';
 import type { ExpectedFailureInfo } from '@e2e-dev/core/lib/internal/expected-failure';
-import { lateTimeoutError } from '@e2e-dev/core/lib/internal/test-timeout';
 import { isRuntimeSkip, type CaughtRuntimeSkip } from '../internal/skip.ts';
 import { settleExpectedFailure } from './expected-failure.ts';
 import { withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
@@ -303,9 +302,9 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
           soft,
           polls,
           expectFailure: (reason) => (expectedFailure ??= reason),
-          setTimeout: (timeoutMs) => {
-            if (phase !== 'beforeEach' && phase !== 'body') throw lateTimeoutError();
-            return timeout.set(timeoutMs);
+          setTimeout: (update) => {
+            if (phase !== 'beforeEach' && phase !== 'body') return 'teardown';
+            return timeout.set(update(timeout.timeoutMs)) ? 'set' : 'ended';
           },
         },
         publication.signal,
@@ -485,7 +484,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
         try {
           publishAttempt({
             attemptId, owner: 'host', testKind: 'test', assertionTimeout: config.assertionTimeout, toPass: config.toPass,
-            budget, soft, polls: new PollScope('the test teardown'), setTimeout: () => { throw lateTimeoutError(); },
+            budget, soft, polls: new PollScope('the test teardown'), setTimeout: () => 'teardown',
             recordSecondaryError: (error) => { retryErrors.push(serialize(error, 'afterEach')); },
           }, publication.signal);
           steps.phase = 'afterEach';

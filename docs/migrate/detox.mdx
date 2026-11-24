@@ -141,6 +141,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `device.launchApp({ url })`, `device.openURL({ url })` | `device.openLink(url)` |
 | `device.terminateApp()`, `sendToHome()`, `pressBack()` | `device.closeApp()`, `home()`, `back()` |
 | `device.setLocation(lat, lon)`, `setOrientation('landscape')` | `device.setLocation({ latitude, longitude })`, `setOrientation('landscape-left')` |
+| `device.shake()` | `device.shake()`, on a local simulator or emulator |
 | `device.setBiometricEnrollment(true)` | `device.enrollBiometrics('faceid', true)` |
 | `device.matchFace()`, `unmatchFace()`, `matchFinger()`, `unmatchFinger()` | `device.setBiometrics('faceid' \| 'touchid', 'match' \| 'nonmatch')` |
 | `device.takeScreenshot()` | `app.screenshot('label')`, or [`toHaveScreenshot`](/visual-testing) to compare |
@@ -169,7 +170,6 @@ on purpose.
 | `launchApp({ languageAndLocale })` | On iOS, `app.launchArguments: ['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR']`, see [Run the app in another language](/mobile#run-the-app-in-another-language) |
 | Jest `globalSetup`, `globalTeardown` | Start dependencies before the run |
 | `device.reverseTcpPort()` | Run `adb reverse` in a CI step |
-| `device.shake()` | - |
 | `launchArgs` as one key-value map | `['-key', 'value']` on iOS, `['--es', 'key', 'value']` on Android |
 | `.getAttributes()` | `.textContent()`, `.inputValue()`, `.isEnabled()`, `.isVisible()`, `.isChecked()`, `.boundingBox()` |
 | `device.setStatusBar()` | `xcrun simctl status_bar`. `toHaveScreenshot` holds the status bar fixed |

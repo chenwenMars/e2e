@@ -6,6 +6,8 @@
  * - open for more than a month with fewer than 2 positive reactions, unless a
  *   maintainer approved it or it was reopened after an earlier sweep.
  *
+ * A PR labeled `maintainer takeover` is never closed.
+ *
  * `--dry-run` lists what it would close. `--max-close <n>` caps the closes
  * per run (default 20).
  */
@@ -20,8 +22,8 @@ import {
   isCommunity,
   isMaintainer,
   isStale,
+  outstanding,
   positiveReactions,
-  problems,
   type OpenPullRequest,
 } from './rules.ts';
 
@@ -108,15 +110,15 @@ async function close(pr: Open, reason: string, after: () => Promise<void>): Prom
 }
 
 /**
- * Settles a flagged PR on its live title and body: clears a fixed one, closes
+ * Settles a flagged PR on its live title, body, and labels: clears a fixed or taken over one, closes
  * one still failing after the grace period, and re-flags one whose comment is gone.
  * Returns false once the close cap is reached.
  */
 async function settleFlagged(pr: Open): Promise<boolean> {
-  const found = problems(await livePullRequest(pr.number));
+  const found = outstanding(await livePullRequest(pr.number));
   const existing = await policyComment(pr.number);
   if (found.length === 0) {
-    console.log(`${dryRun ? 'would clear' : 'clearing'} #${pr.number}: compliant now`);
+    console.log(`${dryRun ? 'would clear' : 'clearing'} #${pr.number}: nothing left to fix`);
     if (!dryRun) await clear(pr.number, existing);
     return true;
   }

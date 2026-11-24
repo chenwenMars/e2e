@@ -466,8 +466,16 @@ export class HeldTestTools {
           call.errorCode = redact(classifyError(cause).code);
         }
       },
+      onRunCodeFailed: (code) => {
+        const call = heldTestToolCallScope.getStore();
+
+        if (call !== undefined) {
+          call.errorCode = redact(code);
+        }
+      },
       runCode: {
-        engineFixtures: Object.keys(this.target.engine?.fixtures ?? {}),
+        // A held test's attempt builds `app` alone, so the code gets no engine fixture to call.
+        engineFixtures: [],
         attempt: (requestSignal) => {
           const statementBudget = new AttemptBudget(requestSignal ?? signal, new Deadline(Number.POSITIVE_INFINITY));
           const steps = new StepRecorder(this.attemptId, { redact });

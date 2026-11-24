@@ -5,13 +5,13 @@
  * document; there is no plaintext export.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { EngineState } from '../engine/index.ts';
 import { ConfigurationError, TestError } from '../internal/errors.ts';
 import { rejectUnknownOptions } from '../internal/options.ts';
-import { canonicalJson, timestamp } from '../internal/ids.ts';
+import { timestamp } from '../internal/ids.ts';
 import type { RestoredState } from '../run/engine-sessions.ts';
 import type { SavedSecrets } from '../run/secrecy.ts';
+import { openSessionPayload, sealSessionPayload, type SealedState } from '../run/sessions.ts';
 
 /** What a state is bound to: it restores only on a host of the same engine, platform, and app. */
 export interface StateIdentity {
@@ -32,20 +32,7 @@ interface StateDocument {
   expiresAt?: string;
   /** Authenticated, never encrypted: which secrets the payload carries values for. */
   secrecy: { names: string[] };
-  state: {
-    format: string;
-    version: number;
-    algorithm: 'A256GCM';
-    iv: string;
-    tag: string;
-    ciphertext: string;
-  };
-}
-
-/** The encrypted payload: the engine's state data beside the secret values the document names. */
-interface StatePayload {
-  data: unknown;
-  secrets: [string, string][];
+  state: SealedState;
 }
 
 const KEY_BYTES = 32;
@@ -87,25 +74,19 @@ export class SessionState {
     rejectUnknownOptions('SessionState.export', options, KEY_OPTION_KEYS);
     const key = requireKey(options, 'SessionState.export');
     const { identity, saved } = held.get(this)!;
-    const iv = randomBytes(12);
-    const unsealed = {
-      schemaVersion: 'session-state-1' as const,
-      engine: identity.engine,
-      platform: identity.platform,
-      appIdentity: identity.appIdentity,
-      createdAt: timestamp(),
-      ...(saved.state.expiresAt === undefined ? {} : { expiresAt: timestamp(new Date(saved.state.expiresAt)) }),
-      secrecy: { names: [...new Set(saved.secrets.map(([name]) => name))] },
-      state: { format: saved.state.format, version: saved.state.version, algorithm: 'A256GCM' as const, iv: iv.toString('base64') },
-    };
-    const cipher = createCipheriv('aes-256-gcm', key, iv);
-    cipher.setAAD(Buffer.from(canonicalJson(unsealed), 'utf8'));
-    const payload: StatePayload = { data: saved.state.data, secrets: saved.secrets.map(([name, value]) => [name, value]) };
-    const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(payload), 'utf8')), cipher.final()]);
-    const document: StateDocument = {
-      ...unsealed,
-      state: { ...unsealed.state, tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') },
-    };
+    const document: StateDocument = sealSessionPayload(
+      {
+        schemaVersion: 'session-state-1' as const,
+        engine: identity.engine,
+        platform: identity.platform,
+        appIdentity: identity.appIdentity,
+        createdAt: timestamp(),
+        ...(saved.state.expiresAt === undefined ? {} : { expiresAt: timestamp(new Date(saved.state.expiresAt)) }),
+      },
+      saved.state,
+      saved.secrets,
+      key,
+    );
     return new TextEncoder().encode(`${JSON.stringify(document)}\n`);
   }
 
@@ -124,17 +105,10 @@ export class SessionState {
     if (document.expiresAt !== undefined && Date.parse(document.expiresAt) <= Date.now()) {
       throw new ConfigurationError('SESSION_EXPIRED', 'the session state is expired');
     }
-    const { tag, ciphertext, ...unsealedState } = document.state;
-    let plaintext: string;
-    try {
-      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(document.state.iv, 'base64'));
-      decipher.setAAD(Buffer.from(canonicalJson({ ...document, state: unsealedState }), 'utf8'));
-      decipher.setAuthTag(Buffer.from(tag, 'base64'));
-      plaintext = Buffer.concat([decipher.update(Buffer.from(ciphertext, 'base64')), decipher.final()]).toString('utf8');
-    } catch (cause) {
-      throw new ConfigurationError('SESSION_INVALID', 'the session state failed authentication: a different key, or the document was changed', { cause });
-    }
-    const payload = parsePayload(plaintext);
+    const payload = openSessionPayload(document, key, {
+      authFailed: 'the session state failed authentication: a different key, or the document was changed',
+      invalidPayload: 'the session state has an unexpected payload',
+    });
     return new SessionState(
       { engine: document.engine, platform: document.platform, appIdentity: document.appIdentity },
       {
@@ -219,17 +193,4 @@ function parseDocument(text: string): StateDocument {
     throw new ConfigurationError('SESSION_INVALID', 'the session state is not a session-state-1 document');
   }
   return document as StateDocument;
-}
-
-/** Parses an authenticated payload; one `export` did not write is `SESSION_INVALID`. */
-function parsePayload(text: string): StatePayload {
-  const parsed: unknown = JSON.parse(text);
-  if (
-    typeof parsed !== 'object' || parsed === null || !('data' in parsed) || !('secrets' in parsed) ||
-    !Array.isArray(parsed.secrets) ||
-    !parsed.secrets.every((entry) => Array.isArray(entry) && entry.length === 2 && entry.every(isString))
-  ) {
-    throw new ConfigurationError('SESSION_INVALID', 'the session state has an unexpected payload');
-  }
-  return parsed as StatePayload;
 }

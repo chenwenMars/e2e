@@ -233,7 +233,7 @@ mobile({ platform: 'ios', transition: 800 }); // default: 500
 
 如果控件在等待期间变化，操作会在自身超时范围内重新查找控件，再执行操作。
 
-[`device`](#device) 上的 `back`、`home`、`alert`、`dismissKeyboard`、`setOrientation` 和 `fold` 会改变屏幕，因此在此预算中与点击一样计为操作。随它们打开的屏幕一起出现的控件，会等待该预算耗尽后才接受下一次操作。
+[`device`](#device) 上的 `back`、`home`、`shake`、`alert`、`dismissKeyboard`、`setOrientation` 和 `fold` 会改变屏幕，因此在此预算中与点击一样计为操作。随它们打开的屏幕一起出现的控件，会等待该预算耗尽后才接受下一次操作。
 
 `fill` 和 `clear` 会在输入前重新读取字段。字段缺失、安全状态变化或捕获不完整时，会在修改前返回 `NODE_STALE`，然后在重新观察后重试。非输入测试目标返回 `UNSUPPORTED_CAPABILITY`。iOS 的 `other` 是平台未分类元素的类型；当它包含值或仅包含文本时，可以向其中输入，因为自绘字段（Compose Multiplatform、Flutter）可能以这种形式呈现。
 
@@ -392,13 +392,14 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`foregroundApp`](#foregroundapp) | `Promise<ForegroundApp>` |
 | [`home`](#home) | `Promise<void>` |
 | [`back`](#back) | `Promise<void>` |
+| [`shake`](#shake) | `Promise<void>` |
 | [`alert`](#alert) | `Promise<void>` |
 | [`dismissKeyboard`](#dismisskeyboard) | `Promise<void>` |
 | [`isKeyboardShown`](#iskeyboardshown) | `Promise<boolean>` |
 | [`clipboard`](#clipboard) | `Promise<string>` |
 | [`setClipboard`](#setclipboard) | `Promise<void>` |
 
-每个异步方法都会记录为名为 `device.<method>` 的步骤，受 `config.actionTimeout` 限制。`back`、`home`、`alert`、`dismissKeyboard`、`setOrientation` 和 `fold` 在 [`transition`](#transition) 预算中计为操作。以下各条目展示相应成员的声明；它们使用的类型见[类型](#device-fixture)。
+每个异步方法都会记录为名为 `device.<method>` 的步骤，受 `config.actionTimeout` 限制。`back`、`home`、`shake`、`alert`、`dismissKeyboard`、`setOrientation` 和 `fold` 在 [`transition`](#transition) 预算中计为操作。以下各条目展示相应成员的声明；它们使用的类型见[类型](#device-fixture)。
 
 | 抛出错误 | 发生条件 |
 | --- | --- |
@@ -852,6 +853,31 @@ back(): Promise<void>;
 ```ts
 await device.back();
 ```
+
+#### `shake`
+
+```ts
+/**
+ * Shakes the device once: the simulator's shake gesture on an iPhone or
+ * iPad simulator, a swing of the accelerometer on an Android phone or
+ * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
+ * device a provider drives through its own backend. It resolves once the
+ * shake is sent, so assert on what the app shows next.
+ */
+shake(): Promise<void>;
+```
+
+```ts
+await device.shake();
+await expect(screen.getByText('Report a problem')).toBeVisible();
+```
+
+应用读取这次摇动的方式与真实设备上的摇动相同：React Native 开发构建会打开开发菜单，带有摇动处理函数的应用会执行它。
+
+| 抛出错误 | 触发条件 |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | 设备不是 agent-device 能摇动的设备：真机、电视或手表目标，或提供方通过自己的后端（例如 WebDriver 会话或提供方自有的 iOS 模拟器）驱动的设备。 |
+| `ENGINE_FAILURE` | Android 模拟器的控制台拒绝了摇动，例如没有加速度传感器的镜像。 |
 
 #### `alert`
 

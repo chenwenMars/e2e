@@ -94,7 +94,8 @@ Without `attach`, starts a new attempt using the config, engine, and app
 command for the target. The app opens at its URL or starts fresh on a
 device from the [pinned app](/mobile#point-at-your-app). It installs
 no build, so a local device target needs `app.bundleId`. Returns the session
-id, the catalog, and the first observation. The summary above the observation
+id, the catalog, and the first observation. The catalog there gives the single
+actions by name and arguments only; [`tools`](#tools-2) describes each. The summary above the observation
 tells the agent to read the `writing-tests` guide (`e2e://guide/writing-tests`) before it
 writes or edits a test; the server's instructions say the same.
 
@@ -118,6 +119,7 @@ open_session {target: "web", headed: true}
 | `target` | string | no | The target to open. Otherwise `--target`, else the only target. |
 | `config` | string (path) | no | The config for this session, absolute or relative to the server's working directory (`cwd` in the client's MCP config). Otherwise `--config`, else discovered like `e2e run`. |
 | `headed` | boolean | no | `true` shows this session's browser or simulator, `false` hides it. Without it the session follows `--headed`. |
+| `path` | string | no | Where on the app URL to open instead of its root, such as `/settings/members`. The first observation is that page. Not with `test`. |
 | `test` | string | no | One test to run first, named like an `e2e run` positional. The session stops where the test stopped. See [Running a test](#running-a-test). |
 | `engine` | string or object | no | The session's engine in a directory with no config file, as a package name or `{package, export, options}`. See [Without a config](#without-a-config). |
 | `app` | object | no | The app under test for an `engine` session, as `url`, `bundleId`, or `appPath`. |
@@ -150,6 +152,8 @@ call {tool: "tap", args: {target: "n42"}, session: "<id>"}
 | `args` | object | no | The tool's arguments. |
 | `session` | string | while several are open | The session id. |
 
+- The tool's arguments can also sit beside `tool`, without `args`:
+  `call {tool: "tap", target: "n42"}`. Passing both is `INVALID_ARGUMENT`.
 - Arguments are validated against the tool's closed schema first. A wrong
   type, or an argument a tool that declares arguments does not declare, is
   `INVALID_ARGUMENT`, and nothing runs. `back` and `dismiss_keyboard` take no
@@ -186,7 +190,7 @@ What `call` can run depends on the session's target.
 | [Actions](#actions) | Act on an observed node |
 | [`dismiss_keyboard`](#dismiss_keyboard) | Hides the on-screen keyboard |
 | [`locate`](#locate) | Tries a semantic locator |
-| [`run_code`](#run_code) | Runs test statements |
+| [`run_code`](#run_code) | Runs JavaScript on the test API |
 | [`test_lines`](#test_lines) | Returns the session's test lines |
 | [`screenshot`](#screenshot) | Returns the masked viewport, optionally saved to a file |
 | [Point tools](#point-tools) | Act at a screenshot point |
@@ -253,63 +257,85 @@ Returns how many nodes match a semantic locator, which ones, and the
 
 #### `run_code`
 
-Runs test statements on the live session and returns each one's pass or
-failure, a read's value, and what changed on screen. Run a line here before
-you write it into a test.
+Runs JavaScript on the live session and returns what the code returned, what
+it logged, each line it ran on the app, and what changed on screen. Use it
+to read values, compute on them, and act in one call, and to run a line
+before you write it into a test.
 
 ```txt
-call {tool: "run_code", args: {code: "await screen.getByLabel('Email').fill('ada@example.com');\nawait expect(screen.getByRole('status')).toHaveText('Saved');"}}
+call {tool: "run_code", args: {code: "const rows = screen.getByRole('listitem');\nconst prices = (await rows.allTextContents()).map((text) => Number(text.match(/\\$([\\d.]+)/)[1]));\nawait expect(rows).toHaveCount(12);\nreturn prices;"}}
 ```
 
 | Input | Does |
 | --- | --- |
-| `code` | One or more statements as a test body writes them, separated by `;` or new lines. |
-| `timeout` | Optional. How long each statement may wait, in ms, 1 through 120000. Default `5000`. |
+| `code` | The body of an async function. `screen`, `app`, `expect`, `credentials`, `secrets`, `console`, and the engine's fixture (`browser` or `device`) are in scope. A session attached to a held test has no engine fixture. |
+| `timeout` | Optional. How long each action or matcher on `screen` waits by default, in ms, 1 through 120000. Without it: `5000`, or the config's timeout when shorter. |
 
-- Statements run in order on the session's `screen` and `app` fixtures, with
-  a test's waits, exactly-one rule, and matchers.
-- The first failure stops the call. The rest don't run, the app stays where
-  the passing statements left it, and the result is an error result with the
-  code and message a test would get.
-- The statements that pass, except reads, join the
-  [`test_lines`](#test_lines) draft as written, in the order they ran.
-- Each statement waits at most `timeout`, its own `timeout` option included.
-  The config's [`actionTimeout`](/reference/config#actiontimeout) and
-  [`assertionTimeout`](/reference/config#assertiontimeout) apply when
-  shorter. The cap also covers `app.open`, `app.restart`, and
-  `app.clearState`, so raise it for a slow first load or a device relaunch.
-- `timeout` doesn't stop a regular expression mid-match. One that
-  backtracks, such as `/^(\w+\s?)*$/` on a long line, blocks the server
-  until it finishes.
-- Reads and matchers see `<secret:name>` where a secret value is.
-- A secret `fill` passes the checks `type_secret` runs, on the field it lands
-  on: a configured secret, an enabled editable field, and a password field
-  for a password.
+```txt
+Returned: [12.5,18,24]
+Test lines: 2, 1 read not listed.
+1. await expect(screen.getByRole('listitem')).toHaveCount(12);
+```
 
-The code is parsed, never run as JavaScript. The grammar takes:
+- The code is ordinary JavaScript in the server's Node process, and the
+  objects in scope are the ones a test body gets. A call waits, matches,
+  and fails as it does in a test, and a function you pass, such as a
+  `browser.route` handler, is called like a test's.
+- `return` a JSON value to get it back. `console.log` lines come back too.
+- A line that fails throws the error a test gets, with its `code`. Uncaught,
+  it stops the code and the result is an error result. The app stays where
+  the passing lines left it.
+- `await` each line. Lines without `await` start together and don't run in
+  order, so a read can finish before the tap above it. A failure nothing
+  awaited fails the call. So does a
+  promise the code left to reject, and an error a `setTimeout` callback
+  throws: the call ends there. An error a handler leaves after its call ended
+  is a warning in the server's log.
+- Code still running after the call returns, such as an async function the
+  code started and didn't await, keeps acting on the app. Those actions are
+  not in the result or the draft.
+- `expect.soft` keeps its failures for the end of the call, which then fails
+  with them.
+- The result lists the lines that ran. A read shows its value there when the
+  code returns nothing and logs nothing. Otherwise `return` the value.
+- The lines that pass, except reads, join the [`test_lines`](#test_lines)
+  draft in the order they ran. A read is a call on `screen` or a locator
+  that resolves with a value. A call on `app` or the engine's fixture is
+  drafted whatever it returns, since it may act too. An object a call
+  resolves with, such as a new tab, gets a `const` line that names it. A
+  line that passes a function the server calls, such as a route handler, is
+  drafted with the function's text and a comment: declare the variables it
+  uses in the test. What the function itself calls is not drafted again. A
+  passing `expect(value)` leaves no line.
+- Each action or matcher on `screen` waits `timeout` by default. A `timeout`
+  in a line's own options replaces it. Without `timeout`, each waits 5000 ms,
+  or the config's [`actionTimeout`](/reference/config#actiontimeout) or
+  [`assertionTimeout`](/reference/config#assertiontimeout) when that is
+  shorter. `app` and the engine's fixture wait as they do in a test.
+- `await import()` takes a Node built-in or a file's absolute path. A
+  relative path resolves from e2e's own install, not the project.
+- The whole call may run 5 minutes, the lines it left running included. Code that never yields, such as
+  `while (true) {}`, blocks the server.
+- The result shows `<secret:name>` where a configured secret value is.
 
-| Part | Accepted |
-| --- | --- |
-| Statement | An optional `await`, then a chain on `screen` or `app` that ends in an action or a read, or `expect(locator)` with an optional `.not` and one matcher |
-| Locator | `screen.getByRole`, `getByLabel`, `getByText`, `getByPlaceholder`, `getByTestId`, or `getByDisplayValue`, narrowed with `filter`, `or`, `first`, `last`, `nth`, and more `getBy*` |
-| Argument | A string, number, boolean, `null`, regular expression, template without `${}`, array, object, locator, or `credentials.user(name).username` |
-| Secret | `credentials.user(name).password` or `secrets.get(name)`, as `fill`'s value only |
-
-Left out: the built-in fixtures an engine contributes (`browser`, `device`),
-`expect(screen)`, `toHaveScreenshot`, `app.screenshot`, `screen.debug`,
-`screen.pause`, `all`, `setInputFiles`, and the value matchers (`toBe`, `toEqual`).
+The code is not confined. It has the authority of a test file: it can
+import modules, read files, and read the values the app shows, a secret
+included. `run_code` is on by default: every `e2e mcp` server offers it, no
+flag turns it off, and a client that approves `call` approves `run_code`
+with it. See [Security](/reference/security).
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | Code that doesn't parse or is outside the grammar, such as another name, a call it lacks, an assignment, or a function. The message quotes it with its line and column, and no statement runs. |
-| `INVALID_ARGUMENT` | A matcher that expects `<secret:name>`, since a test compares the real value. No statement runs. |
-| `POLICY_DENIED` | A secret `fill` into a field that fails the `type_secret` checks. Nothing is typed. |
+| `INVALID_ARGUMENT` | Code that doesn't parse. The message gives the line, and nothing runs. |
+| `ASSERTION_FAILED` | An `expect` that doesn't hold. |
 | `POLICY_DENIED` | A read of a secure field, such as a password input. |
-| `POLICY_DENIED` | When the config declares a secret or credential, a locator found by part of a text: a regular expression, an `exact` other than `true`, or `hasText`. Find it by its exact text. No statement runs. |
+
+An error that is not the runner's, such as a `TypeError`, comes back by its
+name with the line it was thrown on.
 
 #### `test_lines`
 
-Returns every test line the session's actions printed, and every statement
+Returns every test line the session's actions printed, and every line
 [`run_code`](#run_code) passed, in order, as a draft test body. Takes no
 arguments.
 
@@ -330,6 +356,9 @@ Test line: await screen.getByRole("button", "Sign in").tap();
   (`.nth(1)`, with a comment saying so). A position is used only when the
   live twins are the ones the observation listed, each in place or all
   moved together.
+- A control with no name, label, placeholder, text, or test id is found by
+  its role: alone when it is the only one (`getByRole("spinbutton")`, with
+  a comment), else narrowed like twins.
 - At most 10 locators are tried per target. On a device each try reads the
   whole screen.
 - When nothing reaches the target alone, the result says `No test line:`
@@ -599,8 +628,8 @@ exits.
 Sessions enforce what tests enforce:
 
 - Node ids are valid only against the newest observation.
-- A secret fills only through `type_secret` or a [`run_code`](#run_code)
-  `fill`, under the same checks.
+- The single actions fill a secret only through `type_secret`.
+  [`run_code`](#run_code) fills one as a test does.
 - Once the config has loaded, its secret values are redacted from every text
   a tool returns, a node `locate` found, an action's result, an
   `open_session` or `close_session` failure, a cleanup line, and the server's

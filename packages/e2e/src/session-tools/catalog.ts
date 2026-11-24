@@ -4,9 +4,9 @@
  * honors, `screenshot` (which also saves a file when given a path) and the
  * point tools (`tap_at`, `hover_at`, `drag_at`, `type_at`, `press_at`,
  * `select_at`) among it, `locate` tries a semantic
- * locator the way a test would, `run_code` runs whole test statements on
+ * locator the way a test would, `run_code` runs JavaScript whose test lines run on
  * the session's fixtures, `test_lines` returns the test line every action
- * printed (`test-lines.ts`) and the statements `run_code` passed,
+ * printed (`test-lines.ts`) and the lines `run_code` passed,
  * `start_recording` and `stop_recording` follow when the engine records video,
  * and the project's own tools come last. The config load refuses a project
  * tool named like a built-in; should one reach here anyway, the built-in
@@ -80,6 +80,8 @@ export interface CatalogOptions {
   readonly warn: (message: string) => void;
   /** Told the cause of every grammar action that failed into a result. */
   readonly onActionFailed?: ((cause: unknown) => void) | undefined;
+  /** Told the code a `run_code` call failed with: its result is rendered text, which carries no code of its own. */
+  readonly onRunCodeFailed?: ((code: string) => void) | undefined;
   /** The attempt's fixtures and what guards them, for `run_code`; without them the catalog has no `run_code`. */
   readonly runCode?: RunCodeSession | undefined;
 }
@@ -94,6 +96,7 @@ export function createSessionCatalog(options: CatalogOptions): SessionCatalog {
     redact: options.redaction.redact,
     appBase: options.appBase,
     fills: options.fills,
+    engineFixtures: options.runCode?.engineFixtures,
     testRan: options.testRan,
   });
   const context = lines.watch(options.context);
@@ -109,7 +112,7 @@ export function createSessionCatalog(options: CatalogOptions): SessionCatalog {
     observe: fullObserveTool(context, screen),
     ...lines.wrap(verbs),
     locate: locateTool(locator, options.session, options.redaction),
-    ...(options.runCode === undefined ? {} : { run_code: runCodeTool({ ...options.runCode, context, screen, record: (passed) => lines.ran(passed) }) }),
+    ...(options.runCode === undefined ? {} : { run_code: runCodeTool({ ...options.runCode, context, screen, record: (passed) => lines.ran(passed), onFailed: options.onRunCodeFailed }) }),
     test_lines: lines.tool(),
     ...recording,
   };

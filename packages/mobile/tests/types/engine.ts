@@ -1,7 +1,7 @@
 /** Compile-time assertions for the handle `mobile()` returns: named by this package, accepted wherever an engine handle is. */
 import type { EngineHandle, ViewportSize as CoreViewportSize } from '@e2e-dev/core/engine';
 import { mobile, type Device, type MobileEngine, type MobileFixtures, type ViewportSize } from '../../src/index.ts';
-import type { Device as EntryDevice, MobileEngine as EntryMobileEngine, ViewportSize as EntryViewportSize } from '../../src/engine-entry.ts';
+import type { Device as EntryDevice, MobileEngine as EntryMobileEngine, RemoteKey, ViewportSize as EntryViewportSize } from '../../src/engine-entry.ts';
 
 void (mobile({ platform: 'ios' }) satisfies MobileEngine);
 void (mobile({ platform: 'ios' }) satisfies EngineHandle<MobileFixtures>);
@@ -29,3 +29,8 @@ device.viewport({ width: 390, height: 844 });
 viewport.width = 400;
 // @ts-expect-error viewport dimensions are readonly.
 viewport.height = 800;
+
+void device.pressRemote('menu');
+// @ts-expect-error pressRemote takes the lowercase remote keys, not the keyboard's capitalised names
+void device.pressRemote('Menu');
+void ('play-pause' satisfies RemoteKey);

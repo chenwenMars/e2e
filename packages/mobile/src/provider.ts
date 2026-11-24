@@ -69,7 +69,7 @@ export interface DeviceRequest {
  * JSON data only: a lease travels from the runner process to the worker that
  * drives it through the environment.
  */
-export interface DeviceLease extends Omit<SlotBinding, 'leaseId'> {
+export interface DeviceLease extends Omit<SlotBinding, 'leaseId' | 'session'> {
   /**
    * The provider's handle on the lease (a session id); named in progress
    * lines and handed back to `release`. A provider may keep further fields on
@@ -206,8 +206,9 @@ function isGrantedLease(value: unknown): value is Pick<DeviceLease, 'id'> {
 
 /** A granted lease checked field by field: the engine trusts nothing it did not write. */
 function isDeviceLease(lease: Pick<DeviceLease, 'id'>): lease is DeviceLease {
-  // `leaseId` is the engine's own field on a binding; a provider may keep a field of that name on its lease.
-  const declared: unknown = { ...lease, leaseId: undefined };
+  // `leaseId` and `session` are the engine's own fields on a binding; a provider may keep fields of those names on its
+  // lease, and the binding built from it never copies them.
+  const declared: unknown = { ...lease, leaseId: undefined, session: undefined };
   return isSlotBinding(declared) && (declared.daemon !== undefined || declared.client !== undefined);
 }
 

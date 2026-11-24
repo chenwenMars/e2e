@@ -29,7 +29,7 @@
   "bugs": {
     "url": "https://github.com/e2e-inc/e2e/issues"
   },
-  "homepage": "https://github.com/e2e-inc/e2e/tree/main/packages/mobile#readme",
+  "homepage": "https://e2e.com/docs/mobile",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public",
@@ -68,13 +68,13 @@
   },
   "dependencies": {
     "@napi-rs/image": "1.16.0",
-    "agent-device": "0.21.41",
+    "agent-device": "0.21.42",
     "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@e2e-dev/core": ">=0.24.1 <1",
+    "@e2e-dev/core": ">=0.25.0 <1",
     "ai": "^7.0.0",
-    "e2e": ">=0.23.2 <1"
+    "e2e": ">=0.25.0 <1"
   },
   "peerDependenciesMeta": {
     "ai": {

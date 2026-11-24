@@ -1,11 +1,15 @@
 name: pr-policy
 
 # Checks community PRs against CONTRIBUTING.md (scripts/pr-policy/check.ts).
+# The `maintainer takeover` label exempts a PR and tells its author that a
+# maintainer finishes it (scripts/pr-policy/takeover.ts). Both steps read the
+# PR as it is, on every label change: a queued run is dropped when a newer
+# event arrives, so the run that survives has to settle whatever it missed.
 # pull_request_target so fork PRs get a token that can label and comment; the
 # checkout is the base branch's script, never PR code.
 on:
   pull_request_target:
-    types: [opened, edited, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -31,3 +35,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pr-policy/check.ts
+      - name: Announce a takeover
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pr-policy/takeover.ts

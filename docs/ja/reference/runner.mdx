@@ -139,7 +139,7 @@ console.log(result.status, result.explore.ended, result.explore.findings.length)
 - `session` は[セットアップテスト](/authentication)が保存するセッションの名前です。`--session` と同様に、そのセットアップを先に実行し、その状態から探索を始めます。
 - `changedSince` は [`--changed-since`](/reference/cli#e2e-explore) と同様に、指定した参照以降の変更を探索します。
 - `maxSteps` は 1〜100、`timeoutMs` は `180000`〜`7200000` です。
-- `onEvent` は `run` と同じイベントに加え、計画上の判断、ステップ、発見事項ごとに `explore` イベントを受け取ります。選択したターゲットなど、`e2e explore` が実行開始前に表示する内容は、`plan` イベントの前に、ターゲットが `run` の `notice` イベントとして届きます。
+- `onEvent` は `run` と同じイベントに加え、計画上の判断、ステップ、発見事項ごとに `explore` イベントを受け取ります。選択したターゲットなど、`e2e explore` が実行開始前に表示する内容は、`collected` イベントの前に、ターゲットが `run` の `notice` イベントとして届きます。
 - `video`、`trace`、`output` など、記録と出力の設定には config の値を使います。
 
 ##### 結果

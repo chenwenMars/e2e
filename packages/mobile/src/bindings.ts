@@ -51,6 +51,12 @@ export interface SlotBinding {
    * sessions across worker replacement and to find the lease for `record`.
    */
   readonly leaseId?: string | undefined;
+  /**
+   * The agent-device session the slot warmed under, when it is not the
+   * slot's own name: after `prepare` drops a slot, each later slot keeps the
+   * session it was bound under, so its worker resumes that session.
+   */
+  readonly session?: string | undefined;
 }
 
 /**
@@ -113,6 +119,7 @@ export function encodeBindings(bindings: readonly SlotBinding[]): string {
         client: binding.client,
         installedApp: binding.installedApp,
         leaseId: binding.leaseId,
+        session: binding.session,
       }),
     ),
   );
@@ -146,12 +153,13 @@ function isOptionalString(value: unknown): value is string | undefined {
 /** A binding as JSON parses it back, or as a provider returned it: nothing the engine did not write is trusted. */
 export function isSlotBinding(value: unknown): value is SlotBinding {
   if (typeof value !== 'object' || value === null) return false;
-  const { device, deviceId, daemon, client, installedApp, leaseId } = value as Record<keyof SlotBinding, unknown>;
+  const { device, deviceId, daemon, client, installedApp, leaseId, session } = value as Record<keyof SlotBinding, unknown>;
   return (
     isOptionalString(device) &&
     isOptionalString(deviceId) &&
     isOptionalString(installedApp) &&
     isOptionalString(leaseId) &&
+    isOptionalString(session) &&
     (daemon === undefined || isDaemon(daemon)) &&
     (client === undefined || isClientConfig(client))
   );

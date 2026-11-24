@@ -65,10 +65,10 @@ describe('revyl()', () => {
 
   it("checks the plugin against the engine's agent-device before anything starts", async () => {
     mocks.version.mockImplementationOnce(() => {
-      throw new Error('@agent-device/revyl 0.21.37 is installed, but @e2e-dev/mobile runs agent-device 0.21.41. Install matching versions.');
+      throw new Error('@agent-device/revyl 0.21.37 is installed, but @e2e-dev/mobile runs agent-device 0.21.42. Install matching versions.');
     });
-    await expect(revyl(options).acquire(request({ agentDeviceVersion: '0.21.41' }))).rejects.toThrow(/Install matching versions/);
-    expect(mocks.version).toHaveBeenCalledWith('0.21.41');
+    await expect(revyl(options).acquire(request({ agentDeviceVersion: '0.21.42' }))).rejects.toThrow(/Install matching versions/);
+    expect(mocks.version).toHaveBeenCalledWith('0.21.42');
     expect(mocks.acquire).not.toHaveBeenCalled();
   });
 

@@ -57,6 +57,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 | [`colorScheme`](#media-emulation) | `'light' \| 'dark' \| 'no-preference'` | 浏览器自身的值 |
 | [`reducedMotion`](#media-emulation) | `'reduce' \| 'no-preference'` | 浏览器自身的值 |
 | [`initScripts`](#init-scripts) | `WebInitScript[]` | - |
+| [`webmcp`](#webmcp) | `boolean` | `false` |
 
 - `web()` 测试目标需要 `app.url`，且拒绝设备配置键（`bundleId`、`appPath`、`launchArguments`）。它的 `app.permissions` 只接受 `'grant'`，且权限名称必须受浏览器支持；参阅 [`permissions`](/reference/config#permissions)。
 - 带有 `app.url` 的测试目标是 `browser` 测试目标，因此 `requires: ['browser']` 会选中网页端测试目标。
@@ -400,6 +401,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`waitForDownloads`](#waitfordownloads) | `Promise<{ path, absolutePath, … }[]>` |
 | [`keyboard`](#keyboard) | `{ press, down, up, type }` |
 | [`mouse`](#mouse) | `{ move, wheel, down, up }` |
+| [`webmcp`](#webmcp) | `{ tools, callTool }` |
 
 [配置](/reference/config)设置各成员的预算：
 
@@ -407,7 +409,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 - `waitForURL`：[`assertionTimeout`](/reference/config#assertiontimeout)。
 - 其他所有成员：[`actionTimeout`](/reference/config#actiontimeout)。`locator` 和 `frameLocator` 不访问页面，也不占用预算。
 
-`{ timeout }` 选项可覆盖 `goto`、`reload`、`back`、`forward`、`waitForResponse`、`waitForPopup`、`waitForDownload` 和 `waitForDownloads` 的预算，但受测试截止时间限制（`afterEach` 中为 `cleanupTimeout`）；`0` 表示等待到该截止时间。`url`、`title`、`evaluate`、`addInitScript`、`route`、`unroute`、`unrouteAll`、`cookies`、`setCookies`、`clearCookies`、`setViewport`、`emulateMedia`、`onDialog`、`newTab`、`BrowserTab` 方法、`keyboard.*` 和 `mouse.*` 不接受覆盖值。
+`{ timeout }` 选项可覆盖 `goto`、`reload`、`back`、`forward`、`waitForResponse`、`waitForPopup`、`waitForDownload` 和 `waitForDownloads` 的预算，但受测试截止时间限制（`afterEach` 中为 `cleanupTimeout`）；`0` 表示等待到该截止时间。`url`、`title`、`evaluate`、`addInitScript`、`route`、`unroute`、`unrouteAll`、`cookies`、`setCookies`、`clearCookies`、`setViewport`、`emulateMedia`、`onDialog`、`newTab`、`BrowserTab` 方法、`keyboard.*` 和 `mouse.*`、`webmcp.*` 不接受覆盖值。
 
 #### `goto`
 
@@ -902,6 +904,61 @@ await browser.mouse.up();
 
 各方法说明见 [`Browser`](#browser-interface)，包括 `wheel`。
 
+#### WebMCP
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) 是一个实验性的浏览器 API，页面通过 `document.modelContext`（Firefox 中为 `navigator.modelContext`）注册工具。`browser.webmcp` 列出活动标签页中的页面注册的工具，并在测试代码中直接调用，不经过模型。
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{ engine: web({ webmcp: true }), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+```ts
+const tools = await browser.webmcp.tools();
+expect(tools.map((tool) => tool.name)).toContain('add');
+
+const result = await browser.webmcp.callTool('add', { a: 2, b: 40 });
+expect(result).toEqual({ content: [{ type: 'text', text: '42' }] });
+```
+
+- `web({ webmcp: true })` 会以 `--enable-features=WebMCP` 启动 Chromium，或以 `dom.modelcontext` 首选项启动 Firefox。它默认关闭，因为开启后每个页面都会看到大多数浏览器尚不具备的 API。WebKit 不支持 WebMCP。该选项只适用于引擎自己启动的浏览器：通过 [`connect`](#connect) 或提供方连接的浏览器，需要你自己带上该参数启动。
+- 页面必须是安全上下文，即 `https:` 或 `localhost`，否则没有 `document.modelContext`，两个调用都会以 `UNSUPPORTED_CAPABILITY` 失败。引擎直接询问页面本身，因此通过 `connect` 或提供方连接的浏览器如果启动时未开启 WebMCP，也会以同样的方式失败。
+- `tools()` 返回当前已注册的工具，每个工具包含 `name`、`description`，以及页面提供时的 `inputSchema` 和 `annotations`。没有注册工具的页面返回空列表。顺序由浏览器决定，Chromium 与 Firefox 不同。
+- `callTool(name, input)` 的结果是工具的 `execute` 解析出的值，通常是带有 `content` 数组的对象。`input` 是 JSON 对象；省略或传入 `null` 时，工具收到空对象。带有 `isError: true` 的结果原样返回，工具不返回任何值时结果为 `null`。结果是 JSON，因此工具留为 `undefined` 的属性不会出现在结果中。Chromium 以 JSON 文本传递结果，因此在 Chromium 中，以 JSON 字符串（例如 `'42'`）解析的工具，其结果会是解析后的值。
+- 把页面导航到另一个 URL 的工具会在应答之前结束调用。调用会在新页面加载完成后以 `ACTION_FAILED` 失败，消息会说明工具可能已经执行。超时时仍在运行的工具也会以同样的方式失败。
+- 两者都只覆盖活动标签页的主框架，不包括其中的框架。
+- 名称、描述、schema 和结果都来自页面，应视为不可信输入。
+
+```ts
+/** A tool a page registered through WebMCP, as the page describes it. */
+export interface WebMcpTool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool's input, when the page gave one. */
+  readonly inputSchema?: JsonValue;
+  /** Hints the page gives about the tool. */
+  readonly annotations?: {
+    /** The tool changes no state. */
+    readonly readOnly?: boolean;
+    /** The tool's output may carry third-party content. */
+    readonly untrustedContent?: boolean;
+    /** The tool takes a consequential action, such as placing an order. */
+    readonly consequential?: boolean;
+  };
+}
+```
+
+| 抛出错误 | 触发条件 |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | 页面没有 WebMCP：浏览器运行时未启用 WebMCP，或页面不是安全上下文。错误消息会说明是哪一种，以及如何解决。 |
+| `ACTION_FAILED` | `callTool`：页面没有注册该名称的工具（消息会列出已注册的工具），工具抛出了错误，或因页面导航或超时，调用在工具应答之前结束。 |
+| `INVALID_ARGUMENT` | `callTool`：`name` 不是非空字符串，`input` 不是 JSON 对象，或工具已运行但返回了 JSON 无法表示的值（`Date`、`BigInt`、`NaN`）。 |
+| `INVALID_CONFIG` | `web({ webmcp: true })` 与 `connect`、浏览器提供方或 WebKit 一起使用。 |
+
 ## 安装浏览器
 
 该包将 `playwright-core` 固定到精确版本，因此引擎始终运行经过测试的 Playwright。应用自身依赖 Playwright 时，会保留自己的副本。只有版本匹配时，两者才共享浏览器缓存。
@@ -1055,6 +1112,8 @@ export interface WebOptions {
   readonly reducedMotion?: WebMedia['reducedMotion'];
   /** Scripts every document runs before the page's own. See [Init scripts](#init-scripts). */
   readonly initScripts?: readonly WebInitScript[];
+  /** Launches Chromium or Firefox with WebMCP, for `browser.webmcp`. See [WebMCP](#webmcp). */
+  readonly webmcp?: boolean;
 }
 ```
 
@@ -1185,6 +1244,13 @@ export interface Browser extends Expectable<BrowserExpectation> {
     down(): Promise<void>;
     /** Releases the primary pointer button. */
     up(): Promise<void>;
+  };
+  /** The tools the active tab's page registers through WebMCP. See [WebMCP](#webmcp). */
+  readonly webmcp: {
+    /** Returns the tools the page has registered now. */
+    tools(): Promise<readonly WebMcpTool[]>;
+    /** Calls one tool and resolves with what its `execute` resolved to. */
+    callTool(name: string, input?: { readonly [key: string]: JsonValue } | null): Promise<JsonValue>;
   };
 }
 ```

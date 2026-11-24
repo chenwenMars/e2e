@@ -5,6 +5,7 @@
  * | agent-desktop result                                          | Code                      |
  * | ------------------------------------------------------------- | ------------------------- |
  * | `STALE_REF`, `SNAPSHOT_NOT_FOUND`, `ELEMENT_NOT_FOUND`, sent nothing | NODE_STALE (retryable) |
+ * | `APP_UNRESPONSIVE` that `details.retryable` says is safe to retry | NODE_STALE (retryable) |
  * | `ACTION_NOT_SUPPORTED`, `PLATFORM_NOT_SUPPORTED`, `POLICY_DENIED` | UNSUPPORTED_CAPABILITY |
  * | `APP_NOT_FOUND`, `WINDOW_NOT_FOUND`                           | INVALID_STATE             |
  * | `AMBIGUOUS_TARGET`, `ACTION_FAILED`, `TIMEOUT`, sent nothing  | NOT_ACTIONABLE            |
@@ -62,6 +63,8 @@ export interface CliCall {
   readonly timeoutMs: number;
   /** Names the command in an error message. */
   readonly label: string;
+  /** The command's `TMPDIR`, in place of the run's: where it writes files of its own that a killed process leaves behind. */
+  readonly tmpdir?: string;
 }
 
 /** A failure agent-desktop reported, before translation, for a caller that tries another way when nothing was sent. */
@@ -122,7 +125,7 @@ export class AgentDesktopCli {
   private spawn(call: CliCall): Promise<{ stdout: string; stderr: string; cutOff?: 'aborted' | 'timeout' }> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.executable, call.args, {
-        env: this.env,
+        env: call.tmpdir === undefined ? this.env : { ...this.env, TMPDIR: call.tmpdir },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       });
@@ -190,6 +193,8 @@ export function translate(cause: unknown, label: string, input: boolean): Error 
   const text = `${label}: ${cause.message}`;
   if (input && !cause.notDelivered) return new EngineError('ACTION_MAY_HAVE_COMMITTED', `${text} (the input may have reached the app)`, { retryable: false, cause });
   if (STALE_CODES.has(cause.code)) return new EngineError('NODE_STALE', text, { retryable: true, cause });
+  // A read agent-desktop says is safe to try again (the window list changed while it read): read again, as a stale one.
+  if (cause.code === 'APP_UNRESPONSIVE' && cause.details.retryable === true) return new EngineError('NODE_STALE', text, { retryable: true, cause });
   if (UNSUPPORTED_CODES.has(cause.code)) return new EngineError('UNSUPPORTED_CAPABILITY', text, { retryable: false, cause });
   if (GONE_CODES.has(cause.code)) return new EngineError('INVALID_STATE', `${text}; open the app with app.open()`, { retryable: false, cause });
   // A read that ran out of time is a timeout; only an input that could not be delivered in time is not actionable.

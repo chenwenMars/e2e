@@ -136,20 +136,32 @@ A test using this locator would fail with LOCATOR_NOT_FOUND. ...
 Use: screen.getByRole("button", "Sign in")
 ```
 
-## テスト行を実行する仕組み
+## コードを実行する仕組み
 
-アサーションのように操作が返さない行は、エージェントが開いているセッションの `run_code` で実行します。
+エージェントは、開いているセッションで `run_code` を使って JavaScript を実行します。
+リストに対するループ、値を読み取って行う計算、操作が出力しなかったアサーションなどです。
+1 回の呼び出しで、多数の個別の操作を置き換えられます。
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
 成功した行は `test_lines` の下書きに追加されます。
 誤った行は、テストを実行することなく数秒で失敗します。
 
 ```text wrap
-Statement 2 of 2 failed; the one before it passed. Each statement waited at most 5000 ms. ...
-1. passed: await screen.getByLabel('Full name').fill('Grace Hopper');
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
 2. failed: await screen.getByRole('button', 'Save').tap();
    LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
 ```
 
-サーバーは行を解析しますが、JavaScript として評価することはありません。
+コードは、テスト本体が受け取るオブジェクトに対して動く通常の JavaScript です。
 [`run_code`](/reference/mcp#run_code) を参照してください。
 
 ## 失敗するテストを修正する

@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
-import { COMPLIANCE_LABEL, COMPLIANCE_MARKER, complianceComment } from './rules.ts';
-import { addLabel, clear, closeWithComment, flag, graphql, livePullRequest, policyComment, type Comment } from './github.ts';
+import { COMPLIANCE_LABEL, COMPLIANCE_MARKER, TAKEOVER_MARKER, complianceComment } from './rules.ts';
+import {
+  addLabel,
+  announceTakeover,
+  clear,
+  closeWithComment,
+  flag,
+  graphql,
+  labeledBy,
+  livePullRequest,
+  policyComment,
+  takeoverAnnouncement,
+  withdrawTakeover,
+  type Comment,
+} from './github.ts';
 
 const TOKEN = 'test-token';
 
@@ -180,5 +193,51 @@ describe('pr-policy GitHub layer', () => {
     await addLabel(9, COMPLIANCE_LABEL);
     assert.deepEqual(calls, [{ url: nth(calls, 0).url, method: 'POST', body: { labels: [COMPLIANCE_LABEL] } }]);
     assert.equal(nth(calls, 0).url.pathname, '/repos/e2e-inc/e2e/issues/9/labels');
+  });
+
+  it('announceTakeover posts a new announcement, rewrites one that is there, and assigns the maintainer', async () => {
+    const calls = stubFetch(() => ({ json: {} }));
+    await announceTakeover(9, 'maintainer', 'taken', undefined);
+    await announceTakeover(9, 'other', 'taken by other', comment(70, 'github-actions[bot]', 'taken'));
+    assert.deepEqual(
+      calls.map(({ method, url }) => [method, url.pathname]),
+      [
+        ['POST', '/repos/e2e-inc/e2e/issues/9/comments'],
+        ['POST', '/repos/e2e-inc/e2e/issues/9/assignees'],
+        ['PATCH', '/repos/e2e-inc/e2e/issues/comments/70'],
+        ['POST', '/repos/e2e-inc/e2e/issues/9/assignees'],
+      ],
+    );
+    assert.deepEqual(nth(calls, 1).body, { assignees: ['maintainer'] });
+    assert.deepEqual(nth(calls, 2).body, { body: 'taken by other' });
+  });
+
+  it('takeoverAnnouncement finds only the bot comment with the marker', async () => {
+    stubFetch(() => ({ json: [comment(71, 'someone', TAKEOVER_MARKER), comment(70, 'github-actions[bot]', TAKEOVER_MARKER)] }));
+    assert.equal((await takeoverAnnouncement(9))?.id, 70);
+  });
+
+  it('withdrawTakeover deletes the announcement', async () => {
+    const calls = stubFetch(() => ({ json: {} }));
+    await withdrawTakeover(comment(70, 'github-actions[bot]', TAKEOVER_MARKER));
+    assert.deepEqual(
+      calls.map(({ method, url }) => [method, url.pathname]),
+      [['DELETE', '/repos/e2e-inc/e2e/issues/comments/70']],
+    );
+  });
+
+  it('labeledBy names whoever added the label last', async () => {
+    const event = (login: string | null, name: string) => ({ actor: login === null ? null : { login }, label: { name } });
+    stubFetch(() => ({
+      json: {
+        data: {
+          repository: {
+            pullRequest: { timelineItems: { nodes: [event('first', 'maintainer takeover'), event('second', 'maintainer takeover'), event('bot', 'size:S')] } },
+          },
+        },
+      },
+    }));
+    assert.equal(await labeledBy(9, 'maintainer takeover'), 'second');
+    assert.equal(await labeledBy(9, 'bug'), undefined);
   });
 });

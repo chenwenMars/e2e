@@ -98,10 +98,13 @@ const UNLISTED = new Error('the window list did not find the running app');
 /** The cause of a read of an app that quit since it launched. */
 const QUIT = new Error('the app quit');
 
+/** The cause of a screenshot withheld because its secure fields could not be shown masked, which the harness reads as masking it could not prove. */
+const UNMASKED = new Error('the secure fields of the screenshot could not be placed');
+
 /** The prefix of every worker's private agent-desktop state directory, which a later run sweeps once its worker is gone. */
 const STATE_PREFIX = 'e2e-agent-desktop-';
 
-/** The file in a state directory that names the process that owns it. */
+/** The file in a state directory that names the process that owns it: its id, and on the next line when it started, which tells it from a later process the OS gives the same id. */
 const OWNER_FILE = 'owner';
 
 /** What the owner file holds once its worker gave the directory up: a later sweep takes it, though the process that wrote it may still run another worker. */
@@ -117,7 +120,8 @@ const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
  * The variables of the run's environment the app under test and
  * agent-desktop get, and nothing else: the run's secrets, model keys, and CI
  * tokens never reach a process the runner does not control. `LC_*` passes
- * too.
+ * too. agent-desktop also gets `AGENT_DESKTOP_HOME`, its private state
+ * directory, and an app it launches by bundle id inherits that path.
  */
 const INHERITED_ENV = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'LANG', '__CF_USER_TEXT_ENCODING']);
 
@@ -139,6 +143,10 @@ interface RawWindow {
   readonly title?: string;
   readonly is_focused?: boolean;
   readonly visible?: boolean;
+  /** False for a window accessibility cannot read. */
+  readonly accessible?: boolean;
+  /** True for a window in the Dock, whose controls accessibility still reads. */
+  readonly minimized?: boolean;
   readonly app_name?: string;
   readonly pid?: number;
   readonly process_instance?: string;
@@ -193,6 +201,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }
     signal.addEventListener('abort', done, { once: true });
   });
+}
+
+/** A read that ran out of time, which proves nothing absent: a retryable `NODE_STALE` that says what it could not tell. */
+function partialRead(what: string): EngineError {
+  return new EngineError('NODE_STALE', `the window was read only in part, as agent-desktop ran out of time, so ${what} cannot be told`, { retryable: true, cause: UNREADABLE });
 }
 
 function notActionable(text: string): EngineError {
@@ -293,7 +306,7 @@ export class DesktopSurface {
   private lifecycle: Promise<unknown> = Promise.resolve();
   /** The window a test chose with `desktop.useWindow`, which every read and command then uses until the app quits. */
   private chosenWindow: string | undefined;
-  /** The window of the newest screen handed to the harness, by observe or locate: the one a point is measured in. */
+  /** The window of the newest screen handed to the harness, by observe or locate: the one a point is measured in, the agent's as core hit-tests it, against the newest observation. */
   private pointWindow: string | undefined;
   /** The newest binding of every node id an observation or a locate handed out, newest last. */
   private readonly bindings = new Map<string, NodeBinding>();
@@ -337,7 +350,8 @@ export class DesktopSurface {
     await sweepStateDirectories();
     // A private state directory per worker, named for the process that owns it so a later sweep can tell it was left behind.
     this.home = await mkdtemp(path.join(tmpdir(), STATE_PREFIX));
-    await writeFile(path.join(this.home, OWNER_FILE), String(process.pid));
+    const started = await startedAt(process.pid, info.signal);
+    await writeFile(path.join(this.home, OWNER_FILE), started === undefined ? String(process.pid) : `${process.pid}\n${started}`);
     // agent-desktop starts the app it launches with its own environment, so it gets the trimmed one too.
     this.cli = new AgentDesktopCli(executable, { ...this.appEnv, AGENT_DESKTOP_HOME: this.home });
     const status = await this.run<{ version?: string; permissions?: Record<string, { state?: string }> }>(['status'], { label: 'agent-desktop status', input: false, signal: info.signal, timeoutMs: 15_000 });
@@ -466,7 +480,8 @@ export class DesktopSurface {
   private async launchFresh(operation: OperationContext): Promise<void> {
     const target = this.launchTarget;
     if (target === undefined) throw unsupported("launching the app needs the target's app.bundleId or app.appPath");
-    await this.quitNow(operation.signal, operation.timeoutMs);
+    // A failed launch that left no process is nothing to clean up before a new one.
+    await this.quitNow(operation.signal, operation.timeoutMs, false);
     // Marks the process this launch starts, so it is told apart from every other copy by evidence, never by timing.
     const launch: Launch = { target, token: randomUUID(), before: await this.runningCopies(target, operation) };
     // Written before anything is sent, so the app stays findable by its token if this worker is killed mid-launch or never finds its process.
@@ -656,8 +671,10 @@ export class DesktopSurface {
           break;
         }
         // A window not readable yet, an app the window list missed, or an app that quit, is what this wait looks at below.
-        if (!(cause instanceof EngineError && (cause.cause === UNREADABLE || cause.cause === QUIT || cause.cause === UNLISTED))) throw cause;
-        if (cause.cause === UNREADABLE) sawWindow = true;
+        // So is a window replaced while it was read (agent-desktop's root went stale), a retryable read of a window that was there.
+        const stale = cause instanceof EngineError && cause.code === 'NODE_STALE' && cause.retryable;
+        if (!(cause instanceof EngineError && (stale || cause.cause === QUIT || cause.cause === UNLISTED))) throw cause;
+        if (stale && cause.cause !== UNLISTED) sawWindow = true;
       }
       if (screen !== undefined) return;
       if (read) listedNone = true;
@@ -675,7 +692,7 @@ export class DesktopSurface {
     // The open's own budget ran out first: that is a timeout, not a window that cannot be read.
     if (budgetBound) throw new EngineError('OPERATION_TIMEOUT', `${this.appName ?? 'the app'} launched, but the open ran out of time before its window could be read`, { retryable: false });
     // A locked screen hides every window from accessibility, and can list none or time out: neither read tells it from an app with no window, so macOS is asked.
-    if ((await screenLocked(operation.signal)) === true) {
+    if ((await screenLocked(operation.signal, operation.timeoutMs)) === true) {
       throw new EngineError('ENGINE_FAILURE', `${this.appName ?? 'the app'} launched, but the Mac's screen is locked, so no window can be read through accessibility; unlock it and run again`, { retryable: false });
     }
     if (!sawWindow && listedNone && !this.foreground) {
@@ -702,8 +719,28 @@ export class DesktopSurface {
 
   /** The windows of the app the engine launched, for the `desktop` fixture; none while it is not running. */
   async windows(signal: AbortSignal, timeoutMs: number): Promise<readonly DesktopWindow[]> {
+    const deadline = Date.now() + timeoutMs;
     const windows = await this.ownWindows({ signal, timeoutMs });
-    return windows.map((window) => ({ id: window.id, title: window.title ?? '', focused: window.is_focused === true }));
+    const listed: DesktopWindow[] = [];
+    for (const window of windows) listed.push({ id: window.id, title: await this.titleOf(window, signal, deadline), focused: window.is_focused === true });
+    return listed;
+  }
+
+  /**
+   * A window's title. Without Screen Recording permission macOS hides the
+   * title the window list reads, and agent-desktop lists the app's name in
+   * its place; the window's accessibility root still carries the title, so
+   * a title that reads as the app's name is read from there, unless
+   * accessibility cannot read the window. A read that fails leaves the title
+   * as listed.
+   */
+  private async titleOf(window: RawWindow, signal: AbortSignal, deadline: number): Promise<string> {
+    const listed = window.title ?? '';
+    if (window.app_name === undefined || listed !== window.app_name || window.accessible === false) return listed;
+    const timeoutMs = deadline - Date.now();
+    const raw = await this.run<RawSnapshot>(['snapshot', '--window-id', window.id, '--max-depth', '1', '--timeout-ms', String(this.toolBudget({ timeoutMs }))], { label: 'read window title', input: false, signal, timeoutMs }).catch(() => undefined);
+    const title = raw?.tree.name;
+    return title === undefined || title.trim() === '' ? listed : title;
   }
 
   /**
@@ -754,9 +791,11 @@ export class DesktopSurface {
    * first: one that exited on its own, or whose id the OS gave to another
    * process since, is not running any more, and nothing is killed. Until the
    * process is known to be gone, the engine keeps it as its own, so a quit
-   * that failed is tried again.
+   * that failed is tried again. A failed launch that turns out to have left
+   * no process is reported, so the user can look for a copy by hand, unless
+   * `reportMissing` is false, as before a new launch.
    */
-  private async quitNow(signal: AbortSignal, timeoutMs: number): Promise<void> {
+  private async quitNow(signal: AbortSignal, timeoutMs: number, reportMissing = true): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     const pending = this.pending;
     if (this.pid === undefined && pending !== undefined) {
@@ -789,7 +828,7 @@ export class DesktopSurface {
         }
         this.pending = undefined;
         if (this.home !== undefined) await rm(path.join(this.home, APP_FILE), { force: true }).catch(() => undefined);
-        if (carriers.length > 0) return;
+        if (carriers.length > 0 || !reportMissing) return;
         throw new EngineError('ENGINE_FAILURE', `a launch of ${pending.target} failed, and no process it started was found; if the app is running, quit it by hand`, { retryable: false });
       }
       this.pending = undefined;
@@ -856,21 +895,30 @@ export class DesktopSurface {
 
   /**
    * Projects a snapshot of one window, its node identities scoped to that
-   * window. An identity of that window the snapshot no longer has is retired:
-   * a control that went, or now has a look-alike sibling, never passes its id
-   * on to another. Another window's identities stay, so its controls keep
-   * their ids when it is read again.
+   * window. An identity of that window a complete snapshot no longer has is
+   * retired: a control that went, or now has a look-alike sibling, never
+   * passes its id on to another. A snapshot cut short retires only the
+   * identities it saw a look-alike take. Another window's identities stay, so
+   * its controls keep their ids when it is read again.
    */
-  private projectWindow(raw: RawSnapshot): ProjectedScreen {
-    const window = raw.window?.id ?? '';
+  private projectWindow(raw: RawSnapshot, minimized: boolean, interactive: boolean): ProjectedScreen {
+    // An interactive read (-i) prunes the tree, a whole one does not: each keeps its own identities, so one never retires the other's ids.
+    const scope = `${raw.window?.id ?? ''}|${interactive ? 'i' : 'w'}|`;
     const used = new Set<string>();
-    const screen = projectSnapshot(raw, (identity) => {
-      if (identity === undefined) return this.idFor(undefined);
-      const scoped = `${window}|${identity}`;
-      used.add(scoped);
-      return this.idFor(scoped);
-    });
-    for (const identity of this.ids.keys()) if (identity.startsWith(`${window}|`) && !used.has(identity)) this.ids.delete(identity);
+    const shared = new Set<string>();
+    const screen = projectSnapshot(
+      raw,
+      (identity) => {
+        if (identity === undefined) return this.idFor(undefined);
+        const scoped = `${scope}${identity}`;
+        used.add(scoped);
+        return this.idFor(scoped);
+      },
+      { minimized, interactive, onLookAlike: (identity) => shared.add(`${scope}${identity}`), priorIdOf: (identity) => this.ids.get(`${scope}${identity}`) },
+    );
+    // A read that ran out of time saw only part of the window: what it did not reach may still be there, so only an identity it saw a twin take retires.
+    const partial = raw.complete === false || raw.truncated === true;
+    for (const identity of this.ids.keys()) if (identity.startsWith(scope) && !used.has(identity) && (!partial || shared.has(identity))) this.ids.delete(identity);
     return screen;
   }
 
@@ -884,35 +932,50 @@ export class DesktopSurface {
    * read that only places secure fields: it reads every node even with
    * `snapshot: 'interactive'`, which leaves out a secure node with no action
    * of its own, and hands out no ids, so the ids of the screen the harness
-   * holds stay as they are. Undefined, an empty screen, before `app.open()`
+   * holds stay as they are. `whole` reads every node too, with ids, for a
+   * locator: a label left out of an interactive read would match nothing,
+   * and a negative assertion on it pass. Undefined, an empty screen, before `app.open()`
    * and while the running app has no window; a copy of the app the engine
    * did not launch is never read. A read that fails is no empty screen,
    * which would let a negative assertion pass: an app that quit is
    * `INVALID_STATE`, as is a chosen window that closed, and windows none of
-   * which could be read are a retryable `NODE_STALE`, so a locator reads
-   * again until its deadline.
+   * which could be read, or none listed while the screen is locked, are a
+   * retryable `NODE_STALE`, so a locator reads again until its deadline.
    */
-  private async capture(operation: OperationContext, windowId = this.chosenWindow, forMask = false): Promise<ProjectedScreen | undefined> {
+  private async capture(operation: OperationContext, windowId = this.chosenWindow, forMask = false, whole = false): Promise<ProjectedScreen | undefined> {
     const windows = await this.ownWindows(operation, true);
     const chosen = windowId !== undefined && windowId === this.chosenWindow;
-    if (chosen && !windows.some((window) => window.id === windowId)) throw this.chosenClosed();
-    if (windows.length === 0 && this.pid !== undefined) await this.requireRunning(operation);
+    if (chosen && !windows.some((window) => window.id === windowId)) {
+      await this.unlessLocked(operation);
+      throw this.chosenClosed();
+    }
+    if (windows.length === 0 && this.pid !== undefined) {
+      await this.requireRunning(operation);
+      await this.unlessLocked(operation);
+    }
+    // A window the list no longer has is closed: its identities go, so windows opened and closed one after another do not pile them up.
+    const open = new Set(windows.map((window) => window.id));
+    for (const identity of this.ids.keys()) if (!open.has(identity.slice(0, identity.indexOf('|')))) this.ids.delete(identity);
     const candidates =
       windowId === undefined
         ? [...windows.filter((window) => window.is_focused === true), ...windows.filter((window) => window.is_focused !== true && window.visible !== false), ...windows.filter((window) => window.is_focused !== true && window.visible === false)]
         : windows.filter((window) => window.id === windowId);
     for (const window of candidates) {
       const args = ['snapshot', '--window-id', window.id, '--include-bounds', '--max-depth', String(this.options.maxDepth), '--timeout-ms', String(this.toolBudget(operation))];
-      if (this.options.interactiveOnly && !forMask) args.push('-i');
+      const interactive = this.options.interactiveOnly && !forMask && !whole;
+      if (interactive) args.push('-i');
       try {
         const raw = await this.run<RawSnapshot>(args, { label: 'snapshot', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs, raw: true });
-        if (!forMask) return this.projectWindow(raw);
+        if (!forMask) return this.projectWindow(raw, window.minimized === true, interactive);
         let scratch = 0;
         return projectSnapshot(raw, () => `mask${(scratch += 1)}`);
       } catch (cause) {
         // A panel accessibility cannot read, or a window that just closed: try the next one.
         if (cause instanceof AgentDesktopFailure && NO_WINDOW_CODES.has(cause.code)) {
-          if (chosen) throw this.chosenClosed();
+          if (chosen) {
+            await this.unlessLocked(operation);
+            throw this.chosenClosed();
+          }
           continue;
         }
         if (cause instanceof AgentDesktopFailure && cause.details.kind === 'window_without_accessibility_element') continue;
@@ -925,6 +988,16 @@ export class DesktopSurface {
       `no window of ${this.appName ?? 'the app'} could be read through accessibility (on macOS the screen may be locked), or each closed while it was read`,
       { retryable: true, cause: UNREADABLE },
     );
+  }
+
+  /**
+   * Throws a retryable `NODE_STALE` while the Mac's screen is locked: macOS
+   * then lists none of the app's windows, which must not read as a window
+   * that closed or an app with none open.
+   */
+  private async unlessLocked(operation: Pick<OperationContext, 'signal' | 'timeoutMs'>): Promise<void> {
+    if ((await screenLocked(operation.signal, operation.timeoutMs)) !== true) return;
+    throw new EngineError('NODE_STALE', `the Mac's screen is locked, so no window of ${this.appName ?? 'the app'} can be read through accessibility; reading again`, { retryable: true, cause: UNREADABLE });
   }
 
   /**
@@ -990,15 +1063,17 @@ export class DesktopSurface {
     if (screen === undefined) {
       return { root: { ref: { id: ROOT_ID, revision: '' }, role: 'window' }, viewport: { width: 0, height: 0 } };
     }
-    this.pointWindow = screen.windowId;
     this.remember(screen.bindings.values());
     let withheld = false;
     const pixels = options?.pixels === true ? await this.pixelsFor(screen, operation).catch((cause: unknown) => {
-      if (cause instanceof EngineError && cause.code === 'OPERATION_TIMEOUT') throw cause;
-      withheld = true;
+      // Out of time or cancelled is no screenshot at all, and the observation with it.
+      if (cause instanceof EngineError && (cause.code === 'OPERATION_TIMEOUT' || cause.code === 'CANCELLED')) throw cause;
+      // A capture that failed (no Screen Recording permission) is no screenshot, as on the mobile engine, not masking that could not be proven.
+      withheld = cause instanceof Error && cause.cause === UNMASKED;
       return undefined;
     }) : undefined;
-    // Pixels withheld still report the regions masked, none, so the harness reads masking it could not prove (MASKING_UNPROVEN), not a missing screenshot.
+    this.pointWindow = screen.windowId;
+    // Pixels withheld for their secure fields still report the regions masked, none, so the harness reads masking it could not prove (MASKING_UNPROVEN), not a missing screenshot.
     return {
       ...this.snapshotOf(screen),
       ...(pixels === undefined ? (withheld ? { maskedRegionCount: 0 } : {}) : { pixels: pixels.pixels, maskedRegionCount: pixels.masked }),
@@ -1022,7 +1097,8 @@ export class DesktopSurface {
       throw unsupported("macOS accessibility reports no placeholder to match; a field with no label is named by its placeholder, so find it with getByRole('textbox', name) or getByLabel(name)");
     }
     const operation = withDeadline(context);
-    const screen = await this.capture(operation);
+    // A locator reads the whole window whatever `snapshot` says, as on the mobile engine: the interactive read leaves out static text.
+    const screen = await this.capture(operation, this.chosenWindow, false, true);
     if (screen === undefined) return [];
     const sink = this.attempt?.screen;
     if (sink !== undefined) {
@@ -1086,11 +1162,18 @@ export class DesktopSurface {
   async perform(ref: NodeRef, action: LocatorAction, context: OperationContext): Promise<void> {
     const operation = withDeadline(context);
     if (ref.id === ROOT_ID) {
-      if (action.kind !== 'swipe') throw notActionable(`the window takes swipe only, not ${action.kind}; act on a node`);
+      // The window is in view unless it is minimized: toHaveScreenshot on a window locator scrolls it into view first.
+      if (action.kind === 'scrollIntoView') {
+        const shown = await this.capture(operation);
+        if (shown === undefined || shown.root.states?.hidden === true) throw notActionable('the window is not on screen (minimized, or closed), so it cannot be brought into view');
+        return;
+      }
+      if (action.kind !== 'swipe') throw notActionable(`the window takes swipe and scrollIntoView only, not ${action.kind}; act on a node`);
       // The root is the window as it is now: read it again, since a locate or a restart may have moved on from the last observation.
       const screen = await this.capture(operation);
       if (screen !== undefined) this.remember(screen.bindings.values());
       const target = screen?.scrollTarget;
+      if (target === undefined && screen?.cutShort === true) throw partialRead('what in it scrolls');
       if (target === undefined) throw notActionable('the window has nothing that scrolls');
       await this.scroll(this.binding({ id: target, revision: '' }), action.direction, action.momentum, operation);
       return this.settle(operation);
@@ -1119,6 +1202,8 @@ export class DesktopSurface {
         await this.refCommand(action.kind, binding, operation);
         break;
       case 'scrollIntoView':
+        // Static text gets no ref to scroll to; agent-desktop marks a node outside the window offscreen, read as hidden, so one not hidden is in view already.
+        if (binding.ref === undefined && binding.states?.hidden !== true) break;
         await this.refCommand('scroll-to', binding, operation);
         break;
       case 'hover':
@@ -1134,11 +1219,14 @@ export class DesktopSurface {
         if (window === undefined) throw notActionable(`node ${binding.id} was read in no window to press a key into`);
         await this.refCommand('focus', binding, operation);
         try {
-          // The key goes to the process, which hands it to its key window: with more than one window, the control's must be the one shown focused.
-          const windows = (await this.ownWindows(operation)).filter((candidate) => candidate.visible !== false);
+          // The key goes to the process, which hands it to its key window: with another window that could be it, the control's must be the one shown focused.
+          // A window on another Space, which agent-desktop lists as not visible, is still the control's: press --headed brings it forward.
+          const windows = await this.ownWindows(operation);
           const home = windows.find((candidate) => candidate.id === window);
           if (home === undefined) throw notActionable(`the window node ${binding.id} was read in is gone`);
-          if (windows.length > 1 && home.is_focused !== true) {
+          if (home.minimized === true) throw notActionable(`the window node ${binding.id} was read in is minimized, so no key reaches it`);
+          const rivals = windows.filter((candidate) => candidate.id !== window && candidate.visible !== false && candidate.minimized !== true);
+          if (rivals.length > 0 && home.is_focused !== true) {
             throw notActionable(`node ${binding.id} is in a window that cannot be shown to be the app's key window, so the key could land in another window`);
           }
           // Focusing can hand focus on (a dialog it opens): the key goes only when the control still holds it.
@@ -1195,16 +1283,21 @@ export class DesktopSurface {
   /**
    * Whether the control a binding names holds keyboard focus in a fresh read
    * of its window. A control with an identity keeps its id; a look-alike has
-   * a new id in every read, so it is found by role and place, with as many
+   * a new id in every read, so it is found by role, name, developer id, and place, with as many
    * twins around it as before: a twin that went could have let another take
    * its place.
    */
   private async holdsFocus(binding: NodeBinding, window: string, operation: OperationContext): Promise<boolean> {
-    const now = await this.capture(operation, window);
+    // Read as the binding was: a locator's binding comes from a whole read, an observation's from an interactive one.
+    const now = await this.capture(operation, window, false, !binding.interactive);
+    // A read that ran out of time gives every control a fresh id, so it cannot tell which one holds focus: that is no lost focus.
+    if (now?.cutShort === true) throw partialRead('which control holds focus');
     return [...(now?.bindings.values() ?? [])].some(
       (candidate) =>
         candidate.states?.focused === true &&
-        (binding.stable ? candidate.id === binding.id : candidate.role === binding.role && sameRect(candidate.rect, binding.rect) && candidate.likeness === binding.likeness),
+        (binding.stable
+          ? candidate.id === binding.id
+          : candidate.role === binding.role && candidate.name === binding.name && candidate.testId === binding.testId && sameRect(candidate.rect, binding.rect) && candidate.likeness === binding.likeness),
     );
   }
 
@@ -1285,6 +1378,8 @@ export class DesktopSurface {
     // A menu takes a moment to close after Escape. The last look decides: one that could not tell leaves it unknown.
     const until = Date.now() + Math.min(MENU_CLOSE_MS, operation.timeoutMs);
     for (;;) {
+      // Cancelled, each look fails at once and the wait would never yield: it cannot tell any more.
+      if (operation.signal.aborted) return 'unconfirmed';
       const open = await menus();
       if (open === 0) return 'closed';
       if (Date.now() + LAUNCH_POLL_MS >= until) return open === undefined ? 'unconfirmed' : 'open';
@@ -1340,6 +1435,8 @@ export class DesktopSurface {
     const operation = withDeadline(context);
     const screen = await this.capture(operation);
     const focused = screen === undefined ? undefined : [...screen.bindings.values()].find((binding) => binding.ref !== undefined && binding.states?.focused === true);
+    // A read that ran out of time may stop short of the focused field: no proof that none has focus.
+    if (focused === undefined && screen?.cutShort === true) throw partialRead('which field has keyboard focus');
     if (focused === undefined) throw notActionable('no field has keyboard focus; tap or focus the field first');
     // agent-desktop types only into a control that offers TypeText; a list or button with focus would take the select-all and delete as commands.
     if (!focused.actions.includes('TypeText')) {
@@ -1363,7 +1460,7 @@ export class DesktopSurface {
     await this.settle(operation);
   }
 
-  /** One key to whatever holds focus in the app; agent-desktop sends it to the process without focusing its window. */
+  /** One key to whatever holds focus in the app's window: agent-desktop brings that window forward (`headed`, which declares this) and sends the key to it. */
   async pressKey(key: string, context: OperationContext): Promise<void> {
     const operation = withDeadline(context);
     const combo = toCombo(key);
@@ -1419,26 +1516,49 @@ export class DesktopSurface {
    * come from the snapshot taken just before, and the window is read again
    * after the capture: a secure field without bounds, a partial snapshot, or
    * a field that moved in between withholds the image rather than ship it
-   * unproven.
+   * unproven. That is a refusal of policy, `POLICY_DENIED`, as on the mobile
+   * engine: the image could hold a credential. A window with no secure field
+   * that closed, changed size, or was read in part because the read ran out
+   * of time is a capture that failed, and the next one may work.
    */
   private async pixelsFor(observed: ProjectedScreen, operation: OperationContext): Promise<{ pixels: ObservationPixels; masked: number }> {
     if (observed.windowId === undefined) throw notActionable('the observed surface has no window to capture');
+    const unmasked = (reason: string): ConfigurationError => new ConfigurationError('POLICY_DENIED', `${reason}, so the screenshot is withheld`, { cause: UNMASKED });
     // The secure fields come from a whole read of the window, never an interactive one, which can leave a secure node out.
     const screen = this.options.interactiveOnly ? await this.capture(operation, observed.windowId, true) : observed;
-    if (screen?.windowId === undefined) throw new EngineError('ENGINE_FAILURE', 'the window could not be read whole to find its secure fields; screenshot withheld', { retryable: false });
+    if (screen?.windowId === undefined) throw new EngineError('ENGINE_FAILURE', 'the window closed before it could be captured', { retryable: false });
+    // The image goes out beside the observed tree: a window that changed size since that read would pair it with the wrong viewport and boxes.
+    if (screen.viewport.width !== observed.viewport.width || screen.viewport.height !== observed.viewport.height) {
+      throw new EngineError('ENGINE_FAILURE', 'the window changed size between the read and the capture', { retryable: false });
+    }
     const secure = screen.secureRects;
-    // A refusal of policy, as on the mobile engine: the image could hold a credential, so it never leaves the engine.
-    if (secure === undefined) throw new ConfigurationError('POLICY_DENIED', 'a secure field on screen has no bounds to mask, so the screenshot is withheld');
+    if (secure === undefined) throw unmasked('a secure field on screen has no bounds to mask');
     // A snapshot cut short can leave out a secure field, which would then go unmasked.
-    if (screen.truncated) throw new EngineError('ENGINE_FAILURE', 'the snapshot did not read the whole window, so a secure field may be missing from it; screenshot withheld', { retryable: false });
+    if (screen.truncated) {
+      // One that ran out of time and saw no secure field may read whole next time: a capture that failed, not a refusal.
+      if (screen.cutShort && secure.length === 0) throw new EngineError('ENGINE_FAILURE', 'the window was read only in part, as agent-desktop ran out of time, so it cannot be shown to hold no secure field', { retryable: false });
+      throw unmasked(
+        screen.cutShort
+          ? 'the snapshot did not read the whole window, so a secure field may be missing from it'
+          : `the window is deeper than desktop({ maxDepth }) reads (${this.options.maxDepth} levels), so a secure field may be missing from the read; raise maxDepth`,
+      );
+    }
     const directory = await mkdtemp(path.join(this.home ?? tmpdir(), 'shot-'));
     try {
       const file = path.join(directory, 'window.png');
-      const shot = await this.run<{ scale_factor?: number }>(['screenshot', '--window-id', screen.windowId, file], { label: 'screenshot', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs });
+      // agent-desktop captures to a file of its own under TMPDIR first, unmasked, which a process killed mid-capture leaves behind: here it is under this directory, removed below.
+      const shot = await this.run<{ scale_factor?: number }>(['screenshot', '--window-id', screen.windowId, file], { label: 'screenshot', input: false, signal: operation.signal, timeoutMs: operation.timeoutMs, tmpdir: directory });
       // The snapshot and the capture are two commands: read the window again, and withhold the image if a secure field moved, came, or went between them.
-      const after = await this.capture(operation, screen.windowId, true);
+      const after = await this.capture(operation, screen.windowId, true).catch((cause: unknown) => {
+        if (cause instanceof EngineError && (cause.code === 'OPERATION_TIMEOUT' || cause.code === 'CANCELLED')) throw cause;
+        // The image holds a secure field the read after it could not place: that is masking not proven, not a capture that failed.
+        if (secure.length > 0) throw unmasked('the window could not be read again after the capture, so its secure fields cannot be placed');
+        throw cause;
+      });
       if (after === undefined || after.windowId !== screen.windowId || after.truncated || !sameRects(after.secureRects, secure) || after.viewport.width !== screen.viewport.width || after.viewport.height !== screen.viewport.height) {
-        throw new EngineError('ENGINE_FAILURE', 'the window changed while it was captured, so its secure fields cannot be placed; screenshot withheld', { retryable: false });
+        // Only a secure field, seen in either read or possibly below the depth a read stops at, makes this a matter of masking; a read that ran out of time is tried again.
+        if (secure.length > 0 || (after !== undefined && ((after.truncated && !after.cutShort) || after.secureRects?.length !== 0))) throw unmasked('the window changed while it was captured, so its secure fields cannot be placed');
+        throw new EngineError('ENGINE_FAILURE', 'the window closed or changed size while it was captured', { retryable: false });
       }
       const scale = typeof shot.scale_factor === 'number' && shot.scale_factor > 0 ? shot.scale_factor : 1;
       const raw = new Uint8Array(await readFile(file));
@@ -1446,7 +1566,9 @@ export class DesktopSurface {
       const rects: Rect[] = secure.map((rect) => ({ x: rect.x * scale, y: rect.y * scale, width: rect.width * scale, height: rect.height * scale }));
       const image = windowImage(raw, expected, rects);
       if (image === undefined) {
-        throw new EngineError('ENGINE_FAILURE', `the window capture does not match the window's ${expected.width}x${expected.height} pixels, so its secure fields cannot be placed; screenshot withheld`, { retryable: false });
+        const mismatch = `the window capture does not match the window's ${expected.width}x${expected.height} pixels`;
+        if (rects.length > 0) throw unmasked(`${mismatch}, so its secure fields cannot be placed`);
+        throw new EngineError('ENGINE_FAILURE', mismatch, { retryable: false });
       }
       return { pixels: { data: encodePng(image), mediaType: 'image/png', width: image.width, height: image.height, scale }, masked: rects.length };
     } finally {
@@ -1466,13 +1588,13 @@ export class DesktopSurface {
    * unless `raw` asks for agent-desktop's own, which a caller reads to try
    * another way.
    */
-  private async run<T>(args: readonly string[], call: { label: string; input: boolean; signal: AbortSignal; timeoutMs: number; stdin?: string; raw?: boolean }): Promise<T> {
+  private async run<T>(args: readonly string[], call: { label: string; input: boolean; signal: AbortSignal; timeoutMs: number; stdin?: string; raw?: boolean; tmpdir?: string }): Promise<T> {
     const cli = this.cli;
     if (cli === undefined) throw invalidState('the desktop engine is not initialized');
     // Nothing is sent once the operation's budget is spent: a later rung of a fallback never starts past the deadline.
     if (call.timeoutMs <= 0) throw new EngineError('OPERATION_TIMEOUT', `${call.label}: the operation's budget ran out before it was sent`, { retryable: false, cause: NOT_SENT });
     try {
-      return await cli.run<T>({ args, input: call.input, signal: call.signal, timeoutMs: call.timeoutMs, label: call.label, ...(call.stdin === undefined ? {} : { stdin: call.stdin }) });
+      return await cli.run<T>({ args, input: call.input, signal: call.signal, timeoutMs: call.timeoutMs, label: call.label, ...(call.stdin === undefined ? {} : { stdin: call.stdin }), ...(call.tmpdir === undefined ? {} : { tmpdir: call.tmpdir }) });
     } catch (cause) {
       if (call.raw === true && cause instanceof AgentDesktopFailure) throw cause;
       throw translate(cause, call.label, call.input);
@@ -1593,9 +1715,11 @@ async function sweepStateDirectories(): Promise<void> {
     // A shared temporary directory (`/tmp` when TMPDIR is unset) holds other users' entries too: a record this user did not write names no launch of its own, and its process id must not be killed with this user's rights.
     if (!(await ownDirectory(directory))) continue;
     const ownerText = (await readFile(path.join(directory, OWNER_FILE), 'utf8').catch(() => '')).trim();
-    const owner = Number(ownerText);
+    const [ownerId = '', ownerStarted] = ownerText.split('\n');
+    const owner = Number(ownerId);
     const stale =
-      ownerText === ABANDONED || (Number.isInteger(owner) && owner > 0 ? !alive(owner) : await stat(directory).then((info) => Date.now() - info.mtimeMs > ORPHAN_AGE_MS, () => false));
+      ownerText === ABANDONED ||
+      (Number.isInteger(owner) && owner > 0 ? !(await ownerRuns(owner, ownerStarted)) : await stat(directory).then((info) => Date.now() - info.mtimeMs > ORPHAN_AGE_MS, () => false));
     if (!stale) continue;
     // A record cut short by the kill that left it names no process: the directory still goes.
     const parsed: unknown = await readFile(path.join(directory, APP_FILE), 'utf8').then((text): unknown => JSON.parse(text)).catch(() => undefined);
@@ -1618,6 +1742,18 @@ async function sweepStateDirectories(): Promise<void> {
     const settled = known && (await killed(owned, Date.now() + 2_000, signal));
     await (settled ? rm(directory, { recursive: true, force: true }) : keepOnlyRecord(directory)).catch(() => undefined);
   }
+}
+
+/**
+ * Whether the worker process an owner file names still runs: one with its id
+ * that started when the file says. A start time that cannot be read counts
+ * as the same process, so a directory in use is never taken.
+ */
+async function ownerRuns(pid: number, started: string | undefined): Promise<boolean> {
+  if (!alive(pid)) return false;
+  if (started === undefined) return true;
+  const now = await startedAt(pid, AbortSignal.timeout(5_000));
+  return now === undefined || now === started;
 }
 
 /** Whether `directory` is a real directory (not a symlink) that belongs to the user this process runs as. */
@@ -1664,11 +1800,21 @@ async function killed(pids: readonly number[], until: number, signal: AbortSigna
 /**
  * Whether macOS reports the console session's screen locked (ioreg's
  * `CGSSessionScreenIsLocked`); undefined when that cannot be told, off macOS
- * or when ioreg fails.
+ * or when ioreg fails. The question runs within the operation's budget: a
+ * cancellation or a budget that ran out ends the operation, never passes as
+ * an unknown answer that lets a read go on as if unlocked.
  */
-async function screenLocked(signal: AbortSignal): Promise<boolean | undefined> {
-  const listed = await execFileAsync('ioreg', ['-n', 'Root', '-d1', '-a'], { signal, maxBuffer: 16 * 1024 * 1024 }).catch(() => undefined);
-  const match = /<key>CGSSessionScreenIsLocked<\/key>\s*<(true|false)\/>/.exec(listed?.stdout ?? '');
+async function screenLocked(signal: AbortSignal, timeoutMs: number): Promise<boolean | undefined> {
+  if (timeoutMs <= 0) throw new EngineError('OPERATION_TIMEOUT', "asking macOS whether the screen is locked: the operation's budget ran out", { retryable: false });
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync('ioreg', ['-n', 'Root', '-d1', '-a'], { signal, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }));
+  } catch (cause) {
+    if (signal.aborted) throw new EngineError('CANCELLED', 'asking macOS whether the screen is locked was cancelled', { retryable: false, cause });
+    if ((cause as { killed?: boolean }).killed === true) throw new EngineError('OPERATION_TIMEOUT', 'asking macOS whether the screen is locked ran out of time', { retryable: false, cause });
+    return undefined;
+  }
+  const match = /<key>CGSSessionScreenIsLocked<\/key>\s*<(true|false)\/>/.exec(stdout);
   return match === null ? undefined : match[1] === 'true';
 }
 
@@ -1678,7 +1824,8 @@ async function screenLocked(signal: AbortSignal): Promise<boolean | undefined> {
  * running or `ps` failed.
  */
 async function startedAt(pid: number, signal: AbortSignal): Promise<string | undefined> {
-  const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], { signal, env: { ...process.env, LC_ALL: 'C' } }).catch(() => ({ stdout: '' }));
+  // `lstart` is local time: every reader must print it in one zone, or a run with another TZ takes a live process for a later one.
+  const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], { signal, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).catch(() => ({ stdout: '' }));
   const text = stdout.trim();
   return text === '' ? undefined : text;
 }

@@ -49,7 +49,7 @@ export async function loadEngineConfig(
   if (configPath !== undefined) {
     throw new ConfigurationError(
       'INVALID_ARGUMENT',
-      `open_session: engine opens a session where there is no config file, and ${configPath} exists; leave engine out to open one of its targets`,
+      `open_session: engine opens a session where there is no config file, and ${configPath} exists; leave engine out to open one of its targets, and pass path to open on one page of its app`,
     );
   }
   const engine = await loadEngine(session, { cwd: options.cwd, enginesDir: options.enginesDir });

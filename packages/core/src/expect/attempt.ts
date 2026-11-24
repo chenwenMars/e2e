@@ -6,6 +6,7 @@ import { realmSlot } from '../internal/realm-slot.ts';
 import type { AttemptBudget } from '../run/budget.ts';
 import type { AttemptGuests } from '../run/guest-steps.ts';
 import type { PassOptions } from '../types.ts';
+import type { TimeoutChange, TimeoutUpdate } from '../internal/test-timeout.ts';
 import type { SoftFailures } from './soft.ts';
 import type { PollScope } from './poll-scope.ts';
 
@@ -28,11 +29,12 @@ export interface PublishedAttempt {
   /** Marks the attempt expected to fail (`test.fail`); absent where no mark is allowed. */
   readonly expectFailure?: (reason: string) => void;
   /**
-   * Gives the attempt a test timeout of `timeoutMs`, counted from its start
-   * (`test.setTimeout`); false once the attempt's timeout race settled.
-   * Absent in a hosted session, which runs no e2e test.
+   * Gives the attempt the test timeout `update` makes of the one in force,
+   * counted from its start (`test.setTimeout`, `test.slow`), and says what
+   * it did; core words any refusal. Absent in a hosted session, which runs
+   * no e2e test.
    */
-  readonly setTimeout?: (timeoutMs: number) => boolean;
+  readonly setTimeout?: (update: TimeoutUpdate) => TimeoutChange;
   /** Hosted callers have no runner-owned body lineage; their polls belong to the session. */
   readonly polls?: PollScope;
   /**

@@ -304,7 +304,10 @@ describe('screen.pause() without a terminal', () => {
     const run = start(dir, ['run']);
     await run.shows(pauseMessage('Paused ({id}) in pauses three times'));
     const id = printedPauseId(run.stdout());
-    expect(run.stdout()).toContain('Next: e2e run --step next to resume the test, or e2e run --step stop to end the run.\n');
+    // The prompt can arrive in more than one read of the pipe.
+    const commands = 'Next: e2e run --step next to resume the test, or e2e run --step stop to end the run.\n';
+    await run.shows(commands);
+    expect(run.stdout()).toContain(commands);
 
     const next = e2e(dir, ['run', '--step', 'next']);
     expect(next.exitCode).toBe(0);

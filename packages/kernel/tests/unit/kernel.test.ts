@@ -112,14 +112,15 @@ function releaseContext(): BrowserReleaseContext {
 }
 
 describe('kernel()', () => {
-  it('creates a browser with the run tags and the idle timeout backstop, and logs its live view', async () => {
+  it('creates a browser with the run tags and the idle timeout backstop, and logs only its id', async () => {
     const req = request({ slot: 1 });
     const lease = await kernel({ stealth: true, tags: { team: 'qa' } }).acquire(req);
     expect(lease).toEqual({ id: 'b1', cdpEndpoint: 'wss://kernel/b1' });
     expect(sdk.state.created).toEqual([
       { body: { stealth: true, timeout_seconds: 600, tags: { team: 'qa', e2e_run: 'run-1', e2e_target: 'web', e2e_slot: '1' } }, signal: req.signal },
     ]);
-    expect(req.lines).toEqual(['browser b1, watch at https://view/b1']);
+    // The live view URL carries tokens that act on the session, so it never enters the run's log.
+    expect(req.lines).toEqual(['browser b1']);
   });
 
   it('keeps the idle timeout backstop for an undefined option from a JavaScript config', async () => {

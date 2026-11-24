@@ -75,6 +75,10 @@ describe('device provider', () => {
     );
   });
 
+  it('declares no device to select, so the runner refuses --device before any lease', () => {
+    expect(harness({ device: provider().impl }).engine.selectsDevice).toBeUndefined();
+  });
+
   it('leases one device per slot at prepare, warms each through its own daemon, and hands the bindings to the workers', async () => {
     const cloud = provider();
     const h = harness({ device: cloud.impl });

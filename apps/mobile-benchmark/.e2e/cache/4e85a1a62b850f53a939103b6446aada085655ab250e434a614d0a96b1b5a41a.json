@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-09T06:52:29.549Z",
+  "createdAt": "2026-11-23T16:45:57.336Z",
   "payload": {
     "actions": [
       {
@@ -16,13 +16,12 @@
       },
       {
         "name": "tap",
-        "summary": "tap group \"Complete action\" in \"Actions\"",
+        "summary": "tap group \"Complete action\"",
         "target": {
           "role": "group",
           "name": "Complete action",
           "testId": "complete-action-button",
-          "selector": "id=complete-action-button",
-          "within": "Actions"
+          "selector": "id=complete-action-button"
         }
       }
     ],
@@ -38,7 +37,11 @@
       "callIndex": 0,
       "agent": "default"
     },
-    "summary": "Opened the Actions tab and pressed “Complete action.” The screen displays “Action completed.”",
+    "recordedBy": {
+      "provider": "gateway",
+      "model": "openai/gpt-6-luna-fast"
+    },
+    "summary": "Opened the Actions tab and tapped “Complete action.” The screen confirmed “Action completed.”",
     "startPath": "dev.e2e.benchmark",
     "endPath": "dev.e2e.benchmark",
     "endAnchors": [
@@ -106,7 +109,7 @@
         "testId": "tab-actions"
       }
     ],
-    "endWaitMs": 11752,
+    "endWaitMs": 11662,
     "keyedBy": {
       "cacheSchema": "trace-1",
       "policyVersion": "conservative/6",

@@ -40,7 +40,8 @@ import { SessionRecorder } from '../session-tools/recording.ts';
 import { SessionRegistry } from './sessions.ts';
 import { describeTestOutcome } from './test-outcome.ts';
 import { SessionUsage, type McpSessionSummary, type SessionEndedBy } from './usage.ts';
-import { actionResult, catalogLine, defineMcpTool, describeToolDetail, errorResult, invokeTool, redacting, redactResult, textResult, unavailableSessionTool, type McpToolCallExtra, type McpToolResult, type McpToolSpec } from '../session-tools/tools.ts';
+import { runCodeApi } from '../session-tools/run-code.ts';
+import { actionResult, catalogLine, toolSignature, defineMcpTool, describeToolDetail, errorResult, invokeTool, redacting, redactResult, textResult, unavailableSessionTool, type McpToolCallExtra, type McpToolResult, type McpToolSpec } from '../session-tools/tools.ts';
 
 /** How long one session may live, whatever happens. */
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
@@ -93,6 +94,8 @@ export interface OpenSessionOptions {
   readonly headed?: boolean | undefined;
   /** One test to run in the session before it is handed over, named as `e2e run` takes a positional (`tests/a.e2e.ts:12`). */
   readonly test?: string | undefined;
+  /** Where on the app's URL the session opens instead of its root, as `app.open(path)` takes it. Excludes `test`. */
+  readonly path?: string | undefined;
   /**
    * The engine to open on where the project has no config file: a package
    * whose default export is its factory (`@e2e-dev/web`), or that factory
@@ -177,7 +180,7 @@ export class SessionHost {
     const { attach, target, config, test, engine, app } = options;
     const headed = attach === undefined ? options.headed ?? this.options.headed : false;
     const usage = new SessionUsage(this.sessions.liveCount, headed, attach !== undefined);
-    const clash = attach === undefined ? undefined : Object.entries({ target, config, test, engine, app, headed: options.headed })
+    const clash = attach === undefined ? undefined : Object.entries({ target, config, test, engine, app, path: options.path, headed: options.headed })
       .find(([, value]) => value !== undefined)?.[0];
 
     const opening = clash === undefined
@@ -315,8 +318,8 @@ export class SessionHost {
     return this.run(live, () => invokeTool(name, tool, args, extra)).then(
       (result) => {
         if (!isGrammarVerb(name)) {
-          // A grammar action's failure was counted with its code as it happened; a project tool's result carries none.
-          if (result.isError === true) live.usage.failed(undefined);
+          // A grammar action's failure, and run_code's, was counted with its code as it happened; a project tool's result carries none.
+          if (result.isError === true && name !== 'run_code') live.usage.failed(undefined);
           return redactResult(result, redact);
         }
         return redactResult(actionResult(name, result), redact);
@@ -409,6 +412,12 @@ export class SessionHost {
     usage.resolved(target.platform, target.engine);
     this.sessions.claimEngine(id, target.name, target.engine);
     // Selected before anything boots: a name that selects no test, or several, costs no engine.
+    if (options.path !== undefined && options.test !== undefined) {
+      throw new ConfigurationError('INVALID_ARGUMENT', 'open_session: test leaves the session on the screen where the test stopped, so path has nothing to open; pass one or the other');
+    }
+    if (options.path !== undefined && target.app.base === undefined) {
+      throw new ConfigurationError('INVALID_ARGUMENT', `open_session: path opens a page of the app URL, and target "${target.name}" declares no app.url`);
+    }
     const test = options.test === undefined ? undefined : await selectStandaloneTest(config, target, options.test, graph);
     const ttlMs = this.options.ttlMs ?? SESSION_TTL_MS;
     const abort = new AbortController();
@@ -474,6 +483,7 @@ export class SessionHost {
         }),
         warn: (message) => this.log('warning', message),
         onActionFailed: (cause) => usage.failed(classifyError(cause).code),
+        onRunCodeFailed: (code) => usage.failed(code),
         runCode: { attempt: () => attempt, engineFixtures: Object.keys(target.engine?.fixtures ?? {}) },
       });
       const live: LiveSession = {
@@ -498,7 +508,7 @@ export class SessionHost {
       // The code frame reads the test file as it is on disk, so the text passes the session's ledger like a tool result.
       const outcome = test === undefined || ran === undefined ? undefined : attempt.agentRuntime.redact(describeTestOutcome(test, ran, config.projectRoot));
       // The screen a test stopped on is the one to show; only a fresh session opens the app URL.
-      const text = this.openingText(live, config, await this.firstScreen(live, outcome === undefined), outcome);
+      const text = this.openingText(live, config, await this.firstScreen(live, outcome === undefined, options.path), outcome);
       // A first screen that came back despite the cancel must not become a live session nobody asked for.
       if (abort.signal.aborted) throw new InfrastructureError('CANCELLED', `opening session ${id} was cancelled`);
       opening.removeEventListener('abort', cancel);
@@ -572,7 +582,7 @@ export class SessionHost {
    * observation goes through the catalog's context, which keeps it for that
    * action's line.
    */
-  private async firstScreen(live: LiveSession, open: boolean): Promise<string> {
+  private async firstScreen(live: LiveSession, open: boolean, path: string | undefined): Promise<string> {
     if (!open) {
       try {
         return live.screen.initial(await live.step.run(() => live.catalog.context.observe()));
@@ -581,13 +591,17 @@ export class SessionHost {
       }
     }
     const base = live.target.app.base?.href;
+    if (path !== undefined && !live.step.context.target.verbs.has('navigate')) {
+      throw new ConfigurationError('INVALID_ARGUMENT', `open_session: path opens a page by navigating, and target "${live.target.name}"'s engine has no navigate`);
+    }
     if (base !== undefined && live.step.context.target.verbs.has('navigate')) {
+      const url = path ?? base;
       try {
-        await live.step.run((context) => context.actions.navigate(base));
+        await live.step.run((context) => context.actions.navigate(url));
       } catch (cause) {
-        return `Opening ${base} failed: ${errorMessage(cause)}\nUse navigate once the app is reachable.`;
+        return `Opening ${url} failed: ${errorMessage(cause)}\nUse navigate once the app is reachable.`;
       }
-      live.catalog.lines.opened();
+      live.catalog.lines.opened(path);
     } else if (launchesPinnedApp(live.target)) {
       live.catalog.lines.opened();
     }
@@ -607,7 +621,19 @@ export class SessionHost {
     lines.push(
       `Pass session "${live.id}" to every tools, call, and close_session; with several sessions open, a call without it fails.`,
     );
-    lines.push(`Tools (run one with call {tool, args}; tools {tool} shows a tool's arguments):`, ...this.catalogLines(live));
+    // The actions go by name and arguments alone: there are many, each says what it does, and `tools` holds the rest.
+    const entries = Object.entries(live.catalog.tools);
+    const isAction = (name: string): boolean => isGrammarVerb(name) && name !== 'observe';
+    const actions = entries.filter(([name]) => isAction(name));
+    lines.push(
+      `Tools (run one with call {tool, args}; tools {tool} shows a tool's arguments):`,
+      ...entries.filter(([name]) => !isAction(name) && name !== 'run_code').map(([name, tool]) => catalogLine(name, tool, live.catalog.readOnly.has(name))),
+      ...(actions.length === 0 ? [] : [`- Single actions, each on a node id (target) or a point of the latest screenshot (x, y); tools lists what each does: ${actions.map(([name, tool]) => toolSignature(name, tool)).join('; ')}.`]),
+    );
+    const runCode = live.catalog.tools['run_code'];
+    if (runCode !== undefined) {
+      lines.push(`- ${toolSignature('run_code', runCode)}: JavaScript with loops, variables, and return values. Use it for most of the work: one call that reads, computes, acts, and asserts, in place of many single actions. A read's value shows in the result unless the code returns or logs. Its API:`, ...runCodeApi({ attempt: () => live.attempt, engineFixtures: Object.keys(live.target.engine?.fixtures ?? {}) }).map((line) => `  ${line}`));
+    }
     lines.push(
       'Node ids ("n42") are valid only for the newest observation; every action reports what changed on screen and the test line that repeats it (test_lines returns them all), and observe shows the whole screen. Call close_session when you are done.',
       READ_WRITING_GUIDE,
@@ -657,6 +683,11 @@ export class SessionHost {
           .boolean()
           .optional()
           .describe('Show the browser or simulator, when the engine supports it; pass true when the user wants to watch. Default: headless, unless the server was started with --headed'),
+        path: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Where on the app URL to open instead of its root, when the task names a page: "/settings/members". The first observation is that page, so no navigate is needed'),
         test: z
           .string()
           .min(1)
@@ -699,7 +730,7 @@ export class SessionHost {
     return defineMcpTool({
       name: 'tools',
       description:
-        "List the tools a session can run through call: observe, the grammar its engine honors (one tool per action the engine declares, type_secret when a secret is configured, and screenshot and the point tools), locate, run_code (test statements run on the live app), test_lines (the test line each action printed and the statements run_code passed, as a draft test body), start_recording and stop_recording on engines with video, and the project's own tools. With tool, shows that tool's full description and the JSON Schema of its arguments.",
+        "List the tools a session can run through call: observe, the grammar its engine honors (one tool per action the engine declares, type_secret when a secret is configured, and screenshot and the point tools), locate, run_code (JavaScript run on the test API, against the live app), test_lines (the test line each action printed and the lines run_code passed, as a draft test body), start_recording and stop_recording when the engine records video, and the project's own tools. With tool, shows that tool's full description and the JSON Schema of its arguments.",
       inputSchema: z.object({
         tool: z.string().min(1).optional().describe('A catalog tool name, for its full contract'),
         session: z.string().min(1).optional().describe('Session id from open_session; may be omitted only while one session is open'),
@@ -713,14 +744,20 @@ export class SessionHost {
     return defineMcpTool({
       name: 'call',
       description:
-        "Run one tool of a session by name, with its arguments as an object: call {tool: \"tap\", args: {target: \"n42\"}, session: \"<id>\"}. The session's catalog (from open_session or tools) names the tools and their arguments. Actions report what changed on screen and the test line that repeats them; node ids are valid only for the newest observation.",
+        "Run one tool of a session by name, with its arguments as an object: call {tool: \"tap\", args: {target: \"n42\"}, session: \"<id>\"}. The arguments may also sit beside tool: call {tool: \"tap\", target: \"n42\"}. The session's catalog (from open_session or tools) names the tools and their arguments. Actions report what changed on screen and the test line that repeats them; node ids are valid only for the newest observation.",
       inputSchema: z.object({
         tool: z.string().min(1).describe('A catalog tool name, e.g. "observe", "tap", "locate", "screenshot"'),
         args: z.record(z.string(), z.unknown()).optional().describe("The tool's arguments; omit for a tool without any"),
         session: z.string().min(1).optional().describe('Session id from open_session; may be omitted only while one session is open'),
-      }).strict(),
+      }).catchall(z.unknown()),
       readOnly: false,
-      call: (args, extra) => this.call(args.session, args.tool, args.args ?? {}, extra),
+      call: ({ tool, args, session, ...beside }, extra) => {
+        // Agents often write the tool's arguments beside its name; the tool's own schema still refuses a key it does not declare.
+        if (args !== undefined && Object.keys(beside).length > 0) {
+          throw new ConfigurationError('INVALID_ARGUMENT', `call ${tool}: pass the tool's arguments in args or beside tool, not both (${Object.keys(beside).join(', ')})`);
+        }
+        return this.call(session, tool, args ?? beside, extra);
+      },
     });
   }
 

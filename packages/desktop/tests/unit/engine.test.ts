@@ -25,8 +25,9 @@ describe('desktop()', () => {
     expect(() => resolveOptions({ bogus: 1 } as never)).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
     expect(resolveOptions({ settle: false })).toMatchObject({ settleMs: 0, headed: false, interactiveOnly: false });
     expect(resolveOptions({})).toMatchObject({ maxDepth: 24 });
-    expect(resolveOptions({ maxDepth: 64 })).toMatchObject({ maxDepth: 64 });
-    for (const maxDepth of [0, 256, 2.5]) expect(() => resolveOptions({ maxDepth })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+    expect(resolveOptions({ maxDepth: 50 })).toMatchObject({ maxDepth: 50 });
+    for (const maxDepth of [0, 51, 2.5]) expect(() => resolveOptions({ maxDepth })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+    expect(() => resolveOptions(null as unknown as undefined)).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
   });
 
   it('refuses an app it cannot launch', () => {

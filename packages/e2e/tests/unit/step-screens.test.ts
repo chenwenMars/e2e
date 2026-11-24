@@ -117,6 +117,37 @@ describe('StepRecorder.recordScreen', () => {
     expect(look!.screen).toBeUndefined();
     expect(tap!.screen).toMatchObject({ since: 0, changes: ['added listitem "Milk"'] });
   });
+
+  it('never reads a screen an abandoned step saw, before or after it was abandoned', async () => {
+    const steps = new StepRecorder('attempt');
+    let reads = 0;
+    const seen = (text: string) => () => {
+      reads += 1;
+      return screen(text);
+    };
+    await steps.run('app', 'app.open', '/', async () => {
+      steps.recordScreen(seen('#root document'));
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const left = steps.run('screen', 'locator.tap', 'Gone', async () => {
+      steps.recordScreen(seen('#root document\n #n2 button "Gone"'));
+      await released;
+      steps.recordScreen(seen('#root document\n #n2 button "Later"'));
+    });
+    expect(steps.abandonRunning()).toMatchObject({ code: 'STEP_NOT_AWAITED' });
+    release();
+    await left;
+    await steps.run('screen', 'locator.tap', 'Add', async () => {
+      steps.recordScreen(seen('#root document\n #n3 listitem "Milk"'));
+    });
+    const [, abandoned, next] = steps.all();
+    expect(reads).toBe(2);
+    expect(abandoned!.screen).toBeUndefined();
+    expect(next!.screen).toMatchObject({ since: 0, changes: ['added listitem "Milk"'] });
+  });
 });
 
 describe('the session screen route and environment', () => {

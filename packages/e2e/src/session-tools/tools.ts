@@ -22,7 +22,7 @@ import { GRAMMAR_TOOL_NAMES } from '@e2e-dev/core/lib/agent/action-names';
 import { isFailedResult } from '@e2e-dev/core/lib/agent/loop-guards';
 import { codedMessage, ConfigurationError, errorMessage, InfrastructureError } from '@e2e-dev/core/lib/internal/errors';
 import { describeIssue } from '@e2e-dev/core/lib/internal/standard-schema';
-import { processSecrets } from '@e2e-dev/core/lib/run/secrecy';
+import { redactError } from '@e2e-dev/core/lib/run/secrecy';
 import type { StandardSchemaV1 } from '@e2e-dev/core/lib/types';
 
 /** One MCP content part this server emits. */
@@ -137,11 +137,15 @@ export function catalogLine(
   readOnly: boolean,
   redact: (text: string) => string = (text) => text,
 ): string {
+  return `- ${redact(toolSignature(name, tool))}: ${firstSentence(redact(toolDescription(name, tool)))}${readOnly ? ' [read-only]' : ''}`;
+}
+
+/** A tool's name and argument names, `?` marking an optional one: `tap {target, modifiers?}`. */
+export function toolSignature(name: string, tool: ToolSet[string]): string {
   const schema = toolJsonSchema(tool);
   const required = new Set(schema.required ?? []);
   const args = Object.keys(schema.properties ?? {}).map((key) => (required.has(key) ? key : `${key}?`));
-  const signature = args.length === 0 ? name : `${name} {${args.join(', ')}}`;
-  return `- ${redact(signature)}: ${firstSentence(redact(toolDescription(name, tool)))}${readOnly ? ' [read-only]' : ''}`;
+  return args.length === 0 ? name : `${name} {${args.join(', ')}}`;
 }
 
 /** Explains why a name cannot be called on this target. */
@@ -327,7 +331,8 @@ export function redacting(spec: McpToolSpec): McpToolSpec {
       } catch (cause) {
         result = errorResult(cause);
       }
-      return redactResult(result, (text) => processSecrets.redact(text));
+      // redactError also reads the environment again: a config that failed may have loaded a key into it.
+      return redactResult(result, redactError);
     },
   };
 }

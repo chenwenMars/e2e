@@ -3,7 +3,7 @@
  * workflow's `GITHUB_TOKEN` against `GITHUB_REPOSITORY`.
  */
 
-import { BOT_LOGIN, COMPLIANCE_LABEL, COMPLIANCE_MARKER, complianceComment, type PullRequest } from './rules.ts';
+import { BOT_LOGIN, COMPLIANCE_LABEL, COMPLIANCE_MARKER, TAKEOVER_MARKER, complianceComment, type PullRequest } from './rules.ts';
 
 const API = 'https://api.github.com';
 
@@ -89,9 +89,54 @@ export async function closeWithComment(number: number, body: string): Promise<vo
   await rest(`/pulls/${number}`, { method: 'PATCH', body: { state: 'closed' } });
 }
 
+/** The bot's comment carrying `marker` on a PR, if it has one. */
+async function markerComment(number: number, marker: string): Promise<Comment | undefined> {
+  return (await comments(number)).find(({ body, user }) => user?.login === BOT_LOGIN && body.includes(marker));
+}
+
 /** The policy check's own comment on a PR, if it has one. */
-export async function policyComment(number: number): Promise<Comment | undefined> {
-  return (await comments(number)).find(({ body, user }) => user?.login === BOT_LOGIN && body.includes(COMPLIANCE_MARKER));
+export function policyComment(number: number): Promise<Comment | undefined> {
+  return markerComment(number, COMPLIANCE_MARKER);
+}
+
+/** The takeover announcement on a PR, if it has one. */
+export function takeoverAnnouncement(number: number): Promise<Comment | undefined> {
+  return markerComment(number, TAKEOVER_MARKER);
+}
+
+/** Who last added `label` to the PR, from its timeline. */
+export async function labeledBy(number: number, label: string): Promise<string | undefined> {
+  const { repository } = await graphql<{
+    repository: { pullRequest: { timelineItems: { nodes: { actor: { login: string } | null; label: { name: string } }[] } } };
+  }>(
+    `query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          timelineItems(itemTypes: [LABELED_EVENT], last: 100) {
+            nodes { ... on LabeledEvent { actor { login } label { name } } }
+          }
+        }
+      }
+    }`,
+    { number },
+  );
+  return repository.pullRequest.timelineItems.nodes.findLast((event) => event.label.name === label)?.actor?.login;
+}
+
+/** Posts the takeover announcement, or rewrites the one there, and assigns the PR to the maintainer who took it. */
+export async function announceTakeover(number: number, maintainer: string, body: string, existing: Comment | undefined): Promise<void> {
+  if (existing === undefined) await rest(`/issues/${number}/comments`, { method: 'POST', body: { body } });
+  else await rest(`/issues/comments/${existing.id}`, { method: 'PATCH', body: { body } });
+  await rest(`/issues/${number}/assignees`, { method: 'POST', body: { assignees: [maintainer] } });
+}
+
+/**
+ * Drops the takeover announcement, so a PR handed back does not keep saying
+ * it is taken. The assignee stays: by then nothing says who was assigned for
+ * the takeover and who for another reason.
+ */
+export async function withdrawTakeover(existing: Comment): Promise<void> {
+  await rest(`/issues/comments/${existing.id}`, { method: 'DELETE' });
 }
 
 /** The PR as it is now, not as an event payload or a listing saw it. */

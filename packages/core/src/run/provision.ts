@@ -171,6 +171,8 @@ export interface PrepareScope {
   readonly signal: AbortSignal;
   /** Whether the run asked for a visible surface, so a hook provisions for the browser it will launch. */
   readonly headed: boolean;
+  /** The device `e2e run --device` names, and the one target it binds. */
+  readonly device?: { readonly target: string; readonly name: string } | undefined;
   /** Where a hook's progress lines go, under the target they concern. */
   readonly notice: (targetName: string, line: string) => void;
 }
@@ -215,6 +217,7 @@ export class PreparedEngines {
         ...(scope.hostId === undefined ? {} : { hostId: scope.hostId }),
         projectRoot: scope.projectRoot,
         headed: scope.headed,
+        ...(scope.device?.target === target.name ? { device: scope.device.name } : {}),
         app: engineAppInfo(target.app),
         slots,
         env: scope.env,

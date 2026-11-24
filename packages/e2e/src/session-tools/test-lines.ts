@@ -10,7 +10,7 @@
  * target and nothing else is printed, one that matches its twins too is
  * narrowed (to the nodes that render, under a container, or by position, in
  * that order), and otherwise the result says why there is no line. The
- * session keeps the lines in order, with the statements `run_code` passed
+ * session keeps the lines in order, with the lines `run_code` passed
  * among them, and `test_lines` returns them as a draft test body; after a
  * test the session ran, as the lines that continue it. Only the session
  * catalog wraps its grammar this way; the testing agent's model loop never
@@ -86,6 +86,8 @@ export interface TestLineOptions {
   readonly appBase?: { readonly href: string; readonly origin: string } | undefined;
   /** The configured credentials and secrets a fill is written with. */
   readonly fills?: TestLineFills | undefined;
+  /** The engine's fixture names, which a line of `run_code`'s may use anywhere in it. */
+  readonly engineFixtures?: readonly string[] | undefined;
   /** The test the session ran before it went live, as `file:line`: the lines carry on from where it stopped. */
   readonly testRan?: string | undefined;
 }
@@ -178,15 +180,13 @@ export class SessionTestLines {
   }
 
   /** Records the session's opening of the app, which a test does with `app.open()`. */
-  opened(): void {
-    this.entries.push({ tool: 'open_session', line: 'await app.open();' });
+  opened(path?: string): void {
+    this.entries.push({ tool: 'open_session', line: path === undefined ? 'await app.open();' : navigationLine(path, this.options.appBase) });
   }
 
-  /** Records statements `run_code` ran and passed, already in a test's own words, each awaited and ended as a test line. */
-  ran(sources: readonly string[]): void {
-    for (const source of sources) {
-      this.entries.push({ tool: 'run_code', line: `${source.startsWith('await ') ? '' : 'await '}${source}${source.endsWith(';') ? '' : ';'}` });
-    }
+  /** Records the lines `run_code` ran and passed, as its recorder wrote them. */
+  ran(lines: readonly string[]): void {
+    for (const line of lines) this.entries.push({ tool: 'run_code', line });
   }
 
   /** The grammar tools, each that has a line answering with it after its lead. */
@@ -200,7 +200,7 @@ export class SessionTestLines {
   tool(): ToolSet[string] {
     return {
       description:
-        "Every test line this session's actions printed so far, in order, as a draft test body: the screen.* and app.* calls that repeat each action, with a comment where an action has none, and the statements run_code passed, as written. Paste it into a test, then add any assertion it lacks. After open_session with test, the lines continue that test from where it stopped.",
+        "Every test line this session's actions printed so far, in order, as a draft test body: the screen.* and app.* calls that repeat each action, with a comment where an action has none, and the lines run_code passed. Paste it into a test, then add any assertion it lacks. After open_session with test, the lines continue that test from where it stopped.",
       inputSchema: z.object({}).strict(),
       execute: async () => this.draft(),
     };
@@ -209,7 +209,7 @@ export class SessionTestLines {
   /** The recorded lines as a draft test body. */
   draft(): string {
     if (this.entries.length === 0) {
-      return 'No test lines yet. Each action (tap, type, select, check, and the rest) prints the line that repeats it in a test, run_code adds the statements that pass, and this tool returns them in order.';
+      return 'No test lines yet. Each action (tap, type, select, check, and the rest) prints the line that repeats it in a test, run_code adds the lines that pass, and this tool returns them in order.';
     }
     const body = this.entries.map((entry) => ('line' in entry ? entry.line : `// ${entry.tool}: no test line: ${entry.reason}`));
     const imports = ['credentials', 'secrets'].filter((name) => body.some((line) => line.includes(`${name}.`)));
@@ -218,7 +218,7 @@ export class SessionTestLines {
     // A session that ran a test holds only what came after it: the test's own lines are in its file.
     const [lead, place] =
       testRan === undefined
-        ? [`Draft test body from this session's actions, ${count}:`, 'Paste it into a test body, async ({ app, screen }) => { ... },']
+        ? [`Draft test body from this session's actions, ${count}:`, `Paste it into a test body, async ({ ${fixturesIn(body, this.options.engineFixtures ?? []).join(', ')} }) => { ... },`]
         : [`Test lines from this session's actions after test ${testRan} stopped, ${count}:`, 'Put them in that test where it stopped, in place of the line that failed or after its last line,'];
     return [
       lead,
@@ -370,7 +370,8 @@ export class SessionTestLines {
    * node's own fields that matches it alone; else the query that matched it
    * among its twins, kept to the nodes that render or scoped under a
    * container that tells them apart; else that query by position, with a
-   * comment saying so, when its place among the twins is certain.
+   * comment saying so, when its place among the twins is certain. A node
+   * with no field to query is found by its role the same way.
    */
   private async locator(id: string | undefined): Promise<Found> {
     if (id === undefined) return { reason: 'the action names no node' };
@@ -400,11 +401,14 @@ export class SessionTestLines {
     }
     // The tree an observation hands over carries no test id; the node the
     // locator engine read does, found among the matches of its role.
+    let byRole: { readonly located: Located; readonly probe: Probe } | undefined;
     if (match === undefined && node.role !== undefined && ROLES.has(node.role)) {
-      const probe = await attempt(this.options.query({ role: node.role }).expression);
+      const located = this.options.query({ role: node.role });
+      const probe = await attempt(located.expression);
       if (probe !== undefined && probe.index >= 0) {
         match = probe.matches[probe.index];
         matchCertain = probe.certain;
+        byRole = { located, probe };
       }
     }
     // Only a match placed for certain lends its test id: one its box alone
@@ -414,6 +418,14 @@ export class SessionTestLines {
       const located = this.options.query({ testId });
       const probe = await attempt(located.expression);
       if (probe !== undefined && probe.count === 1 && probe.matches[0]?.testId === match?.testId) return located;
+    }
+    // A control nothing names is found by its role: alone when it is the
+    // only one, else told from the others of its role as named twins are.
+    if (queries.length === 0 && byRole !== undefined) {
+      if (byRole.probe.count === 1 && byRole.probe.index === 0) {
+        return { ...byRole.located, comment: `the only ${node.role ?? 'node'} on the screen, found by its role alone; a name or test id holds up better` };
+      }
+      twins = byRole;
     }
     if (twins === undefined) {
       if (tries <= 0) return { reason: `no locator found it alone within ${String(MAX_TRIES)} tries; try locate` };
@@ -660,4 +672,16 @@ function stringField(input: Readonly<Record<string, unknown>>, key: string): str
 /** Whether a tool's input is an object to read arguments from. */
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null;
+}
+
+const IMPORTED: ReadonlySet<string> = new Set(['expect', 'credentials', 'secrets']);
+
+/** The fixtures a draft's lines start from, `app` and `screen` first, so the test body asks for each one. */
+function fixturesIn(body: readonly string[], engine: readonly string[]): readonly string[] {
+  const declared = new Set(body.flatMap((line) => /^const ([A-Za-z_$][\w$]*) = /.exec(line)?.[1] ?? []));
+  const named = body.flatMap((line) => /^(?:const [A-Za-z_$][\w$]* = )?await (?:expect\()?([A-Za-z_$][\w$]*)[.(]/.exec(line)?.[1] ?? []);
+  // `expect` and the secret handles are imports, not fixtures.
+  // An engine's fixture may be an argument, as in `expect(browser)`, where no line starts from it.
+  const passed = engine.filter((name) => body.some((line) => new RegExp(`(?<![.\\w$'"\`])${name.replaceAll('$', '\\$')}(?=[.(),\\s])`).test(line)));
+  return [...new Set(['app', 'screen', ...[...named, ...passed].filter((name) => !declared.has(name) && !IMPORTED.has(name))])];
 }

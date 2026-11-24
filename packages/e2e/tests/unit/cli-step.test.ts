@@ -155,13 +155,17 @@ describe('StepGate', () => {
     later();
     subject.press('help');
     expect(await held.released()).toBe(false);
-    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 2 }], help: true });
+    const every = ['enter', 'n', 'a', 'q'];
+    const keys = (): string[] | undefined => shown.at(-1)?.keys.map(({ key }) => key);
+    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 2 }] });
+    expect(keys()).toEqual(every);
     subject.press('continue');
     hold(step(3, '/pay'));
-    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 3 }], help: true });
+    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 3 }] });
+    expect(keys()).toEqual(every);
     later();
     subject.press('help');
-    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 3 }], help: false });
+    expect(shown.at(-1)).toMatchObject({ steps: [{ number: 3 }], keys: [{ key: 'enter', does: 'run this step' }, { key: 'h', does: 'show help' }, { key: 'q', does: 'quit' }] });
   });
 
   it('lets the rest of one test through on n, and holds again at the next test or target', async () => {

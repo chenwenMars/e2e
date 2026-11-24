@@ -932,21 +932,24 @@ await screen.getByRole('button', 'Account').hover();
 #### `setInputFiles`
 
 ```ts
-/** Sets the files of exactly one file input, or of a control that opens a file chooser; paths resolve from the project root, and an empty array clears the input. */
-setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promise<void>;
+/** Sets the files of exactly one file input, or of a control that opens a file chooser; paths resolve from the project root, payloads supply bytes in memory, and an empty array clears the input. */
+setInputFiles(files: string | readonly string[] | FilePayload | readonly FilePayload[], options?: ActionOptions): Promise<void>;
 ```
 
 ```ts
 await screen.getByLabel('Receipt').setInputFiles('fixtures/receipt.pdf');
+await screen.getByLabel('Receipt').setInputFiles({
+  name: 'receipt.txt', mimeType: 'text/plain', buffer: Buffer.from('Receipt total: 12.00'),
+});
 await screen.getByLabel('Receipt').setInputFiles([]);
 ```
 
-Web only. An empty array clears the input and fires `input` and `change`. It also takes a button that opens a file chooser.
+Web only. Pass a plain object with only the fields of `FilePayload`: `name: string`, `mimeType: string`, and `buffer: Buffer`. Pass one payload or an array of payloads; do not mix paths and payloads in an array. The combined payload size must be less than 50 MiB. For larger files, use a path if the target supports transferring files of that size. An empty array clears the input and fires `input` and `change`. A button that opens a file chooser accepts the same inputs.
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | A blank path, or a path that does not exist or sits under a directory the runner cannot search. |
-| `UNSUPPORTED_CAPABILITY` | On a device, which has no file input. |
+| `INVALID_ARGUMENT` | A blank or missing path, a path under a directory the runner cannot search, an invalid payload, mixed paths and payloads, or payloads totaling 50 MiB or more. |
+| `UNSUPPORTED_CAPABILITY` | On a device, or for payloads on an engine that does not declare `setInputFilePayloads`. |
 | `ACTION_FAILED` | A button that opens no file chooser. |
 
 #### `dragTo`

@@ -17,7 +17,7 @@ import { rejectUnknownKeys, rejectUnknownOptions } from '../internal/options.ts'
 import { MAX_TIMER_MS } from '../internal/time.ts';
 import { builtInFixtures, CORE_FIXTURES } from '../run/fixtures.ts';
 import { redactOpening } from '../run/redact-opening.ts';
-import { processSecrets, sessionLedger, shareStaticSecrets } from '../run/secrecy.ts';
+import { processSecrets, registerProviderKeys, sessionLedger, shareStaticSecrets } from '../run/secrecy.ts';
 import { targetIdentity } from '../run/sessions.ts';
 import { openCoreHost, type StandaloneHost } from '../run/standalone.ts';
 import type { StandaloneAttempt } from '../run/standalone-attempt.ts';
@@ -162,6 +162,8 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
   try {
     opened = await opening(async () => {
       const env = options.env ?? process.env;
+      // Before the engine prepares with it: a failure there can quote a key only this environment holds.
+      registerProviderKeys(env);
       const resolved = resolveProjectConfig(
         {
           // An engine that declares no platform labels its host with its name.

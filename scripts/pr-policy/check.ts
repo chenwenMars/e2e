@@ -1,10 +1,12 @@
 /**
  * Checks one community pull request against the policy in CONTRIBUTING.md
- * (`.github/workflows/pr-policy.yml`, on every open, edit, and push).
+ * (`.github/workflows/pr-policy.yml`, on every open, edit, and push, and
+ * when the `maintainer takeover` label goes on or off).
  *
  * A PR that falls short gets the `needs:compliance` label and one comment
  * listing what to fix, edited in place as the PR changes; `sweep.ts` closes it
- * once the grace period ends. A PR that is fixed loses both.
+ * once the grace period ends. A PR that is fixed, or that a maintainer took
+ * over, loses both.
  *
  * Reads the author from the `pull_request_target` payload at
  * `GITHUB_EVENT_PATH` and the title, body, and labels live. Never
@@ -14,7 +16,7 @@
 
 import { readFileSync } from 'node:fs';
 import { clear, flag, livePullRequest, policyComment } from './github.ts';
-import { COMPLIANCE_LABEL, POLICY_START, isCommunity, problems } from './rules.ts';
+import { COMPLIANCE_LABEL, POLICY_START, isCommunity, outstanding, payloadAuthor } from './rules.ts';
 
 interface Payload {
   pull_request: {
@@ -35,12 +37,7 @@ if (!eventPath) {
 }
 const pr = (JSON.parse(readFileSync(eventPath, 'utf8')) as Payload).pull_request;
 
-const author = {
-  login: pr.user.login,
-  association: pr.author_association,
-  bot: pr.user.type === 'Bot',
-  fromFork: pr.head.repo?.full_name !== pr.base.repo.full_name,
-};
+const author = payloadAuthor(pr);
 if (!isCommunity(author)) {
   console.log(`#${pr.number}: ${author.login} is a maintainer or bot, skipping`);
   process.exit(0);
@@ -51,8 +48,8 @@ if (Date.parse(pr.created_at) < POLICY_START) {
 }
 
 const live = await livePullRequest(pr.number);
-const found = problems(live);
-console.log(found.length === 0 ? `#${pr.number}: compliant` : `#${pr.number}: ${found.length} problem(s)\n- ${found.join('\n- ')}`);
+const found = outstanding(live);
+console.log(found.length === 0 ? `#${pr.number}: nothing to fix` : `#${pr.number}: ${found.length} problem(s)\n- ${found.join('\n- ')}`);
 if (dryRun) process.exit(0);
 
 const existing = await policyComment(pr.number);

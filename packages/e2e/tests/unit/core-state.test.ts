@@ -1,10 +1,12 @@
 /** `@e2e-dev/core`'s `SessionState`: encrypted export, authenticated import, and the host it restores on. */
+import { createCipheriv } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { describe, expect, it } from 'vitest';
 import { restoredStateFor, SessionState } from '@e2e-dev/core/lib/core/state';
+import { canonicalJson } from '@e2e-dev/core/lib/internal/ids';
 
 const identity = { engine: 'web', platform: 'web', appIdentity: 'a'.repeat(64) };
 const key = new Uint8Array(32).fill(1);
@@ -43,11 +45,28 @@ describe('SessionState', () => {
     await expect(SessionState.import(new TextEncoder().encode(JSON.stringify(edited)), { key })).rejects.toMatchObject({ code: 'SESSION_INVALID' });
     await expect(SessionState.import(new TextEncoder().encode('{}'), { key })).rejects.toMatchObject({ code: 'SESSION_INVALID' });
     await expect(SessionState.import(new TextEncoder().encode('not json'), { key })).rejects.toMatchObject({ code: 'SESSION_INVALID' });
+    // An unknown field JSON parses to Infinity, which the canonical JSON the tag covers cannot hold.
+    await expect(SessionState.import(new TextEncoder().encode(`{"note":1e400,${text(bytes).slice(1)}`), { key })).rejects.toMatchObject({ code: 'SESSION_INVALID' });
     for (const field of ['iv', 'tag'] as const) {
       const malformed = JSON.parse(text(bytes)) as { state: Record<string, string> };
       malformed.state[field] = '';
       await expect(SessionState.import(new TextEncoder().encode(JSON.stringify(malformed)), { key }), field).rejects.toMatchObject({ code: 'SESSION_INVALID' });
     }
+  });
+
+  it('refuses an authentic payload that is not JSON without quoting it in the error', async () => {
+    const document = JSON.parse(text(await captured().export({ key }))) as { state: Record<string, string> };
+    const clear = { ...document.state };
+    delete clear.tag;
+    delete clear.ciphertext;
+    const cipher = createCipheriv('aes-256-gcm', key, Buffer.from(clear.iv!, 'base64'));
+    cipher.setAAD(Buffer.from(canonicalJson({ ...document, state: clear }), 'utf8'));
+    const ciphertext = Buffer.concat([cipher.update('{"data": plaintext-marker', 'utf8'), cipher.final()]);
+    const sealed = { ...document, state: { ...clear, tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') } };
+    const error: unknown = await SessionState.import(new TextEncoder().encode(JSON.stringify(sealed)), { key }).catch((thrown: unknown) => thrown);
+    expect(error).toMatchObject({ code: 'SESSION_INVALID', message: 'the session state has an unexpected payload' });
+    // A JSON syntax error quotes the text it failed on, here the decrypted payload, so none is kept as the cause.
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it('takes a 32-byte key only', async () => {

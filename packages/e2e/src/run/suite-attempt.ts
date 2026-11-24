@@ -153,7 +153,7 @@ export class SuiteAttempt implements SuiteHookSession {
       assertionTimeout: config.assertionTimeout,
       toPass: config.toPass,
       recordSecondaryError: (error) => { retryMessages.push(error.message); },
-      ...(running.settable ? { setTimeout: (ms: number) => timeout.set(ms) } : {}),
+      ...(running.settable ? { setTimeout: (update) => (timeout.set(update(timeout.timeoutMs)) ? 'set' : 'ended') } : {}),
     };
     const leave = host.workerFixtures.enter(builtIns);
     const owns = (owner: string): void => {

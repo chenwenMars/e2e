@@ -301,6 +301,7 @@ describe('MCP attachments to held tests', { timeout: 60_000 }, () => {
       test: 'checkout',
       engine: '@e2e-dev/web',
       app: {},
+      path: '/echo',
       headed: false,
     };
 
@@ -624,16 +625,16 @@ ${CONFIG.replace('  video: true,', `  video: true,
       },
     });
     expect(ran.isError, ran.text).toBe(false);
-    expect(ran.text).toContain('All 2 statements passed.');
+    expect(ran.text).toContain('Test lines: 2.');
     expect(ran.text).toContain('Submitted');
-    expect((await invoke(client, 'call', { tool: 'test_lines' })).text).toContain('await app.open("/from-code");');
+    expect((await invoke(client, 'call', { tool: 'test_lines' })).text).toContain("await app.open('/from-code');");
 
     const missed = await invoke(client, 'call', {
       tool: 'run_code',
       args: { code: 'await screen.getByRole("button", "Missing").tap();', timeout: 50 },
     });
     expect(missed.isError, missed.text).toBe(true);
-    expect(missed.text).toContain('Each statement waited at most 50 ms.');
+    expect(missed.text).toContain('Test lines: 1, 1 failed.');
     expect(missed.text).toContain('LOCATOR_NOT_FOUND');
 
     expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
@@ -642,6 +643,28 @@ ${CONFIG.replace('  video: true,', `  video: true,
     expect(report).toContain('/after');
     expect(report).not.toContain('/from-code');
     expect(report).not.toContain('Missing');
+  });
+
+  it("keeps what attached run_code leaves behind out of the held test's verdict", async () => {
+    const dir = project(`await screen.pause(); ${STEP}`);
+    const held = await pause(dir);
+    const { client } = await mcp(dir);
+    await openSession(client, { attach: held.id });
+    const run = (code: string) => invoke(client, 'call', { tool: 'run_code', args: { code } });
+
+    // A soft failure is the call's, not the test's.
+    const soft = await run('expect.soft(1).toBe(2);');
+    expect(soft.isError, soft.text).toBe(true);
+    expect(soft.text).toContain('1 soft assertion failed');
+    // Thrown outside the code's own promise, while the call runs: the call fails.
+    const microtask = await run("queueMicrotask(() => { throw new Error('in a microtask'); });\nawait new Promise((resolve) => setTimeout(resolve, 100));");
+    expect(microtask.text).toContain('Error: in a microtask');
+    // Thrown after the call ended: nobody is left to fail, and the worker goes on.
+    expect((await run("setTimeout(() => { throw new Error('late'); }, 150);\nreturn 'returned';")).text).toContain('Returned: "returned"');
+    await sleep(400);
+
+    expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
+    expect(await held.exited).toBe(0);
   });
 
   it('fills configured secrets only into authorized fields and redacts their values', async () => {
@@ -683,31 +706,24 @@ ${CONFIG.replace('  video: true,', `  video: true,
     }
   });
 
-  it('fills a password through attached run_code only in a password field and keeps its value out of the output', async () => {
+  it('fills a password through attached run_code and keeps its value out of the output', async () => {
     const dir = project('await screen.pause();');
     const held = await pause(dir, '--trace', 'on');
     const { client, log } = await mcp(dir);
     const opened = await openSession(client, { attach: held.id });
-    const denied = await invoke(client, 'call', {
-      tool: 'run_code',
-      args: { code: 'await screen.getByRole("textbox", "Email").fill(credentials.user("buyer").password);' },
-    });
-    expect(denied.isError).toBe(true);
-    expect(denied.text).toContain('POLICY_DENIED');
-
     const allowed = await invoke(client, 'call', {
       tool: 'run_code',
       args: { code: 'await screen.getByRole("textbox", "Password").fill(credentials.user("buyer").password);' },
     });
     expect(allowed.isError, allowed.text).toBe(false);
-    expect(allowed.text).toContain('The statement passed.');
+    expect(allowed.text).toContain('Test lines: 1.');
 
     const observed = await invoke(client, 'call', { tool: 'observe' });
     expect(observed.text).toMatch(/textbox "Password".*<secret:buyer\.password>/);
     expect(observed.text).not.toMatch(/textbox "Email".*<secret:buyer\.password>/);
 
     const lines = await invoke(client, 'call', { tool: 'test_lines' });
-    expect(lines.text).toContain('getByRole("textbox", "Password").fill(credentials.user("buyer").password)');
+    expect(lines.text).toContain("getByRole('textbox', 'Password').fill(credentials.user('buyer').password)");
 
     const next = e2e(dir, 'run', '--step', 'next');
     expect(next.status).toBe(0);
@@ -715,7 +731,6 @@ ${CONFIG.replace('  video: true,', `  video: true,
 
     const output = [
       opened.text,
-      denied.text,
       allowed.text,
       observed.text,
       lines.text,

@@ -62,6 +62,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 | [`colorScheme`](#media-emulation) | `'light' \| 'dark' \| 'no-preference'` | the browser's own |
 | [`reducedMotion`](#media-emulation) | `'reduce' \| 'no-preference'` | the browser's own |
 | [`initScripts`](#init-scripts) | `WebInitScript[]` | - |
+| [`webmcp`](#webmcp) | `boolean` | `false` |
 
 - A `web()` target needs `app.url` and refuses the device keys (`bundleId`,
   `appPath`, `launchArguments`). Its `app.permissions` takes `'grant'` only,
@@ -511,6 +512,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`waitForDownloads`](#waitfordownloads) | `Promise<{ path, absolutePath, … }[]>` |
 | [`keyboard`](#keyboard) | `{ press, down, up, type }` |
 | [`mouse`](#mouse) | `{ move, wheel, down, up }` |
+| [`webmcp`](#webmcp) | `{ tools, callTool }` |
 
 The [config](/reference/config) sets each member's budget:
 
@@ -524,7 +526,7 @@ A `{ timeout }` option overrides the budget on `goto`, `reload`, `back`,
 `forward`, `waitForResponse`, `waitForPopup`, `waitForDownload`, and `waitForDownloads`, capped
 by the test deadline (`cleanupTimeout` in `afterEach`); `0` waits until it. `url`, `title`, `evaluate`, `addInitScript`, `route`,
 `unroute`, `unrouteAll`, `cookies`, `setCookies`, `clearCookies`, `setViewport`,
-`emulateMedia`, `onDialog`, `newTab`, the `BrowserTab` methods, `keyboard.*`, and `mouse.*` take no override.
+`emulateMedia`, `onDialog`, `newTab`, the `BrowserTab` methods, `keyboard.*`, `mouse.*`, and `webmcp.*` take no override.
 
 #### `goto`
 
@@ -1102,6 +1104,88 @@ await browser.mouse.up();
 
 [`Browser`](#browser-interface) describes each method, `wheel` included.
 
+#### WebMCP
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) is an experimental
+browser API a page registers tools through, on `document.modelContext`
+(`navigator.modelContext` in Firefox). `browser.webmcp` lists the tools the page in the active tab registered and
+calls them from test code, with no model involved.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{ engine: web({ webmcp: true }), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+```ts
+const tools = await browser.webmcp.tools();
+expect(tools.map((tool) => tool.name)).toContain('add');
+
+const result = await browser.webmcp.callTool('add', { a: 2, b: 40 });
+expect(result).toEqual({ content: [{ type: 'text', text: '42' }] });
+```
+
+- `web({ webmcp: true })` launches Chromium with `--enable-features=WebMCP`,
+  or Firefox with its `dom.modelcontext` preferences. It is off by default,
+  since with it every page sees an API most browsers do not have yet. WebKit
+  has no WebMCP. The option is only for a browser the engine launches: start
+  a browser reached through [`connect`](#connect) or a provider with that
+  argument yourself.
+- The page has to be a secure context, `https:` or `localhost`, or it has no
+  `document.modelContext` and both calls fail with `UNSUPPORTED_CAPABILITY`.
+  The engine asks the page itself, so a browser reached through `connect` or
+  a provider that was started without WebMCP fails the same way.
+- `tools()` returns the tools registered now, each with its `name`,
+  `description`, `inputSchema`, and `annotations` when the page gave them. A
+  page that registers none gives an empty list. The order is the browser's
+  own and differs between Chromium and Firefox.
+- `callTool(name, input)` resolves with what the tool's `execute` resolved
+  to, usually an object with a `content` array. `input` is a JSON object; left out or
+  `null`, the tool gets an empty object. A result with `isError: true` comes back as it is, and
+  a tool that resolves with nothing gives `null`.
+- An object or array comes back as its JSON, the same in Chromium and
+  Firefox: a property left `undefined` is not in it, and a `Date` inside is
+  a string. A tool that resolves with any other value gives its text, parsed
+  when the text is JSON: `'42'` and `42` both give `42`, and a number past
+  2^53 loses digits. An empty string gives `'Operation succeeded'` in
+  Chromium. Resolve with an object to keep the value as it is.
+- A tool that sends the page to another URL ends the call before it answers.
+  The call fails with `ACTION_FAILED` once the new page has loaded, and the
+  message says the tool may have run. A tool still running when the time runs
+  out fails the same way.
+- Both cover the main frame of the active tab, not the frames inside it.
+- Names, descriptions, schemas, and results come from the page, so treat
+  them as untrusted input.
+
+```ts
+/** A tool a page registered through WebMCP, as the page describes it. */
+export interface WebMcpTool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool's input, when the page gave one. */
+  readonly inputSchema?: JsonValue;
+  /** Hints the page gives about the tool. */
+  readonly annotations?: {
+    /** The tool changes no state. */
+    readonly readOnly?: boolean;
+    /** The tool's output may carry third-party content. */
+    readonly untrustedContent?: boolean;
+    /** The tool takes a consequential action, such as placing an order. */
+    readonly consequential?: boolean;
+  };
+}
+```
+
+| Throws | When |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | The page has no WebMCP: the browser runs without it, or the page is not a secure context. The message says which, and how to fix it. |
+| `ACTION_FAILED` | `callTool`: the page registers no tool of that name (the message lists the ones it does), the tool threw or resolved with something JSON cannot hold (a `BigInt` inside, a cycle), or the call ended before the tool answered, because the page navigated or the time ran out. |
+| `INVALID_ARGUMENT` | `callTool`: `name` is not a non-empty string, or `input` is not a JSON object. |
+| `INVALID_CONFIG` | `web({ webmcp: true })` with `connect`, a browser provider, or WebKit. |
+
 ## Installing browsers
 
 The package pins `playwright-core` to an exact version, so the engine always
@@ -1291,6 +1375,8 @@ export interface WebOptions {
   readonly reducedMotion?: WebMedia['reducedMotion'];
   /** Scripts every document runs before the page's own. See [Init scripts](#init-scripts). */
   readonly initScripts?: readonly WebInitScript[];
+  /** Launches Chromium or Firefox with WebMCP, for `browser.webmcp`. See [WebMCP](#webmcp). */
+  readonly webmcp?: boolean;
 }
 ```
 
@@ -1421,6 +1507,13 @@ export interface Browser extends Expectable<BrowserExpectation> {
     down(): Promise<void>;
     /** Releases the primary pointer button. */
     up(): Promise<void>;
+  };
+  /** The tools the active tab's page registers through WebMCP. See [WebMCP](#webmcp). */
+  readonly webmcp: {
+    /** Returns the tools the page has registered now. */
+    tools(): Promise<readonly WebMcpTool[]>;
+    /** Calls one tool and resolves with what its `execute` resolved to. */
+    callTool(name: string, input?: { readonly [key: string]: JsonValue } | null): Promise<JsonValue>;
   };
 }
 ```

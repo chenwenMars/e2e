@@ -5,11 +5,19 @@ description: Sign in once, reuse the session across tests, and pass secrets with
 "twitter:image": "https://e2e.com/docs/images/og/authentication.png?v=6e061842b8"
 ---
 
+import { Video } from './snippets/video.jsx';
+
 A setup test signs in one time and saves a named session. Other tests
 restore that session and start signed in. Passwords and other secrets are
 handles: the runner types the value and shows `<secret:name>` in its place
 in model input and reports, with
 [some limits](/reference/security#where-redaction-stops).
+
+<Video>
+  <video src="/images/authentication.mp4" aria-label="The config declares admin credentials, a setup test signs in and saves the admin session, and a headed run opens the customers page already signed in. 15 tests pass in 12 seconds." muted loop playsInline controls />
+
+  One setup test signs in. Every test that names `session: 'admin'` starts signed in.
+</Video>
 
 <a id="sign-in-once-in-a-setup-test" />
 

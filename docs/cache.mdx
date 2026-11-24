@@ -292,6 +292,11 @@ except in a one-time-code field or the focused field in a step that showed
 one: there only a whole value of two or more characters that the
 instruction or `params` spell out replays.
 
+Values typed in a row into several fields, with only taps or `Tab` between
+them, are also judged joined. A code the page showed, typed one digit per box
+or three and three, makes the recording a gap from its first piece, even when
+no field declares a purpose, as no field does on iOS and Android.
+
 ## What a recording holds
 
 Each entry is a JSON file under `.e2e/cache/`, named by a hash of its key.

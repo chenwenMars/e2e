@@ -26,7 +26,7 @@
   "bugs": {
     "url": "https://github.com/e2e-inc/e2e/issues"
   },
-  "homepage": "https://github.com/e2e-inc/e2e/tree/main/packages/web#readme",
+  "homepage": "https://e2e.com/docs/web",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public",
@@ -62,8 +62,8 @@
     "playwright-core": "1.65.1"
   },
   "peerDependencies": {
-    "@e2e-dev/core": ">=0.24.1 <1",
-    "e2e": ">=0.24.1 <1"
+    "@e2e-dev/core": ">=0.25.0 <1",
+    "e2e": ">=0.25.0 <1"
   },
   "peerDependenciesMeta": {
     "e2e": {

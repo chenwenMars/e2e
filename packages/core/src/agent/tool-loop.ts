@@ -11,7 +11,8 @@
  * - model-call accounting and a step transcript for `--debug`.
  */
 
-import { redactToolResult } from './redaction.ts';
+import { executorRedactors, redactToolResult } from './redaction.ts';
+import { processSecrets, redactProviderKeys } from '../run/secrecy.ts';
 import type { StepTurn } from '../run/steps.ts';
 import type { AssistantModelMessage, ModelMessage, StepResult, Tool, ToolCallPart, ToolExecutionOptions, ToolSet } from 'ai';
 import { asSdkLanguageModel, loadAiSdk, type AiSdk, type SdkLanguageModel } from './ai-sdk.ts';
@@ -325,7 +326,7 @@ class LoopRun {
         },
         transformParams: async ({ params }) => ({
           ...params,
-          prompt: params.prompt.map(message => message.role !== 'tool' ? message : {
+          prompt: params.prompt.map(message => message.role === 'assistant' ? redactAssistantText(message, executorRedactors.get(context)) : message.role !== 'tool' ? message : {
             ...message,
             content: message.content.map(part => {
               if (part.type !== 'tool-result') return part;
@@ -895,7 +896,8 @@ class LoopRun {
     const system =
       typeof this.options.system === 'function' ? this.options.system(this.context) : this.options.system;
     if (system !== undefined && system.trim() !== '') {
-      parts.push(system);
+      // Written by the config or an executor, so core never redacted it: the step's own redactor, which knows this test's secrets and the keys of the moment, not values earlier tests learned.
+      parts.push((executorRedactors.get(this.context) ?? redactProviderKeys)(system));
     }
     const project = this.context.agentContext;
     if (project !== undefined && project.trim() !== '') {
@@ -1101,8 +1103,30 @@ function textChars(messages: readonly ModelMessage[]): number {
   return total;
 }
 
+/**
+ * An assistant message with what the model wrote redacted, before it is sent
+ * back as history: a model that repeats a secret or a provider key it was
+ * shown, in an error or on a screen, must not be handed it again as text.
+ * Its tool calls stay as it made them, and so does its reasoning, which a
+ * provider signs and refuses once a character of it has changed.
+ */
+function redactAssistantText<Message extends { content: unknown }>(message: Message, redact: ((text: string) => string) | undefined): Message {
+  if (redact === undefined) return message;
+  if (typeof message.content === 'string') return { ...message, content: redact(message.content) };
+  if (!Array.isArray(message.content)) return message;
+  return {
+    ...message,
+    content: message.content.map((part: unknown) => {
+      const record = part as { type?: unknown; text?: unknown };
+      return record.type === 'text' && typeof record.text === 'string' ? { ...record, text: redact(record.text) } : part;
+    }),
+  };
+}
+
 function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}…[truncated]`;
+  // Redacted before the cut: half a value is no longer a match. What the step reports is redacted again, whole.
+  const safe = processSecrets.redact(text);
+  return safe.length <= max ? safe : `${safe.slice(0, max)}…[truncated]`;
 }
 
 /** A tool result for the transcript: a screenshot-carrying result reads as its text plus the image size, never the bytes. */

@@ -21,8 +21,8 @@ export async function closeRemoteChrome(chrome: Omit<RemoteChrome, 'endpoint'>):
   rmSync(chrome.userDataDir, { recursive: true, force: true });
 }
 
-/** Launches the remote host and releases its resources if it never becomes ready. */
-export async function launchRemoteChrome(): Promise<RemoteChrome> {
+/** Launches the remote host, with `extraArgs` after its own, and releases its resources if it never becomes ready. */
+export async function launchRemoteChrome(extraArgs: readonly string[] = []): Promise<RemoteChrome> {
   const userDataDir = mkdtempSync(path.join(tmpdir(), 'e2e-cdp-host-'));
   // The sandbox flags are what a containerized CI runner needs to start Chrome
   // at all; they change nothing about the attach under test.
@@ -41,6 +41,7 @@ export async function launchRemoteChrome(): Promise<RemoteChrome> {
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     `--user-data-dir=${userDataDir}`,
+    ...extraArgs,
     'about:blank',
   ]);
   const closed = new Promise<void>((resolve) => proc.once('close', () => resolve()));

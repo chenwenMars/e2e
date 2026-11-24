@@ -8,6 +8,7 @@
 import type { AgentDeviceClient as DeviceSessionClient } from 'agent-device';
 import type { EngineFixtureContext, Locator, ViewportSize } from '@e2e-dev/core/engine';
 import { appLabel, linkLabel, linkTarget } from './links.ts';
+import { pressRemote, requireRemoteKey, type RemoteKey } from './remote.ts';
 import type { DevicePermission, MobilePlatform, PermissionState } from './options.ts';
 import type { DeviceSelection } from './pool.ts';
 import { unsupported } from './support.ts';
@@ -192,6 +193,23 @@ export interface Device {
   home(): Promise<void>;
   /** Navigates back once (in-app back). */
   back(): Promise<void>;
+  /**
+   * Presses one TV remote button: the D-pad's `'up'`, `'down'`, `'left'`,
+   * `'right'`, and `'select'`, `'back'`, `'menu'`, `'home'`, and the media
+   * keys such as `'play-pause'`. Android TV takes every button and an Apple
+   * TV the D-pad, `back`, `menu`, and `home`, where `back` and `menu` are the
+   * same Siri Remote button; any other button or device is
+   * `UNSUPPORTED_CAPABILITY`. A name outside the list is `INVALID_ARGUMENT`.
+   */
+  pressRemote(key: RemoteKey): Promise<void>;
+  /**
+   * Shakes the device once: the simulator's shake gesture on an iPhone or
+   * iPad simulator, a swing of the accelerometer on an Android phone or
+   * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
+   * device a provider drives through its own backend. It resolves once the
+   * shake is sent, so assert on what the app shows next.
+   */
+  shake(): Promise<void>;
   /** Accepts or dismisses the visible system alert. */
   alert(action: 'accept' | 'dismiss'): Promise<void>;
   /**
@@ -376,6 +394,14 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     async back() {
       await surface.screenCommand('device.back', (client) => client.command.back({ ...surface.settleOptions }), context.signal);
     },
+    async pressRemote(key) {
+      requireRemoteKey(key);
+      const input = surface.inputBudget('device.pressRemote', { timeoutMs: context.timeouts.action, signal: context.signal });
+      await surface.screenCommand('device.pressRemote', (client) => input.send(() => pressRemote(client, key, surface.selection())), context.signal);
+    },
+    async shake() {
+      await surface.screenCommand('device.shake', (client) => client.command.shake(surface.selection()), context.signal);
+    },
     async alert(action) {
       await surface.screenCommand('device.alert', (client) => client.command.alert({ ...surface.selection(), action }), context.signal);
     },
@@ -420,6 +446,8 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     foregroundApp: action,
     home: action,
     back: action,
+    pressRemote: { ...action, label: (key) => key },
+    shake: action,
     alert: { ...action, label: (value) => value },
     dismissKeyboard: action,
     isKeyboardShown: action,

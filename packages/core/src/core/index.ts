@@ -15,6 +15,7 @@ export type {
   AppPermissionState,
   ClickOptions,
   Expectable,
+  FilePayload,
   JsonPrimitive,
   JsonValue,
   KeyModifier,

@@ -38,9 +38,29 @@ describe.each(schemas)('%s schema', (name) => {
   });
 
   if (name === 'engine-manifest-v1') {
+    it('accepts a web manifest declaring payload uploads', () => {
+      expect(validate({
+        name: 'web', version: '0.1.0', spiVersion: 1, platform: 'web',
+        methods: ['engine/observe', 'engine/perform'],
+        actions: ['setInputFiles', 'setInputFilePayloads'],
+      })).toBe(true);
+    });
+
+    it('rejects the duplicate payload action specifically', () => {
+      expect(validate(readJson('fixtures', 'engine-manifest-v1.invalid.json'))).toBe(false);
+      expect(validate.errors).toEqual([expect.objectContaining({ instancePath: '/actions', keyword: 'uniqueItems' })]);
+    });
+
     it('rejects a method listed twice', () => {
       const manifest = readJson('fixtures', 'engine-manifest-v1.valid.json') as { methods: string[] };
       manifest.methods.push('lifecycle/doctor');
+      expect(validate(manifest)).toBe(false);
+    });
+
+    it('rejects selectsDevice without lifecycle/prepare', () => {
+      const manifest = readJson('fixtures', 'engine-manifest-v1.valid.json') as { methods: string[]; selectsDevice: boolean };
+      expect(manifest.selectsDevice).toBe(true);
+      manifest.methods = manifest.methods.filter((method) => method !== 'lifecycle/prepare');
       expect(validate(manifest)).toBe(false);
     });
   }

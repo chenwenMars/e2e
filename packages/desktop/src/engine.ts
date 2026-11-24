@@ -35,8 +35,8 @@ export interface DesktopEngine extends EngineHandle<DesktopFixtures> {}
  * Creates one desktop engine: it drives the target's macOS app on this
  * machine, one worker at a time. A test launches the app with `app.open()`;
  * every test ends with the app quit. A config that names it loads on any OS,
- * so its other targets still run elsewhere; the target itself fails to start
- * on any OS but macOS.
+ * and its other targets run elsewhere when `--target` picks them; a run that
+ * includes this target stops before any test starts on any OS but macOS.
  */
 export function desktop(options: DesktopOptions = {}): DesktopEngine {
   const resolved = resolveOptions(options);

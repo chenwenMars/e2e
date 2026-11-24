@@ -192,6 +192,113 @@ describe('projectSnapshot', () => {
     expect(root.children?.[1]?.role).toBe('image');
   });
 
+  it('reports the read-only state toBeEditable reads: of a text field always, of a combo box only when it takes text', () => {
+    const form = project('macos/sign-in-form').root;
+    expect(byTestId(form, 'username')?.states).toMatchObject({ readonly: false });
+    expect(byTestId(form, 'password')?.states).toMatchObject({ readonly: false });
+    // A pop-up menu takes no text, which is not read-only: no state, as on a device.
+    expect(byTestId(form, 'plan')?.states).not.toHaveProperty('readonly');
+    const { root } = projectSnapshot(
+      {
+        snapshot_id: 's',
+        tree: {
+          role: 'window',
+          name: 'Form',
+          children: [
+            { role: 'textfield', name: 'Order id', ref_id: '@s:e1', states: ['readonly'], available_actions: ['Click'] },
+            { role: 'combobox', name: 'City', ref_id: '@s:e2', available_actions: ['Click', 'SetValue'] },
+            { role: 'textfield', name: 'Unknown', ref_id: '@s:e3', available_actions: ['Click'] },
+          ],
+        },
+      },
+      minter(),
+    );
+    expect(root.children?.map((node) => node.states?.readonly)).toEqual([true, false, undefined]);
+  });
+
+  it('reads a control collapsed to no width or height as hidden, but not a container with children, listed or cut off', () => {
+    const { root } = projectSnapshot(
+      {
+        snapshot_id: 's',
+        tree: {
+          role: 'window',
+          name: 'Form',
+          bounds: { x: 0, y: 0, width: 200, height: 200 },
+          children: [
+            { role: 'button', name: 'Collapsed', ref_id: '@s:e1', bounds: { x: 10, y: 10, width: 0, height: 20 } },
+            { role: 'button', name: 'Shown', ref_id: '@s:e2', bounds: { x: 10, y: 40, width: 80, height: 20 } },
+            { role: 'group', name: 'Wrapper', bounds: { x: 0, y: 0, width: 0, height: 0 }, children: [{ role: 'button', name: 'Inside', ref_id: '@s:e3', bounds: { x: 10, y: 70, width: 80, height: 20 } }] },
+            { role: 'group', name: 'Deep', bounds: { x: 0, y: 0, width: 0, height: 0 }, children_count: 3 },
+          ],
+        },
+      },
+      minter(),
+    );
+    const byName = (name: string) => all(root).find((node) => node.name === name);
+    expect(byName('Collapsed')?.states?.hidden).toBe(true);
+    expect(byName('Shown')?.states?.hidden).toBeUndefined();
+    expect(byName('Wrapper')?.states?.hidden).toBeUndefined();
+    expect(byName('Deep')?.states?.hidden).toBeUndefined();
+    expect(byName('Inside')?.states?.hidden).toBeUndefined();
+  });
+
+  it('reads everything under a hidden node as hidden, under a wrapper it leaves out too, and swipes none of it', () => {
+    const pane = (name: string, ref: string) => ({ role: 'scrollarea', name, ref_id: ref, available_actions: ['Scroll'], children: [{ role: 'button', name: `${name} item`, ref_id: `${ref}b` }] });
+    const screen = projectSnapshot(
+      {
+        snapshot_id: 's',
+        tree: {
+          role: 'window',
+          name: 'Panes',
+          children: [
+            { role: 'group', states: ['hidden'], children: [pane('Drawer', '@s:e1')] },
+            { role: 'group', name: 'Panel', states: ['hidden'], children: [{ role: 'button', name: 'Panel item', ref_id: '@s:e3' }] },
+            pane('Main', '@s:e2'),
+          ],
+        },
+      },
+      minter(),
+    );
+    const byName = (name: string) => all(screen.root).find((node) => node.name === name);
+    for (const name of ['Drawer', 'Drawer item', 'Panel', 'Panel item']) expect(byName(name)?.states?.hidden).toBe(true);
+    expect(byName('Main')?.states?.hidden).toBeUndefined();
+    expect(byName('Main item')?.states?.hidden).toBeUndefined();
+    expect(screen.scrollTarget).toBe(byName('Main')?.ref.id);
+  });
+
+  it('reads every node of a minimized window as hidden, the window itself too', () => {
+    const { root } = projectSnapshot(load('macos/sign-in-form'), minter(), { minimized: true });
+    expect(resolveExpression({ kind: 'query', query: { kind: 'role', value: { kind: 'string', value: 'window', exact: true }, visible: true } }, [root])).toEqual([]);
+    expect(all(root).every((node) => node.states?.hidden === true)).toBe(true);
+  });
+
+  it("takes the window's title from its accessibility root, not the window list's app name", () => {
+    const screen = projectSnapshot({ snapshot_id: 's', window: { id: 'w-1', title: 'SignInForm' }, tree: { role: 'window', name: 'Sign In', children: [] } }, minter());
+    expect(screen.title).toBe('Sign In');
+    expect(projectSnapshot({ snapshot_id: 's', window: { id: 'w-1', title: 'Untitled' }, tree: { role: 'window', children: [] } }, minter()).title).toBe('Untitled');
+  });
+
+  it('swipes the first visible, enabled node agent-desktop offers Scroll, past a list or table that cannot scroll', () => {
+    const screen = projectSnapshot(
+      {
+        snapshot_id: 's',
+        tree: {
+          role: 'window',
+          name: 'Feed',
+          children: [
+            { role: 'table', name: 'Filters', ref_id: '@s:e1', available_actions: ['Select'] },
+            { role: 'list', name: 'Sidebar', ref_id: '@s:e2', available_actions: ['Select'] },
+            { role: 'scrollarea', name: 'Drawer', ref_id: '@s:e3', states: ['offscreen'], available_actions: ['Scroll'] },
+            { role: 'scrollarea', name: 'Archive', ref_id: '@s:e4', states: ['disabled'], available_actions: ['Scroll'] },
+            { role: 'group', name: 'Posts', ref_id: '@s:e5', available_actions: ['Scroll'] },
+          ],
+        },
+      },
+      minter(),
+    );
+    expect(screen.scrollTarget).toBe(screen.root.children?.[4]?.ref.id);
+  });
+
   it('counts a node with children it did not list as a cut-short tree', () => {
     const screen = projectSnapshot({ snapshot_id: 's', complete: true, tree: { role: 'window', name: 'W', children: [{ role: 'group', name: 'Deep', children_count: 3 }] } }, minter());
     expect(screen.truncated).toBe(true);

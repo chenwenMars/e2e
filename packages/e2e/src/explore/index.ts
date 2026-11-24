@@ -23,7 +23,7 @@ import { validateChangedSince } from '../run/changes.ts';
 import type { RunEventSink } from '../run/events.ts';
 import type { RunnerOutput } from '../run/process-output.ts';
 import { run, type RunOutcome } from '../run/runner.ts';
-import { registerStaticSecrets, staticSecretLedger } from '@e2e-dev/core/lib/run/secrecy';
+import { registerStaticSecrets, staticOutputLedger, staticSecretLedger } from '@e2e-dev/core/lib/run/secrecy';
 import type { AgentConfig, RecordingMode } from '@e2e-dev/core/lib/types';
 import type { BuiltinReporter, E2EConfig } from '../run-types.ts';
 import { createExploreBody } from './body.ts';
@@ -227,7 +227,7 @@ async function exploreChange(
   notice: (message: string) => void,
 ): Promise<ExploreChange | undefined> {
   if (changedSince === undefined) return undefined;
-  const { redactFragments } = staticSecretLedger(secrets);
+  const { redactFragments } = staticOutputLedger(secrets);
   const change = await readExploreChange({ cwd: projectRoot, changedSince, signal: signal ?? new AbortController().signal, redact: redactFragments });
   if (change.report.files === 0) notice(`no files changed since ${changedSince}`);
   return change;

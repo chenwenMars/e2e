@@ -16,6 +16,7 @@ import { isTextMatch, normalizeText } from '../internal/text.ts';
 import type {
   ActionOptions,
   ClickOptions,
+  FilePayload,
   LongPressOptions,
   Locator,
   Momentum,
@@ -541,14 +542,38 @@ class LocatorImpl extends ScreenImpl implements Locator {
     return this.perform('hover', { kind: 'hover' }, options);
   }
 
-  setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promise<void> {
-    const list = typeof paths === 'string' ? [paths] : [...paths];
-    if (list.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
-      throw new TestError('INVALID_ARGUMENT', 'setInputFiles paths must be non-empty strings');
+  setInputFiles(files: string | readonly string[] | FilePayload | readonly FilePayload[], options?: ActionOptions): Promise<void> {
+    const list: readonly unknown[] = Array.isArray(files) ? [...files] : [files];
+    if (list.some((entry) => typeof entry === 'string') && list.some(isPlainObject)) {
+      throw new TestError('INVALID_ARGUMENT', 'File paths cannot be mixed with buffers');
     }
-    const base = this.context.projectRoot;
-    const resolved = list.map((entry) => (base === undefined ? entry : nodePath.resolve(base, entry)));
-    return this.perform('setInputFiles', { kind: 'setInputFiles', paths: resolved }, options);
+    if (list.length === 0 && !this.context.engine.supports('setInputFiles') &&
+        this.context.engine.supports('setInputFilePayloads')) {
+      return this.perform('setInputFiles', { kind: 'setInputFilePayloads', files: [] }, options);
+    }
+    if (list.length === 0 || typeof list[0] === 'string') {
+      const base = this.context.projectRoot;
+      const paths = list.map((entry) => {
+        if (typeof entry !== 'string' || entry.trim() === '') {
+          throw new TestError('INVALID_ARGUMENT', 'setInputFiles paths must be non-empty strings');
+        }
+        return base === undefined ? entry : nodePath.resolve(base, entry);
+      });
+      return this.perform('setInputFiles', { kind: 'setInputFiles', paths }, options);
+    }
+    const payloads = list.map((entry) => {
+      if (!isPlainObject(entry) || typeof entry['name'] !== 'string' || entry['name'].trim() === '' ||
+          typeof entry['mimeType'] !== 'string' || !Buffer.isBuffer(entry['buffer'])) {
+        throw new TestError('INVALID_ARGUMENT', 'setInputFiles payloads require a non-empty name, a mimeType string, and a Buffer');
+      }
+      rejectUnknownOptions('setInputFiles payload', entry, ['name', 'mimeType', 'buffer']);
+      return { name: entry['name'], mimeType: entry['mimeType'], buffer: entry['buffer'] };
+    });
+    if (payloads.reduce((size, file) => size + file.buffer.byteLength, 0) >= 50 * 1024 * 1024) {
+      throw new TestError('INVALID_ARGUMENT', 'Cannot set buffer larger than 50Mb, please write it to a file and pass its path instead.');
+    }
+    const snapshots = payloads.map((file) => ({ ...file, buffer: new Uint8Array(file.buffer) }));
+    return this.perform('setInputFiles', { kind: 'setInputFilePayloads', files: snapshots }, options);
   }
 
   dragTo(target: Locator, options?: ActionOptions): Promise<void> {

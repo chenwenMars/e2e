@@ -323,16 +323,18 @@ suites that consume the built packages the way a user would.
   block that runs `npx` or `npm install`/`ci` sits in a `<CodeGroup>` of
   `npm`, `pnpm`, and `bun` blocks, which the site syncs site-wide, enforced
   by `scripts/check-docs-package-managers.ts`).
-  `docs/ja/`, `docs/zh/`, `docs/cs/`, `docs/es/`, `docs/pt/`, `docs/hi/`, and
-  `docs/fr/` hold the Japanese, Simplified Chinese, Czech, Spanish, Brazilian
-  Portuguese, Hindi, and French translations, one page per English page at
-  the same path, with the tab and group labels in
+  `docs/ja/`, `docs/zh/`, `docs/cs/`, `docs/es/`, `docs/pt/`, `docs/hi/`,
+  `docs/fr/`, and `docs/pl/` hold the Japanese, Simplified Chinese, Czech,
+  Spanish, Brazilian Portuguese, Hindi, French, and Polish translations, one
+  page per English page at the same path, with the tab and group labels in
   `docs/<language>/navigation.json`. Translations are best
   effort: keep the English pages current in every change, and leave the
   translations to lag behind, since no contributor is expected to update a
   language they don't speak. `scripts/check-docs-translations.ts` warns on a
-  stale outline, code block, or label and fails only on a translation whose
-  English page is gone (`authoring-docs` "Translations").
+  stale outline, code block, or label. It fails on a translation whose English
+  page is gone or that has no title, a language with no `navigation.json`, and
+  a line that repeats the end of the line above it (`repeatedLines` in
+  `scripts/docs-prose.ts`; `authoring-docs` "Translations").
   The `e2e` build copies the
   pages to `packages/e2e/docs/` (gitignored,
   `packages/e2e/scripts/prepare-build.ts`) so the published package ships
@@ -441,7 +443,7 @@ pnpm --filter @e2e-dev/testbed run test:headed
   `tests/types/sdk-types.ts` a test.
 - Integration tests need Chromium: `pnpm --filter @e2e-dev/web exec
   playwright-core install chromium`. The web engine's `prepare` hook
-  also installs a missing browser once per run, in the runner, before `plan`
+  also installs a missing browser once per run, in the runner, before `collected`
   is emitted and the run's clock starts.
 
 ## Definition of done
@@ -455,9 +457,19 @@ thread handled, and labeled `Ready for Human Review`. "It compiles" and
   iterating and before the PR: the built CLI on the testbed or a benchmark,
   the `e2e` MCP server (`.mcp.json`), a scratch project for `init`, the docs
   site. If you cannot verify something, say so; never imply you did.
-- Every PR body states under `## Verified` whether it was run locally, with
-  CLI output, screenshots, or video when it was, and a main-vs-branch table
-  for fixes (`writing-pr` skill).
+- The PR body is the source of truth for the change (`writing-pr` skill):
+  `## What`, `## Why`, `## How it works` as numbered steps through the diff,
+  then `## Verified`. It describes the head commit. After every push to a
+  branch with an open PR, whatever the task was, run the `writing-pr`
+  skill's "After every push to an open PR" steps. A push that changes how
+  the PR works, its scope, or a measured number edits the body in the same
+  step and captures stale evidence again. Run the `unslop` pass on the
+  text you edit. A body and a diff that disagree are a review finding.
+- `## Verified` states whether the change was run locally and carries the
+  evidence: CLI output, a main-vs-branch table for fixes, the `pnpm bench:ab`
+  table for a perf claim or a runner, agent, or engine change, a
+  `pnpm record:terminal` recording when terminal output or UI changes, and
+  the run's video for on-screen behavior.
 - Open every PR through the `ship-pr` skill (`.dev/skills/ship-pr`):
   checks, verification, fresh-context self-review, the PR, then the
   `babysit` skill (`.dev/skills/babysit`) until the label is on. Asking
@@ -597,6 +609,31 @@ CROSSCHECK_BENCHMARK_URL=http://127.0.0.1:4280 pnpm --filter @e2e-dev/web exec v
   Playwright's copy, MPL-2.0). Its disagreements live in
   `tests/conformance/expected.txt` the same way, grouped by reason; a line
   that starts with `Bug:` is a fix waiting to be made, and the fix deletes it.
+## Recording the terminal
+
+`pnpm record:terminal` records a command in a real TTY as a video for the PR
+body, at one size and font so recordings compare. It drives
+[VHS](https://github.com/charmbracelet/vhs), which must be on `PATH`
+(`brew install vhs`, or `nix shell nixpkgs#vhs -c pnpm record:terminal ...`).
+Use it whenever a change alters what the terminal shows: CLI output, a
+reporter, a prompt, watch or pause UI.
+
+```bash
+pnpm record:terminal --cwd apps/testbed --out /tmp/branch.gif -- node node_modules/e2e/dist/cli/bin.js run tests/todos.e2e.ts
+pnpm record:terminal --cwd /tmp/e2e-main/apps/testbed --out /tmp/main.gif -- node node_modules/e2e/dist/cli/bin.js run tests/todos.e2e.ts
+pnpm record:terminal --cwd apps/testbed --out /tmp/watch.gif --tape /tmp/watch.tape
+```
+
+The recording ends when the prompt returns, whatever the exit code. Several
+arguments after `--` are a program and its arguments; one is a shell line
+(`"a && b"`). A UI
+that takes keys needs `--tape <file>` with the VHS commands to play (`Type`,
+`Enter`, `Ctrl+C`, `Wait+Screen /regex/`, `Sleep`); the script owns the
+output, shell, and size. `.gif` renders inside a markdown table, `.mp4` and
+`.webm` as players at the end of the body. The options are in the header of
+`scripts/record-terminal.ts`; the tape builder is tested in
+`scripts/record-terminal/` (`pnpm test:scripts`).
+
 ## Measuring a change against main
 
 `pnpm bench:ab` runs a benchmark suite through two builds, the merge base
@@ -704,6 +741,17 @@ trees, on both platforms, without a device.
     (`redactsDownloads` in `run/secrecy.ts`), since a plain string reaches
     the app unseen. What an executor keeps in `attempt.memory` is its own;
     the harness never reports it.
+  - Provider keys are a class of their own in the ledger
+    (`registerProviderKey` in `run/secrecy.ts`): the closed list of model
+    provider variables there, subscription tokens, a coding agent's saved
+    login, and what an executor registers through `e2e/agent`. Every ledger
+    redacts them from what the run writes and from model input, whole
+    values only, text downloads included (an app can be given one). They
+    never enter a ledger's own entries (so no saved session carries one), and never
+    redact what a test id is made of, since the runner and a worker need
+    not know the same keys. A new provider adds its variable to the list;
+    a name pattern is not a substitute. Redact before any cut: half a
+    value is no longer a match.
   - An agent's secret fill is authorized by the runner, not the model.
     `typeSecret` (`action-dispatcher.ts`) takes only a handle the step's
     params declare, the target resolves on the newest observation
@@ -725,7 +773,16 @@ trees, on both platforms, without a device.
     `LOCATOR_NOT_FOUND`, an action failure the model reads and re-aims from.
     `POLICY_DENIED` is for denied destinations, forbidden fills, and withheld
     pixels. Model text is never evaluated as code, selectors, shell, or
-    config. App content, ledger text, and pixels are quoted as untrusted
+    config. The one exception is `e2e mcp`'s `run_code`, which runs a coding
+    agent's JavaScript in the server's process with a test file's authority
+    (`session-tools/run-code.ts`): that agent can already write a test and
+    run it. The code can read every configured secret and credential (the
+    config file, the environment, the app) and fill one into whatever field
+    it likes. Its result passes the secret ledger, which replaces a secret's
+    exact value only: that prevents accidents and is not a boundary. An
+    accepted exception to the first invariant and to the fill rule above. On
+    by default by design (maintainer decision): no flag or config gates it.
+    App content, ledger text, and pixels are quoted as untrusted
     evidence with no policy authority.
   - Every navigation a test or the agent asks for (`app.open`,
     `browser.goto`, the `navigate` verb) goes through one rule,

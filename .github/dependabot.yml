@@ -6,6 +6,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # Replaces the defaults, which add a label per ecosystem.
+    labels: [dependencies]
     commit-message:
       prefix: 'chore(deps)'
     groups:
@@ -27,5 +29,6 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    labels: [dependencies]
     commit-message:
       prefix: 'chore(ci)'

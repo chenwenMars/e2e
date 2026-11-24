@@ -47,7 +47,22 @@ given to `defineTool`. The model reads a refusal as the call's result
 and can try again. A node id that cannot be resolved on the current
 screen fails with `LOCATOR_NOT_FOUND`. Policy refusals, such as a denied
 destination or a forbidden secret fill, fail with `POLICY_DENIED`. Model
-text is never evaluated as code, selectors, shell, or config.
+text is never evaluated as code, selectors, shell, or config. The one place
+code from an agent runs is `e2e mcp`'s `run_code`, and that code is
+code-trust: a coding agent's JavaScript runs in the server's Node process,
+unconfined, on the objects a test body gets. A coding agent that can write a
+test file and run it has that authority already, so `run_code` adds none.
+That holds for an agent with a shell of its own; a client that confines the
+agent's shell and runs MCP servers outside it gives the agent, through
+`run_code`, what the shell withheld. The code can read every configured
+secret and credential, from the config file, the environment, or the app.
+What it returns has the exact value of each one redacted, which prevents
+accidents and is not a boundary: the code can return a secret in a changed
+form. This is the one exception to the rule below, and to the rule that a
+password goes only into a password field. `run_code` is on by default, by
+design: every `e2e mcp` server offers it and no flag turns it off, and a
+client that approves the server's `call` tool approves `run_code` with it.
+Don't connect an agent you don't trust with the project.
 
 Secrets follow from that split. A `Secret` value never reaches model input,
 digests, logs, reports, or artifacts as text. A secret fill is authorized by the runner from

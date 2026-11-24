@@ -139,21 +139,33 @@ A test using this locator would fail with LOCATOR_NOT_FOUND. ...
 Use: screen.getByRole("button", "Sign in")
 ```
 
-## Cómo ejecuta una línea de test
+## Cómo ejecuta código
 
-El agente ejecuta con `run_code`, en la sesión abierta, las líneas que ninguna
-acción imprimió, como las aserciones. Las que pasan se suman al borrador de
-`test_lines`. Una línea incorrecta falla en segundos, sin ejecutar el test:
+El agente ejecuta JavaScript en la sesión abierta con `run_code`: un bucle
+sobre una lista, un valor que lee y con el que calcula, una aserción que
+ninguna acción imprimió. Una sola llamada sustituye muchas acciones sueltas:
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
+Las líneas que pasan se suman al borrador de `test_lines`. Una línea
+incorrecta falla en segundos, sin ejecutar el test:
 
 ```text wrap
-Statement 2 of 2 failed; the one before it passed. Each statement waited at most 5000 ms. ...
-1. passed: await screen.getByLabel('Full name').fill('Grace Hopper');
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
 2. failed: await screen.getByRole('button', 'Save').tap();
    LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
 ```
 
-El servidor analiza las líneas y nunca las evalúa como JavaScript. Consulta
-[`run_code`](/reference/mcp#run_code).
+El código es JavaScript corriente sobre los objetos que recibe el cuerpo de
+un test. Consulta [`run_code`](/reference/mcp#run_code).
 
 ## Arreglar un test que falla
 

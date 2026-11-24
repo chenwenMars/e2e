@@ -438,6 +438,23 @@ function editableRole(role: string | undefined, editable: boolean | undefined): 
   return role !== undefined && TEXT_INPUT_ROLES.has(role) ? role : 'textbox';
 }
 
+/**
+ * A text field's read-only state, where the platform says whether it takes
+ * text: Android's `TextView.isTextEditable()`. iOS has no such fact:
+ * agent-device fills in `editable: true` for every text field and text view
+ * from its element type, so an iOS node carries no state rather than call a
+ * read-only text view editable. agent-device leaves the flag out where it does
+ * not know, and so does the node. A combobox is editable only when the
+ * platform says it takes text; a picker that takes none is not read-only, so
+ * it gets no state.
+ */
+function readOnlyState(role: string | undefined, editable: boolean | undefined, android: boolean): { readonly?: boolean } {
+  if (!android || editable === undefined) return {};
+  if (role === 'combobox') return editable ? { readonly: false } : {};
+  if (role !== 'textbox' && role !== 'searchbox') return {};
+  return { readonly: !editable };
+}
+
 function checkedOf(role: string | undefined, value: string | undefined): boolean | undefined {
   if (role === undefined || !CHECKABLE_ROLES.has(role) || value === undefined) return undefined;
   const lowered = value.trim().toLowerCase();
@@ -616,6 +633,7 @@ export function projectSnapshot(
       ...(secure ? { secure: true } : {}),
       ...(checked === undefined ? {} : { checked }),
       ...(spelled?.states.expanded === undefined ? {} : { expanded: spelled.states.expanded }),
+      ...readOnlyState(role, source.editable, android),
     };
     const node: SemanticNode = {
       ref: { id, revision: '' },

@@ -306,8 +306,10 @@ You can scroll through the screen or app log while the test stays paused.
 - A hosted browser or device can end a session that sits idle too long while
   a step is held.
 
-`--step` runs one test at a time. It is refused in CI, with `--watch`, with
-`--workers` above 1, and with the json reporter.
+`--step` runs one test at a time. It is refused in CI, with `--watch`, and
+with `--workers` above 1. With the json reporter it needs stdin and stdout
+to be a terminal: the prompt prints on stderr and the report on stdout at
+the end.
 
 ## Step through a test without a terminal
 
@@ -480,12 +482,10 @@ hello from the test
 
 Output from outside a test, such as a file's top level or a reporter,
 prints under `stdout | runner` or `stderr | runner`. Both streams print
-where `list` does: stdout, or stderr beside `json`. Without the `list`
-reporter, or another reporter that prints to the terminal with
-[`onOutput`](/reference/reporters#onoutput), output goes to its own stream
-as written, except with the `json` reporter (`--reporter json` or in
-`reporters`), which keeps stdout for the report and prints output on
-stderr. Output from the config load prints before the
+where `list` does: stdout, or stderr beside `json`. Without `list`, `dot`, `line`,
+or another [interactive](/reference/reporters#interactive) reporter, output
+prints on stderr as written, so stdout holds only what a reporter prints
+there. Output from the config load prints on stderr before the
 run header, or a warning replaces it if the load fails.
 
 The runner [redacts](/reference/security#redaction) secret values. The

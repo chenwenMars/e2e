@@ -99,8 +99,11 @@ describe('billing', () => {
    in the session. An `act` goal goes in before you walk its path, and the
    path's actions stay out of the test. A `screen` line is the `Test line:`
    its action printed, copied as is. When the outcome shows, run its
-   `expect` with `run_code` and add it once it passes; a passing statement
+   `expect` with `run_code` and add it once it passes; a passing line
    also joins `test_lines`; checks go in the test's assert block at the end.
+   `run_code` runs JavaScript on the test API, so use it for most of a
+   session's work, a loop or a read and a check in one call, over many
+   single actions.
    The walk ends with the test written. Without a
    server, learn the accessible names the app renders from the components or
    a `--headed` run.
@@ -208,8 +211,7 @@ lines you changed:
   ask before adding a test framework, and name any existing framework.
 - Live MCP tools need an `e2e mcp` server in the client: the e2e plugin's
   (Codex and Cursor), or one registered in the project (topic `mcp`). In a directory with no e2e config, a live look still
-  works: `open_session {engine: "@e2e-dev/web", app: {url: "http://localhost:3000"}}` opens a session
-  on the engine's defaults. Tests need a config and run with the CLI.
+  works (topic `mcp`). Tests need a config and run with the CLI.
   Keep a session open across runs while you write or fix a web test; topic
   `mcp` says when a run can go beside it, and what to do on
   `APP_ALREADY_RUNNING`.
@@ -269,8 +271,8 @@ you worked around it or gave up. Never report:
 
 - failures of the app under test, or its own behavior;
 - a problem you saw once and could not see again;
-- anything on an outdated e2e: the command refuses it, so upgrade
-  (`npx e2e@latest upgrade`) and check the problem still happens first.
+- anything on an outdated e2e: the command refuses it, so ask the user to
+  upgrade e2e and check the problem still happens first.
 
 Search [existing issues](https://github.com/e2e-inc/e2e/issues) first
 (`gh issue list -R e2e-inc/e2e --search "<words>"`); comment on a match

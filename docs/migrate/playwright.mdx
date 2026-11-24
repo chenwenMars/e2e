@@ -52,7 +52,7 @@ A Playwright key such as `testDir`, `baseURL`, `use`, `webServer`, or
 | `expect.timeout`, `use.actionTimeout`, `globalTimeout` | `assertionTimeout`, `actionTimeout`, `maxDuration`; the `maxDuration` clock starts with the tests, not app startup |
 | `expect.toPass` | Top-level [`toPass`](/reference/config#topass) |
 | `maxFailures`, `use.headless: false` | `--max-failures <n>` and `--headed` on the CLI |
-| `reporter`, `outputDir` | `reporters: ['list', 'junit', htmlReporter()]`, with `htmlReporter` from `@e2e-dev/html-reporter`; also `dot`, `json`, and `markdown`; `output`, default `.e2e` |
+| `reporter`, `outputDir` | `reporters: ['list', 'junit', htmlReporter()]`, with `htmlReporter` from `@e2e-dev/html-reporter`; also `dot`, `line`, `json`, and `markdown`; `output`, default `.e2e` |
 | `use.viewport`, `locale`, `timezoneId`, `colorScheme`, `reducedMotion`, `userAgent`, `testIdAttribute` | the same keys in `web({ ... })` |
 | `use.browserName`, `httpCredentials`, `extraHTTPHeaders` | `web({ browser, basicAuth, headers })`; `basicAuth` and `headers` apply to the app's origin only, [`credentialOrigins`](/reference/web#credentialorigins) adds more |
 | `chromium.connectOverCDP(url)` | `web({ connect: { cdpEndpoint: () => url } })`, chromium only |
@@ -122,6 +122,7 @@ run only in a browser, so a test that uses it declares
 | `click({ button: 'right' })`, `click({ delay })` | `secondaryTap()`, `longPress({ duration })` |
 | `click({ position })`, `click({ modifiers })` | `tap({ position })`, `tap({ modifiers })` |
 | `fill()`, `pressSequentially()`, `clear()`, `focus()`, `blur()`, `hover()`, `check()`, `uncheck()`, `dragTo()`, `setInputFiles(path)`, `selectOption({ label })` or `{ value }` | the same, without `force`, `trial`, or `position` |
+| `setInputFiles({ name, mimeType, buffer })` | Web only. Pass a plain object with only `name`, `mimeType`, and `buffer`. |
 | `press(key)` | the same for one character or a [named key](/reference/engine#keys); `browser.keyboard.press` after `focus()` for a key code |
 | `innerText()`, `allInnerTexts()`, `scrollIntoViewIfNeeded()` | `textContent()`, `allTextContents()`, `scrollIntoView()` |
 | `textContent()`, `allTextContents()`, `inputValue()`, `getAttribute()`, `boundingBox()`, `isVisible()`, `isHidden()`, `isEnabled()`, `isDisabled()`, `isChecked()`, `waitFor({ state })` | the same |
@@ -133,7 +134,7 @@ run only in a browser, so a test that uses it declares
 
 | Playwright | e2e |
 | --- | --- |
-| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()` | the same, with `{ visible }`, `{ enabled }`, `{ checked }`, `{ attached }`, and `{ ignoreCase }` |
+| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()`, `toBeEditable()` | the same, with `{ visible }`, `{ enabled }`, `{ editable }`, `{ checked }`, `{ attached }`, and `{ ignoreCase }` |
 | `toHaveId(id)`, `toContainClass(name)` | `toHaveAttribute('id', id)`, `toHaveAttribute('class', RegExp)` |
 | `expect(page).toHaveURL()`, `toHaveTitle()` | `expect(browser).toHaveURL()`, `toHaveTitle()` |
 | `expect(page).toHaveScreenshot()`, `expect(locator).toHaveScreenshot()` | `expect(screen).toHaveScreenshot()` and the locator form, see [Visual comparison](/visual-testing) |
@@ -166,6 +167,7 @@ run only in a browser, so a test that uses it declares
 | `page.waitForEvent('popup')` | `browser.waitForPopup(() => trigger)`, which makes the new tab active, see [Tabs](/reference/web#tabs) |
 | `context.pages()`, `context.newPage()`, `page.bringToFront()` | `browser.tabs()`, `browser.newTab()`, `tab.activate()`; no `context.on('page')` event |
 | `page.evaluate(fn, arg)` | `browser.evaluate(fn, arg)`, JSON in and out |
+| `page.webmcp.tools()`, `page.webmcp.callTool(name, input)` | the same on `browser.webmcp`, with `web({ webmcp: true })` in place of the launch argument or preferences; the main frame only, see [WebMCP](/reference/web#webmcp) |
 | `page.addInitScript()`, `page.emulateMedia({ colorScheme, reducedMotion })` | `browser.addInitScript()` or `web({ initScripts })`; `browser.emulateMedia()` |
 | `context.addCookies()`, `cookies()`, `clearCookies()` | `browser.setCookies()`, `browser.cookies()`, `browser.clearCookies()` |
 
@@ -178,6 +180,7 @@ run only in a browser, so a test that uses it declares
 | `{ page }` in a test | `{ screen, app, browser }` |
 | `test()`, `test.describe()`, `test.only`, `test.fail()`, `test.skip(title, fn)`, `test.skip(condition, reason)`, `test.fixme(title, fn)`, `test.fixme(condition, reason)` | the same, but a serial group takes `skip` on the group instead; the conditional forms work inside a test body or `beforeEach` |
 | `test.setTimeout()` | the same inside a test body, `beforeEach`, or `beforeAll` (that hook's own timeout); `afterEach` and `afterAll` cannot call it. In a `describe` callback, pass `{ timeout }` to `test.describe` instead. There is no `0` for no timeout: pass a large value |
+| `test.slow()`, `test.slow(condition, description)` | the same inside a test body or `beforeEach`: triples the test's timeout in force; in `beforeAll`, that hook's own timeout. Once per attempt, as in Playwright. At describe level (any form) it is a `COLLECTION_ERROR`: call it in a `beforeEach` |
 | `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | the same, with no title; `beforeAll` and `afterAll` get worker fixtures, not `browser`, `app`, or `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | `test.fail()` on a describe | `test.describe.fail(title, fn)`, or `{ fail: 'reason' }` on the group; for a condition, `test.fail(condition, 'reason')` in a `beforeEach` |
@@ -257,14 +260,14 @@ purpose. Use the workaround, or keep the test in Playwright.
 | --- | --- |
 | `locator.locator(selector)`, `locator.and()`, `filter({ visible })` | One `browser.locator` selector, such as `'.card >> .close'`, or a `screen` query inside the scope |
 | `locator.evaluate()`, `expect(locator).toHaveClass()`, `toHaveCSS()`, `dispatchEvent()` | `browser.evaluate(fn, selector)`; `expect(browser).toHaveClass(locator, cls)` |
-| `setInputFiles({ buffer })`, `selectOption([...])`, `click({ clickCount })`, `hover({ position })` | A temp file path; `browser.evaluate` for a multi-select; `browser.mouse` with `boundingBox()` |
+| `selectOption([...])`, `click({ clickCount })`, `hover({ position })` | `browser.evaluate` for a multi-select; `browser.mouse` with `boundingBox()` |
 
 </Accordion>
 <Accordion title="Assertions">
 
 | Playwright | Use today |
 | --- | --- |
-| `toBeEmpty()`, `toBeEditable()`, `toBeInViewport()` | `toHaveValue('')` on a form control, `toHaveText('')` on other elements; `toBeEnabled()` and `.not.toHaveAttribute('readonly')`; `expect.poll` over `boundingBox()` |
+| `toBeEmpty()`, `toBeInViewport()` | `toHaveValue('')` on a form control, `toHaveText('')` on other elements; `expect.poll` over `boundingBox()` |
 | `locator.screenshot()`, `{ fullPage, clip }`, `snapshotPathTemplate`, `ignoreSnapshots` | The viewport or one locator in `toHaveScreenshot`; a tag and `--exclude-tag` to skip visual tests |
 | `expect.configure()` | `{ timeout }` on each call |
 | `@axe-core/playwright` | axe-core through `browser.addInitScript({ path: 'node_modules/axe-core/axe.min.js' })`, then `axe.run()` in `browser.evaluate` |
@@ -299,14 +302,14 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `globalSetup`, `globalTeardown`, a `webServer` array | A script around the run, or one `app.command` that starts every process |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | `platforms` or tags on the tests, or one run for each target |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`; `npx e2e report` (opens `<output>/report.html` written by `htmlReporter()`) |
-| `test.slow()`, `test.describe.only()`, `test.describe.fixme()`, `test.fixme(title, details, body)` | `{ timeout }` or `{ skip: 'fixme' }` on the test or group, with any `tags` from the details beside it, reported with skip cause `explicit`, not `fixme`; `test.only` on each test |
+| `test.describe.only()`, `test.describe.fixme()`, `test.fixme(title, details, body)` | `{ timeout }` or `{ skip: 'fixme' }` on the test or group, with any `tags` from the details beside it, reported with skip cause `explicit`, not `fixme`; `test.only` on each test |
 | `test.skip(callback, description)`, `test.fixme(callback, description)` | `test.skip(condition, reason)` or `test.fixme(condition, reason)` inside the body, or `platforms` on the test |
 | `failOnFlakyTests`, `use.navigationTimeout`, `--timeout`, `--quiet` | `run.summary.flaky` in `report.json`; `browser.goto(url, { timeout })`; `timeout` in the config |
 | The `blob` reporter and `merge-reports` | One report for each shard |
 | The Playwright Docker image | The image for the `playwright-core` version `@e2e-dev/web` pins, or `npx @e2e-dev/web install chromium --with-deps` |
 | `test.use({ ... })` in a file or describe | Runner options on the group, engine options on a target, `browser.setViewport` at runtime |
 | `projects[].dependencies`, `teardown` | A top-level `test.setup` for sign-in; a script around the run |
-| The `line` and `github` reporters | `list`; `github()` posts a pull request comment |
+| The `github` reporter | `github()` posts a pull request comment |
 
 </Accordion>
 </AccordionGroup>

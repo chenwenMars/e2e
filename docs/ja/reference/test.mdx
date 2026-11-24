@@ -37,6 +37,7 @@ describe('checkout', { tags: ['billing'] }, () => {
 | [`test.for`](#test-for) | `EachRegistrar` |
 | [`test.fail`](#test-fail) | `TestCase \| void` |
 | [`test.setTimeout`](#test-settimeout) | `void` |
+| [`test.slow`](#test-slow) | `void` |
 | [`test.only`](#test-only) | `TestCase` |
 | [`test.setup`](#test-setup) | `TestCase` |
 | [`test.extend`](#test-extend) | `TestAPI` |
@@ -270,6 +271,31 @@ test('imports a large file', async ({ app }) => {
 | `INVALID_ARGUMENT` | タイムアウトがミリ秒の正の安全な整数でない場合、2147483647 を超える場合、または `afterEach` フック、`afterAll` フック、フィクスチャの後処理、ホストされたセッションから呼び出した場合。テストやフックの終了後も動き続けているコードから呼び出した場合も同様です。 |
 | `COLLECTION_ERROR` | 実行中のテストやフックの外で呼び出した場合。そこでは `timeout` オプションを使ってください。 |
 
+#### `test.slow`
+
+Playwright の `test.slow()` と同じく、実行中のテストのタイムアウトを 3 倍にします。テスト本体または `beforeEach` フックから呼び出します。`beforeAll` フックから呼び出すと、そのフックのタイムアウトを 3 倍にします。
+
+```ts
+test('imports a large file', async ({ app }) => {
+  test.slow();
+  await app.open('/import');
+});
+test('renders the report', async ({ platform }) => {
+  test.slow(platform === 'ios', 'the simulator renders slowly');
+});
+```
+
+- その時点で有効なタイムアウトを 3 倍にします。[`test.setTimeout`](#test-settimeout) と同じく試行の開始から数え、その規則に従います。`test.setTimeout(10_000)` の後なら 30 秒になります（上限は 2147483647 ミリ秒）。
+- Playwright と同じく、1 回の試行で効くのは 1 回だけです。本体や `beforeEach` フックでの 2 回目以降の呼び出しは何もしません。後から `test.setTimeout` を呼ぶとタイムアウトは置き換わります。
+- 条件が偽なら何もしません。理由は読み手のためのもので、レポートには残りません。
+- リトライは [`timeout`](#timeout) オプションの値から始まります。
+- `test.slow(title, fn)` はありません。本体の最初で `test.slow()` を呼ぶか、`timeout` を渡してください。
+
+| エラー | 発生条件 |
+| --- | --- |
+| `INVALID_ARGUMENT` | `afterEach` フック、`afterAll` フック、フィクスチャの後処理、ホストされたセッションから呼び出した場合。テストやフックの終了後も動き続けているコードから呼び出した場合も同様です。 |
+| `COLLECTION_ERROR` | 実行中のテストやフックの外で呼び出した場合（条件が偽でも同様）、または `test.slow(title, fn)`。そこでは `timeout` オプションを使ってください。 |
+
 #### `test.only`
 
 ローカルで実行対象を絞るテストを 1 つ登録します。
@@ -442,7 +468,7 @@ test.beforeAll(async ({ database, device }) => {
 
 スイートのフックが実行したステップは、どのテストの記録にも含まれません。失敗した場合、エラーにはそのフックのスコープが示されます。
 
-各 `beforeAll` フックは設定の `timeout` で動きます。その中で [`test.setTimeout`](#test-settimeout) を呼ぶとそのフックのタイムアウトが変わり、そのフックがセットアップするワーカーフィクスチャも変更後のタイムアウトで動きます。
+各 `beforeAll` フックは設定の `timeout` で動きます。その中で [`test.setTimeout`](#test-settimeout) または [`test.slow`](#test-slow) を呼ぶとそのフックのタイムアウトが変わり、その後にフックが行うエンジンの呼び出しも変更後のタイムアウトで動きます。フックが名前で指定するワーカーフィクスチャは本体の実行前にセットアップされるため、設定の `timeout` のままです。
 
 | エラー | 発生条件 |
 | --- | --- |

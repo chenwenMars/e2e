@@ -410,10 +410,12 @@ export function createEngineSession(options: EngineSessionOptions): TargetSessio
       // Pixels stay only when their masked regions cover every secure node.
       // Pixels or a count the engine answered a pixels request with, short of
       // that proof, are marked instead, so no reader of the observation checks
-      // it again. An unavailable tree above has no secure node to count, so
-      // its fallback pixels rest on the engine's own proof.
+      // it again. A count with no pixels is the engine withholding them itself,
+      // even when the tree it read shows no secure node: a tree read only in
+      // part can leave one out. An unavailable tree above has no secure node
+      // to count, so its fallback pixels rest on the engine's own proof.
       const captured = observeOptions?.pixels === true && (snapshot.pixels !== undefined || snapshot.maskedRegionCount !== undefined);
-      const proven = pixelsProvenMasked(metadata.redaction);
+      const proven = snapshot.pixels !== undefined && pixelsProvenMasked(metadata.redaction);
       const observation: Observation = {
         ...metadata,
         kind: 'semantic',

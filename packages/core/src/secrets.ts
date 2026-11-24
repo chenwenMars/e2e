@@ -148,38 +148,46 @@ export function isSecret(value: unknown): value is Secret {
   );
 }
 
+/** The account `name` in `registry`, its password as a handle. */
+export function credentialIn(registry: SecretRegistry, name: string): Credential {
+  const resolved = registry.credentials.get(name);
+  if (resolved === undefined) {
+    throw new ConfigurationError(
+      'AUTH_CREDENTIAL_UNAVAILABLE',
+      `credential "${name}" is not configured; add it to config.credentials or E2E_USER_* variables`,
+    );
+  }
+  return Object.freeze({
+    name,
+    username: resolved.username,
+    password: secretHandle(resolved.password),
+    [credentialBrand]: true as const,
+  });
+}
+
+/** The handle of the `config.secrets` entry `name` in `registry`. */
+export function secretIn(registry: SecretRegistry, name: string): Secret {
+  const resolved = registry.secrets.get(name);
+  if (resolved === undefined) {
+    const credential = credentialNamed(name, registry.credentials);
+    const hint = credential === undefined ? '' : `; credential "${credential.name}"'s password is credentials.user(${JSON.stringify(credential.name)}).password`;
+    throw new ConfigurationError(
+      'SECRET_UNAVAILABLE',
+      `secret "${name}" is not configured; add it to config.secrets or set ${envName('E2E_SECRET', name)}${hint}`,
+    );
+  }
+  return secretHandle(resolved);
+}
+
 export const credentials: Credentials = {
   user(name: string): Credential {
-    const registry = requireRegistry('credentials.user()', 'AUTH_CREDENTIAL_UNAVAILABLE');
-    const resolved = registry.credentials.get(name);
-    if (resolved === undefined) {
-      throw new ConfigurationError(
-        'AUTH_CREDENTIAL_UNAVAILABLE',
-        `credential "${name}" is not configured; add it to config.credentials or E2E_USER_* variables`,
-      );
-    }
-    return Object.freeze({
-      name,
-      username: resolved.username,
-      password: secretHandle(resolved.password),
-      [credentialBrand]: true as const,
-    });
+    return credentialIn(requireRegistry('credentials.user()', 'AUTH_CREDENTIAL_UNAVAILABLE'), name);
   },
 };
 
 export const secrets: Secrets = {
   get(name: string): Secret {
     const registry = currentRegistry();
-    if (registry === undefined) return deferredSecret(name);
-    const resolved = registry.secrets.get(name);
-    if (resolved === undefined) {
-      const credential = credentialNamed(name, registry.credentials);
-      const hint = credential === undefined ? '' : `; credential "${credential.name}"'s password is credentials.user(${JSON.stringify(credential.name)}).password`;
-      throw new ConfigurationError(
-        'SECRET_UNAVAILABLE',
-        `secret "${name}" is not configured; add it to config.secrets or set ${envName('E2E_SECRET', name)}${hint}`,
-      );
-    }
-    return secretHandle(resolved);
+    return registry === undefined ? deferredSecret(name) : secretIn(registry, name);
   },
 };

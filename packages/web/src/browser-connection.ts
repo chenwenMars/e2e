@@ -23,6 +23,14 @@ export interface CdpTarget {
   readonly headers?: Readonly<Record<string, string>> | undefined;
 }
 
+/** What a feature adds to the launch of a browser. */
+export interface BrowserLaunchOptions {
+  /** Command-line arguments, after the browser's own. */
+  readonly args?: readonly string[];
+  /** Firefox preferences, as `about:config` names them. */
+  readonly preferences?: Readonly<Record<string, string | number | boolean>>;
+}
+
 /** Whether `name` is a browser the engine launches. */
 export function isBrowserName(name: string): name is BrowserName {
   return (BROWSER_NAMES as readonly string[]).includes(name);
@@ -59,6 +67,8 @@ export interface BrowserAcquireOptions {
   readonly timeoutMs: number;
   /** Whether a Chromium launch keeps its OS sandbox on; other browsers ignore it. */
   readonly chromiumSandbox: boolean;
+  /** What the engine's options add to a launch; a browser `connect` attaches to was started elsewhere and takes none. */
+  readonly launch?: BrowserLaunchOptions | undefined;
   /** Attaches to a remote browser instead of launching one, when given. */
   readonly connect?: (() => Promise<Browser>) | undefined;
 }
@@ -109,12 +119,14 @@ export class BrowserConnection {
    * log; the engine error names the option instead.
    */
   private async launchLocal(options: BrowserAcquireOptions): Promise<Browser> {
-    const { name, headed, timeoutMs, chromiumSandbox } = options;
+    const { name, headed, timeoutMs, chromiumSandbox, launch } = options;
     const type = await browserType(name);
     try {
       return await type.launch({
         headless: !headed,
         timeout: timeoutMs,
+        ...(launch?.args === undefined ? {} : { args: [...launch.args] }),
+        ...(launch?.preferences === undefined ? {} : { firefoxUserPrefs: { ...launch.preferences } }),
         ...RUNNER_OWNS_SIGNALS,
         ...(name === 'chromium' ? { chromiumSandbox } : {}),
       });

@@ -12,6 +12,15 @@ export const COMPLIANCE_LABEL = 'needs:compliance';
 /** Label on a PR the stale sweep closed, so a reopened one is not closed again. */
 export const STALE_LABEL = 'stale-cleanup';
 
+/**
+ * Label a maintainer puts on a community PR they will finish themselves. The
+ * policy leaves such a PR alone: its author has nothing left to fix.
+ */
+export const TAKEOVER_LABEL = 'maintainer takeover';
+
+/** Hidden marker that finds the takeover announcement. */
+export const TAKEOVER_MARKER = '<!-- pr-takeover -->';
+
 /** Hidden marker that finds the check's own comment. */
 export const COMPLIANCE_MARKER = '<!-- pr-policy -->';
 
@@ -34,7 +43,7 @@ const TITLE = /^(feat|fix|docs|chore|refactor|test|perf|ci|build|revert)(\([^)]+
 /** Types that need a linked issue; the rest are exempt. */
 const ISSUE_EXEMPT = new Set(['feat', 'docs', 'refactor']);
 
-const TEMPLATE_PLACEHOLDERS = new Set(['-', 'Ran it locally: yes | no - <why>']);
+const TEMPLATE_PLACEHOLDERS = new Set(['-', '1.', 'Ran it locally: yes | no - <why>']);
 
 export interface Author {
   login: string;
@@ -122,7 +131,7 @@ export function problems(pr: PullRequest): string[] {
     found.push(`A \`${type}\` PR needs an existing issue. Open one if there is none, then add \`Fixes #123\` under \`## Issue\`.`);
   }
   if (!described(pr.body)) {
-    found.push('The description is empty. Say what changes and why, in a few bullets.');
+    found.push('The description is empty. Fill in `## What`, `## Why`, and `## How it works`.');
   }
   if (!filled(section(pr.body, 'Verified'))) {
     found.push('`## Verified` is missing or empty. Say how you checked the change works.');
@@ -150,6 +159,68 @@ export const STALE_CLOSE_MESSAGE = [
   '',
   'If you are still working on it or think it should stay open, say so here and a maintainer can reopen it.',
 ].join('\n');
+
+/** A maintainer is finishing the PR, so neither the check nor the sweep touches it. */
+function isTakenOver(labels: readonly string[]): boolean {
+  return labels.includes(TAKEOVER_LABEL);
+}
+
+/** What the author still has to fix: `problems`, or nothing once a maintainer took the PR over. */
+export function outstanding(pr: PullRequest & { labels: readonly string[] }): string[] {
+  return isTakenOver(pr.labels) ? [] : problems(pr);
+}
+
+/** The announcement on a PR a maintainer took over, addressed to its author. */
+export function takeoverComment(author: string, maintainer: string): string {
+  return [
+    TAKEOVER_MARKER,
+    `@${author}, thanks for the work so far. @${maintainer} is taking over this PR and will finish it.`,
+    '',
+    '- You do not need to do anything else. Review comments and failing checks are on the maintainer from here.',
+    '- Please do not push more commits, so the work does not collide. If you have something to add, comment here.',
+    '- You keep the credit for the change.',
+    '- The automated checks will not close this PR.',
+    '',
+    'If you would rather finish it yourself, say so here.',
+  ].join('\n');
+}
+
+export interface Takeover {
+  labels: readonly string[];
+  author: string;
+  /** Who last added the takeover label, when the timeline still says. */
+  maintainer: string | undefined;
+  /** The body of the announcement already on the PR. */
+  announced: string | undefined;
+}
+
+/**
+ * What brings the announcement in line with the label: the body to post or
+ * edit in, a withdrawal, or nothing. Decided from the PR as it is rather than
+ * from the event, so a label change whose run never happened is caught by the
+ * next one.
+ */
+export function takeoverChange(pr: Takeover): { announce: string; maintainer: string } | 'withdraw' | undefined {
+  if (!isTakenOver(pr.labels)) return pr.announced === undefined ? undefined : 'withdraw';
+  if (pr.maintainer === undefined) return undefined;
+  const announce = takeoverComment(pr.author, pr.maintainer);
+  return announce === pr.announced ? undefined : { announce, maintainer: pr.maintainer };
+}
+
+/** The author of a `pull_request_target` payload's PR, shaped for `isCommunity`. */
+export function payloadAuthor(pr: {
+  author_association: string;
+  user: { login: string; type: string };
+  head: { repo: { full_name: string } | null };
+  base: { repo: { full_name: string } };
+}): Author {
+  return {
+    login: pr.user.login,
+    association: pr.author_association,
+    bot: pr.user.type === 'Bot',
+    fromFork: pr.head.repo?.full_name !== pr.base.repo.full_name,
+  };
+}
 
 /** A flagged PR whose grace period, counted from the check's first comment, is over. */
 export function graceExpired(flaggedAt: string, now: number): boolean {
@@ -182,12 +253,13 @@ export function positiveReactions(pr: Pick<OpenPullRequest, 'reactions'>): numbe
   return pr.reactions.filter(({ content }) => POSITIVE_REACTIONS.has(content)).reduce((total, { count }) => total + count, 0);
 }
 
-/** A community PR the stale sweep closes. Approved PRs and ones it closed before are kept. */
+/** A community PR the stale sweep closes. Approved PRs, taken over PRs, and ones it closed before are kept. */
 export function isStale(pr: OpenPullRequest, now: Date): boolean {
   return (
     isCommunity(pr.author) &&
     !pr.approved &&
     !pr.labels.includes(STALE_LABEL) &&
+    !isTakenOver(pr.labels) &&
     Date.parse(pr.createdAt) < monthBefore(now).getTime() &&
     positiveReactions(pr) < STALE_REACTIONS
   );

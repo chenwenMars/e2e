@@ -138,6 +138,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `device.launchApp({ url })`、`device.openURL({ url })` | `device.openLink(url)` |
 | `device.terminateApp()`、`sendToHome()`、`pressBack()` | `device.closeApp()`、`home()`、`back()` |
 | `device.setLocation(lat, lon)`、`setOrientation('landscape')` | `device.setLocation({ latitude, longitude })`、`setOrientation('landscape-left')` |
+| `device.shake()` | `device.shake()`，在本地模拟器上 |
 | `device.setBiometricEnrollment(true)` | `device.enrollBiometrics('faceid', true)` |
 | `device.matchFace()`、`unmatchFace()`、`matchFinger()`、`unmatchFinger()` | `device.setBiometrics('faceid' \| 'touchid', 'match' \| 'nonmatch')` |
 | `device.takeScreenshot()` | `app.screenshot('label')`，或使用 [`toHaveScreenshot`](/visual-testing) 比较 |
@@ -165,7 +166,6 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `launchApp({ languageAndLocale })` | 在 iOS 上使用 `app.launchArguments: ['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR']`，参阅[以其他语言运行应用](/mobile#run-the-app-in-another-language) |
 | Jest `globalSetup`、`globalTeardown` | 运行前启动依赖项 |
 | `device.reverseTcpPort()` | 在 CI 步骤中运行 `adb reverse` |
-| `device.shake()` | - |
 | 作为单个键值映射的 `launchArgs` | iOS 使用 `['-key', 'value']`，Android 使用 `['--es', 'key', 'value']` |
 | `.getAttributes()` | `.textContent()`、`.inputValue()`、`.isEnabled()`、`.isVisible()`、`.isChecked()`、`.boundingBox()` |
 | `device.setStatusBar()` | `xcrun simctl status_bar`。`toHaveScreenshot` 会固定状态栏 |

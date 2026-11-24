@@ -11,7 +11,7 @@ import { Keyboard, type Keypress } from './keyboard.ts';
 import { stepKeyOf, type HeldPromptStep, type StepGate, type StepView } from './step.ts';
 
 type StepKeyboardOptions = {
-  readonly stream: OutputStream | undefined;
+  readonly stream: () => OutputStream | undefined;
   readonly holdSteps: boolean;
   readonly interrupt: () => void;
 };
@@ -62,8 +62,9 @@ export class StepKeyboard {
       if (key === 'screen' || key === 'logs') {
         const held = this.gate.inspect();
 
-        if (held !== undefined && stream !== undefined) {
-          this.viewer = new StepViewer(stream, held, this.output, () => {
+        const terminal = stream();
+        if (held !== undefined && terminal !== undefined) {
+          this.viewer = new StepViewer(terminal, held, this.output, () => {
             this.viewer = undefined;
             this.gate.guardKeys();
           });

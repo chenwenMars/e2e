@@ -42,7 +42,7 @@ e2e は Maestro の YAML フローを TypeScript のテストに置き換えま�
 | --- | --- |
 | 各フロー冒頭の `appId` | ターゲットの `app: { bundleId: 'com.example.app' }`。`app.open()` が起動するアプリ |
 | フローごとに異なる `appId`、フロー途中の別のアプリ | テスト内の `device.openApp(id)`、またはアプリごとに別の設定 |
-| `--platform`, `--device` | `mobile({ platform: 'ios', device: 'iPhone 17' })`。プラットフォームごとに 1 ターゲット。`device` のリストはプール |
+| `--platform`, `--device` | `mobile({ platform: 'ios', device: 'iPhone 17' })`。プラットフォームごとに 1 ターゲット。`device` のリストはプール。1 回の実行だけなら `e2e run --target ios --device 'iPhone 17'` |
 | `.maestro/config.yaml` の `flows`、`'!helper.yaml'` | `tests: ['tests/**/*.e2e.ts', '!tests/helpers/**']` |
 | `tags`, `--include-tags`, `--exclude-tags` | テストやグループの `{ tags: [...] }`。CLI の `--tag`、`--exclude-tag` |
 | `env` と `${VAR}` | モジュールの定数と、ゴールの `params`: `agent.act('sign in as {email}', { params: { email } })` |
@@ -177,7 +177,6 @@ test('asks for the email', async ({ app, agent, screen }) => {
 | Maestro Cloud | [ホスト型デバイスプロバイダー](/mobile#hosted-devices)を使う自身の [CI](/ci) |
 | `pressKey: lock`, `power`, `volume up`, `volume down` | [`unstable_raw`](/reference/mobile#unstable_raw) の `client.command.hardwareButton`。Android では電源と音量、iPhone 実機では音量 |
 | JUnit の `properties`、`--output` による JUnit のパス | タグやタイトルに ID を含める。実行後に `.e2e/junit.xml` をコピー |
-| コマンドラインの `--device` | 設定の `device: process.env.DEVICE` |
 
 ### 未対応
 

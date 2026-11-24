@@ -126,7 +126,7 @@ export class RunningTree {
     const capacity = Math.max(0, terminalRows() - summary.length - CHROME_ROWS - footer.length);
     let budget = capacity;
     const columns = terminalColumns() - WIDTH_MARGIN;
-    const promptRows = paused?.prompt.steps.length ?? 0;
+    const promptRows = paused?.event.steps.length ?? 0;
     const perTest = Math.max(
       0,
       Math.floor((budget - promptRows - active.size - running.length) / Math.max(1, running.length)),
@@ -159,7 +159,7 @@ export class RunningTree {
         if (held === undefined) {
           lines.push(`${pc.bold(pc.yellow(`   ${glyph} `))}${test.title} ${this.clock(now - test.startedMs)}`);
         } else {
-          const { attachId } = held.prompt.steps[0].step;
+          const { attachId } = held.event;
           const id = `(${attachId})`;
           const prefix = `   ${glyph} `;
           const titleWidth = columns - prefix.length - id.length - 1;
@@ -192,7 +192,7 @@ export class RunningTree {
    */
   private detailRows(test: RunningTest, maxEvents: number, budget: number, now: number, held: PausedTest | undefined): string[] {
     const maxWidth = terminalColumns() - WIDTH_MARGIN - DETAIL_INDENT.length;
-    const prompt = held === undefined ? [] : heldStepRows(this.pc, held.prompt, maxWidth).slice(0, budget);
+    const prompt = held === undefined ? [] : heldStepRows(this.pc, held.event, maxWidth).slice(0, budget);
     const current = [...this.stepRows(test, maxEvents, budget - prompt.length, now), ...prompt];
     const room = budget - current.length;
     const rendered = (test.ran ?? test.steps).map((step) => stepLine(this.pc, step, { maxWidth }));

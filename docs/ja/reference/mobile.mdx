@@ -233,7 +233,7 @@ mobile({ platform: 'ios', transition: 800 }); // default: 500
 
 待機中にコントロールが変わった場合、アクションは自身のタイムアウト内で対象を探し直してから操作します。
 
-[`device`](#device) の `back`、`home`、`alert`、`dismissKeyboard`、`setOrientation`、`fold` は画面を変えるため、タップと同じくこの待機時間の対象となるアクションとして数えます。それらが表示した画面とともに現れるコントロールには、この時間が過ぎてから次のアクションを行います。
+[`device`](#device) の `back`、`home`、`shake`、`alert`、`dismissKeyboard`、`setOrientation`、`fold` は画面を変えるため、タップと同じくこの待機時間の対象となるアクションとして数えます。それらが表示した画面とともに現れるコントロールには、この時間が過ぎてから次のアクションを行います。
 
 `fill` と `clear` は、入力前にフィールドを読み直します。フィールドがない、機密状態が変わった、取得が不完全な場合は、変更を加える前に `NODE_STALE` を返し、新しい観測を得てから再試行します。入力欄ではない対象は `UNSUPPORTED_CAPABILITY` です。iOS の `other` は、プラットフォームが分類できなかった要素の型です。値またはテキストだけを持つ場合は入力対象になります。Compose Multiplatform や Flutter の独自描画フィールドが、そのように報告されることがあるためです。
 
@@ -392,13 +392,14 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`foregroundApp`](#foregroundapp) | `Promise<ForegroundApp>` |
 | [`home`](#home) | `Promise<void>` |
 | [`back`](#back) | `Promise<void>` |
+| [`shake`](#shake) | `Promise<void>` |
 | [`alert`](#alert) | `Promise<void>` |
 | [`dismissKeyboard`](#dismisskeyboard) | `Promise<void>` |
 | [`isKeyboardShown`](#iskeyboardshown) | `Promise<boolean>` |
 | [`clipboard`](#clipboard) | `Promise<string>` |
 | [`setClipboard`](#setclipboard) | `Promise<void>` |
 
-すべての非同期メソッドは `device.<method>` ステップとして記録し、`config.actionTimeout` で制限します。`back`、`home`、`alert`、`dismissKeyboard`、`setOrientation`、`fold` は、[`transition`](#transition) の待機時間の対象となるアクションとして数えます。以下の各項目にメンバーの宣言、[型](#device-fixture)にそこで使う型を載せています。
+すべての非同期メソッドは `device.<method>` ステップとして記録し、`config.actionTimeout` で制限します。`back`、`home`、`shake`、`alert`、`dismissKeyboard`、`setOrientation`、`fold` は、[`transition`](#transition) の待機時間の対象となるアクションとして数えます。以下の各項目にメンバーの宣言、[型](#device-fixture)にそこで使う型を載せています。
 
 | エラー | 発生条件 |
 | --- | --- |
@@ -853,6 +854,31 @@ back(): Promise<void>;
 ```ts
 await device.back();
 ```
+
+#### `shake`
+
+```ts
+/**
+ * Shakes the device once: the simulator's shake gesture on an iPhone or
+ * iPad simulator, a swing of the accelerometer on an Android phone or
+ * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
+ * device a provider drives through its own backend. It resolves once the
+ * shake is sent, so assert on what the app shows next.
+ */
+shake(): Promise<void>;
+```
+
+```ts
+await device.shake();
+await expect(screen.getByText('Report a problem')).toBeVisible();
+```
+
+アプリは実機でのシェイクと同じようにこのシェイクを受け取ります。React Native の開発ビルドは開発メニューを開き、シェイクのハンドラーを持つアプリはそれを実行します。
+
+| エラー | 発生条件 |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | agent-device がシェイクできないデバイスの場合。実機、TV やウォッチのターゲット、プロバイダーが独自のバックエンド（WebDriver セッションやプロバイダー所有の iOS シミュレーターなど）で操作するデバイスが該当します。 |
+| `ENGINE_FAILURE` | Android エミュレーターのコンソールがシェイクを拒否した場合。加速度センサーのないイメージがこれに該当します。 |
 
 #### `alert`
 

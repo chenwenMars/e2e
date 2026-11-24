@@ -101,7 +101,7 @@ bunx e2e init --yes --gateway openrouter --skills .agents/skills --mcp .mcp.json
 | --- | --- |
 | `[directory]` | 作成先です。なければディレクトリを作ります。デフォルトは作業ディレクトリです。 |
 | `-y`, `--yes` | 質問を省略します。フラグで指定していない回答にはデフォルトを使います。Web エンジン、Vercel AI Gateway、両方の場所へのスキルと MCP 設定、CI パイプラインなし、インストールなしです。 |
-| `--example <name>` | サンプルアプリから始めます。`with-vite`、`with-next`、`with-astro`、`with-angular`、`with-expo`、`with-swiftui`、`with-compose`、`with-kotlin-multiplatform`、`with-flutter`、`with-maui` を指定できます。`with-` は省略可能です。[サンプルから始める](#starting-from-an-example)を参照してください。 |
+| `--example [name]` | サンプルアプリから始めます。`with-vite`、`with-next`、`with-astro`、`with-angular`、`with-expo`、`with-swiftui`、`with-compose`、`with-kotlin-multiplatform`、`with-flutter`、`with-maui` を指定できます。`with-` は省略可能です。名前を省くと、一覧から選べます。[サンプルから始める](#starting-from-an-example)を参照してください。 |
 | `--engine <ids>` | 新しい設定のエンジンです。`web`、`mobile`、`none` を、カンマ区切りまたは繰り返し指定します。`web,mobile` はそれぞれのターゲットを書き込みます。デフォルトでは対話形式で尋ねます。 |
 | `--gateway <id>` | 新しい設定でエージェントステップに使うモデルゲートウェイです。`vercel`、`openrouter`、`openai-compatible`、`chatgpt`、`copilot`、`opencode-console`、`grok`、`none` を指定できます。デフォルトでは対話形式で尋ねます。 |
 | `--endpoint <url>` | `--gateway openai-compatible` のベース URL で、このゲートウェイの指定も兼ねます。HTTPS、またはループバックホストの HTTP を使えます。デフォルトでは対話形式で尋ね、`--yes` では `http://127.0.0.1:11434/v1` です。 |
@@ -119,6 +119,7 @@ bunx e2e init --yes --gateway openrouter --skills .agents/skills --mcp .mcp.json
 | 2 | 未知のフラグ値。書き込み前に終了し、有効な値を列挙します。 |
 | 2 | 不正な `package.json`。書き込み前に終了します。 |
 | 2 | stdin と stdout がターミナルではなく、`--yes` もない場合。メッセージにフラグを示します。 |
+| 2 | 名前のない `--example` に `--yes` を付けた、またはターミナルがない場合。メッセージに名前を列挙します。 |
 | 2 | ファイルのあるディレクトリに `--example` を指定した、またはサンプルのダウンロードに失敗した場合。何も残しません。 |
 | 2 | 依存関係のインストールに失敗した場合。 |
 | 130 | ロゴ描画中やサンプルのダウンロード中の Ctrl-C または SIGTERM、あるいは依存関係のインストール中の SIGINT。途中まで取得したサンプルは削除します。 |
@@ -199,7 +200,7 @@ bunx e2e init --yes --ci gitlab
 <a id="starting-from-an-example" />
 ##### サンプルから始める
 
-`--example` は[サンプルアプリ](https://github.com/e2e-inc/e2e/tree/main/examples)を新しいディレクトリまたは空のディレクトリにコピーし、その e2e プロジェクトでウィザードを実行します。Web または Expo アプリではそのディレクトリ自体、ネイティブアプリでは `e2e/` フォルダーです。
+`--example` は[サンプルアプリ](https://github.com/e2e-inc/e2e/tree/main/examples)を新しいディレクトリまたは空のディレクトリにコピーし、その e2e プロジェクトでウィザードを実行します。Web または Expo アプリではそのディレクトリ自体、ネイティブアプリでは `e2e/` フォルダーです。名前を省くと、一覧から選べます。
 
 <CodeGroup>
 ```bash npm
@@ -510,6 +511,7 @@ e2e run [files...]
 | オプション | 説明 |
 | --- | --- |
 | `--headed` | エンジンが対応していれば UI を表示します。 |
+| `--device <name>` | 選択したモバイルターゲットを、この実行に限り `device` オプションの代わりに、指定したシミュレーター、エミュレーター、実機で実行します。指定できるのはデバイス名、シミュレーターの UDID、エミュレーターのシリアル（`emulator-5554`）です。適用されるのは、選択したターゲットのうちデバイスを指定できる 1 つだけです。ほかの選択したターゲット（`web()` や、プロバイダーがデバイスを貸し出すターゲット）は設定どおりに実行します。デバイスを指定できるターゲットを複数選択している場合は `--target` で 1 つに絞ります。絞らないと `TARGET_REQUIRED` で失敗します。1 つもない場合は `UNSUPPORTED_CAPABILITY` です。`e2e login --device` は別のフラグです。 |
 | `--agent <names>` | エージェントを固定していないテストを、選択したエージェントごとに 1 回実行します。カンマ区切りまたは繰り返し指定し、デフォルトは `default` です。`{ agent }` のあるテストでは、共通の名前があればそれらを選び、なければテスト自身の指定を維持します。未知の名前は `INVALID_CONFIG` です。 |
 | `--retries <n>` | `config.retries` を置き換えます。0〜10 の整数で、デフォルトは設定値です。 |
 | `--workers <n>` | `config.workers` を置き換えます。1〜1024 の整数で、デフォルトは設定値です。 |
@@ -522,7 +524,7 @@ e2e run [files...]
 | `--strict-cache` | この実行で `cache.strict` を有効にします。記録はあるがリプレイできなくなったステップは、エージェントに引き継がず `REPLAY_STALE` で失敗します。リトライもリプレイし、キャッシュには書き込みません。[古くなった記録で失敗させる](/cache#fail-on-a-stale-recording)を参照してください。 |
 | `-u`, `--update-snapshots` | [`toHaveScreenshot`](/reference/expect#screenshot-matchers) が未保存または相違ありと判断したスクリーンショットを書き込み、マッチャーを成功にします。未指定では、未保存のものを書き込んで失敗にし、CI では結果への添付だけを行います。 |
 | `-w`, `--watch` | 実行後、テストファイルや設定の変更、またはキー操作で再実行します。[監視モード](#watch-mode)を参照してください。 |
-| `--step` | 最初のステップを実行し、以後の各ステップはキー入力まで待機します。Enter はそのステップ、`n` はテストの残り、`a` は実行の残りを進め、`h` はキー一覧、`q` は終了コード 130 で停止します。待機時間はどのタイムアウトにも含めません。ターミナルがなければバックグラウンドで進み、各コマンドは次の待機ステップで画面を返します。`--step next` はそのステップ、`--step rest` は残り、`--step stop` は終了です。`--step next`、`rest`、`stop` は、[`screen.pause()`](/debugging#pause-a-test) で一時停止したテストの再開や停止にも使えます。ワーカーは 1 つで、CI、`--watch`、1 を超える `--workers`、json レポーターとの併用は拒否します（終了コード 2）。[ステップごとにテストを進める](/debugging#step-through-a-test)と[ターミナルなしで進める](/debugging#step-through-a-test-without-a-terminal)を参照してください。 |
+| `--step` | 最初のステップを実行し、以後の各ステップはキー入力まで待機します。Enter はそのステップ、`n` はテストの残り、`a` は実行の残りを進め、`h` はキー一覧、`q` は終了コード 130 で停止します。待機時間はどのタイムアウトにも含めません。ターミナルがなければバックグラウンドで進み、各コマンドは次の待機ステップで画面を返します。`--step next` はそのステップ、`--step rest` は残り、`--step stop` は終了です。`--step next`、`rest`、`stop` は、[`screen.pause()`](/debugging#pause-a-test) で一時停止したテストの再開や停止にも使えます。ワーカーは 1 つで、CI、`--watch`、1 を超える `--workers` との併用は拒否します（終了コード 2）。json レポーターとの併用にはターミナルが必要です。[ステップごとにテストを進める](/debugging#step-through-a-test)と[ターミナルなしで進める](/debugging#step-through-a-test-without-a-terminal)を参照してください。 |
 
 **出力**
 
@@ -604,7 +606,7 @@ $ npx e2e run --debug
 
 テスト開始前に停止した実行は、これらを何も書かず、前回のファイルを残します。設定や収集のエラー、`NO_TESTS`、`NO_LAST_RUN`、`UNSUPPORTED_ARTIFACT`、アプリコマンドの起動失敗、中断が該当します。エラーはターミナルと終了コードで示します。`junit.xml` または `summary.md` の書き込み失敗は stderr の 1 行で示し、実行エラーにはしません。
 
-`list` と `dot` レポーターは実行エラーを `Run Errors` の下に表示します。どちらも、また [`onOutput`](/reference/reporters#onoutput) でターミナルに出力する他のレポーターもなければ、`json` の場合も含め、各エラーを stderr に `CODE: message` として表示します。
+`list` と `dot` レポーターは実行エラーを `Run Errors` の下に表示します。どちらも、また他の[インタラクティブ](/reference/reporters#interactive)なレポーターもなければ、`json` の場合も含め、各エラーを stderr に `CODE: message` として表示します。
 
 レポートの `run.summary` は結果を集計します。
 

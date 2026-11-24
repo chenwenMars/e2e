@@ -44,6 +44,16 @@ export function targetIdentity(target: ResolvedTarget): SessionIdentity {
   };
 }
 
+/** A sealed document's `state`: the engine state's format, then its AES-256-GCM ciphertext, IV, and tag. */
+export interface SealedState {
+  format: string;
+  version: number;
+  algorithm: 'A256GCM';
+  iv: string;
+  tag: string;
+  ciphertext: string;
+}
+
 interface SessionEnvelope {
   schemaVersion: 'session-1';
   runId: string;
@@ -56,14 +66,7 @@ interface SessionEnvelope {
   expiresAt: string;
   /** Authenticated, never encrypted: which secrets the payload carries values for. */
   secrecy?: { names: string[] };
-  state: {
-    format: string;
-    version: number;
-    algorithm: 'A256GCM';
-    iv: string;
-    tag: string;
-    ciphertext: string;
-  };
+  state: SealedState;
 }
 
 /** What one saved session holds once decrypted. */
@@ -76,6 +79,79 @@ export interface SavedSession {
 interface SessionPayload {
   data: unknown;
   secrets: [string, string][];
+}
+
+const IV_BYTES = 12;
+const TAG_BYTES = 16;
+
+/**
+ * Seals a state into a `session-1` or `session-state-1` document: encrypts
+ * the state's data and the secret values under `key` (AES-256-GCM, a fresh
+ * random IV) and authenticates the rest of the document, `envelope` plus the
+ * secret names and the clear part of `state`, as its canonical JSON. The
+ * returned document keeps `envelope`'s keys first, in order, so its JSON
+ * text is the shape each schema pins.
+ */
+export function sealSessionPayload<Envelope extends Record<string, unknown>>(
+  envelope: Envelope,
+  state: Pick<EngineState, 'format' | 'version' | 'data'>,
+  secrets: SavedSecrets,
+  key: Buffer,
+): Envelope & { secrecy: { names: string[] }; state: SealedState } {
+  const iv = randomBytes(IV_BYTES);
+  const unsealed = {
+    ...envelope,
+    secrecy: { names: [...new Set(secrets.map(([secretName]) => secretName))] },
+    state: {
+      format: state.format,
+      version: state.version,
+      algorithm: 'A256GCM' as const,
+      iv: iv.toString('base64'),
+    },
+  };
+  const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
+  cipher.setAAD(Buffer.from(canonicalJson(unsealed), 'utf8'));
+  const payload: SessionPayload = { data: state.data, secrets: secrets.map(([secretName, value]) => [secretName, value]) };
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(payload), 'utf8')), cipher.final()]);
+  return {
+    ...unsealed,
+    state: {
+      ...unsealed.state,
+      tag: cipher.getAuthTag().toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+    },
+  };
+}
+
+/**
+ * Opens a document `sealSessionPayload` wrote: authenticates every field but
+ * the tag and ciphertext under `key`, then decrypts and checks the payload.
+ * An IV, tag, or ciphertext that is not a string, any tag but 16 bytes, a wrong key, or an edited byte is
+ * `SESSION_INVALID` with `messages.authFailed`; a payload of another shape
+ * is `SESSION_INVALID` with `messages.invalidPayload`. Neither error carries
+ * the plaintext.
+ */
+export function openSessionPayload(
+  envelope: { readonly state: SealedState },
+  key: Buffer,
+  messages: { readonly authFailed: string; readonly invalidPayload: string },
+): SessionPayload {
+  const { tag, ciphertext, ...aadState } = envelope.state;
+  let plaintext: string;
+  try {
+    // Inside the try: `canonicalJson` throws on a value JSON cannot carry, such as an unknown field of 1e400.
+    const aad = Buffer.from(canonicalJson({ ...envelope, state: aadState }), 'utf8');
+    // Strings only: `Buffer.from` also takes the tag as an array of bytes.
+    if (![envelope.state.iv, tag, ciphertext].every((field: unknown) => typeof field === 'string')) throw new TypeError('the IV, tag, and ciphertext must be strings');
+    // A fixed tag length: GCM would otherwise accept a truncated tag, which is easier to forge.
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.state.iv, 'base64'), { authTagLength: TAG_BYTES });
+    decipher.setAAD(aad);
+    decipher.setAuthTag(Buffer.from(tag, 'base64'));
+    plaintext = Buffer.concat([decipher.update(Buffer.from(ciphertext, 'base64')), decipher.final()]).toString('utf8');
+  } catch (cause) {
+    throw new ConfigurationError('SESSION_INVALID', messages.authFailed, { cause });
+  }
+  return parseSessionPayload(plaintext, messages.invalidPayload);
 }
 
 /**
@@ -169,58 +245,38 @@ export class SessionStore {
    */
   async save(name: string, identity: SessionIdentity, { state, secrets }: SavedSession): Promise<void> {
     this.ensureDirectory();
-    const createdAt = timestamp();
-    let expiresAt = new Date(Date.now() + MAX_SESSION_AGE_MS).toISOString();
+    const now = Date.now();
+    const createdAt = timestamp(new Date(now));
+    let expiryMs = now + MAX_SESSION_AGE_MS;
     if (state.expiresAt !== undefined) {
       const stateExpiry = Date.parse(state.expiresAt);
-      if (Number.isNaN(stateExpiry) || stateExpiry <= Date.now()) {
+      if (Number.isNaN(stateExpiry) || stateExpiry <= now) {
         throw new E2EError('test', 'SESSION_EXPIRED', 'state expiry is at or before creation');
       }
-      if (stateExpiry < Date.parse(expiresAt)) expiresAt = new Date(stateExpiry).toISOString();
+      if (stateExpiry < expiryMs) expiryMs = stateExpiry;
     }
+    const expiresAt = new Date(expiryMs).toISOString();
 
-    const iv = randomBytes(12);
-    const ivBase64 = iv.toString('base64');
-
-    const envelopeWithoutCipher = {
-      schemaVersion: 'session-1' as const,
-      runId: this.runId,
-      name,
-      targetId: identity.targetId,
-      engine: {
-        name: identity.engineName,
-        version: identity.engineVersion,
-        spiVersion: identity.spiVersion,
+    const envelope: SessionEnvelope = sealSessionPayload(
+      {
+        schemaVersion: 'session-1' as const,
+        runId: this.runId,
+        name,
+        targetId: identity.targetId,
+        engine: {
+          name: identity.engineName,
+          version: identity.engineVersion,
+          spiVersion: identity.spiVersion,
+        },
+        platform: identity.platform,
+        appIdentity: identity.appIdentity,
+        createdAt,
+        expiresAt,
       },
-      platform: identity.platform,
-      appIdentity: identity.appIdentity,
-      createdAt,
-      expiresAt,
-      secrecy: { names: [...new Set(secrets.map(([secretName]) => secretName))] },
-      state: {
-        format: state.format,
-        version: state.version,
-        algorithm: 'A256GCM' as const,
-        iv: ivBase64,
-      },
-    };
-
-    const aad = Buffer.from(canonicalJson(envelopeWithoutCipher), 'utf8');
-    const cipher = createCipheriv('aes-256-gcm', this.key, iv);
-    cipher.setAAD(aad);
-    const payload: SessionPayload = { data: state.data, secrets: secrets.map(([secretName, value]) => [secretName, value]) };
-    const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
-    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    const tag = cipher.getAuthTag();
-
-    const envelope: SessionEnvelope = {
-      ...envelopeWithoutCipher,
-      state: {
-        ...envelopeWithoutCipher.state,
-        tag: tag.toString('base64'),
-        ciphertext: ciphertext.toString('base64'),
-      },
-    };
+      state,
+      secrets,
+      this.key,
+    );
 
     const target = this.filePath(identity.targetId, name);
     await writeFileAtomic(target, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
@@ -278,28 +334,10 @@ export class SessionStore {
     }
     assertSessionNotExpired(name, envelope.expiresAt);
 
-    const { tag, ciphertext, ...aadState } = envelope.state;
-    const aadEnvelope = { ...envelope, state: aadState };
-    const aad = Buffer.from(canonicalJson(aadEnvelope), 'utf8');
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      this.key,
-      Buffer.from(envelope.state.iv, 'base64'),
-    );
-    decipher.setAAD(aad);
-    decipher.setAuthTag(Buffer.from(tag, 'base64'));
-    let plaintext: Buffer;
-    try {
-      plaintext = Buffer.concat([
-        decipher.update(Buffer.from(ciphertext, 'base64')),
-        decipher.final(),
-      ]);
-    } catch (cause) {
-      throw new ConfigurationError('SESSION_INVALID', `session "${name}" failed authentication`, {
-        cause,
-      });
-    }
-    const payload = parsePayload(plaintext.toString('utf8'), name);
+    const payload = openSessionPayload(envelope, this.key, {
+      authFailed: `session "${name}" failed authentication`,
+      invalidPayload: `session "${name}" has an unexpected payload`,
+    });
     return {
       state: {
         format: envelope.state.format,
@@ -371,9 +409,15 @@ function parseEnvelope(rawText: string, name: string): SessionEnvelope {
   return parsed as SessionEnvelope;
 }
 
-/** Parses an authenticated payload; one this runner did not write is SESSION_INVALID. */
-function parsePayload(text: string, name: string): SessionPayload {
-  const parsed: unknown = JSON.parse(text);
+/** Parses an authenticated payload; one `sealSessionPayload` did not write is SESSION_INVALID. */
+function parseSessionPayload(text: string, invalidMessage: string): SessionPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // No cause: a JSON syntax error quotes the text it failed on, here the decrypted payload.
+    throw new ConfigurationError('SESSION_INVALID', invalidMessage);
+  }
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
@@ -384,7 +428,7 @@ function parsePayload(text: string, name: string): SessionPayload {
       (entry) => Array.isArray(entry) && entry.length === 2 && entry.every((part) => typeof part === 'string'),
     )
   ) {
-    throw new ConfigurationError('SESSION_INVALID', `session "${name}" has an unexpected payload`);
+    throw new ConfigurationError('SESSION_INVALID', invalidMessage);
   }
   return parsed as SessionPayload;
 }

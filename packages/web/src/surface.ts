@@ -46,9 +46,10 @@ import {
 } from '@e2e-dev/core/engine';
 import { matchesText } from '@e2e-dev/core/engine';
 import { classifyActionError, classifyInputError, dispatchLocatorAction, dispatchPointerAction } from './actions.ts';
-import { BrowserConnection, connectCdp, defaultChromiumSandbox, type BrowserName } from './browser-connection.ts';
+import { BrowserConnection, connectCdp, defaultChromiumSandbox, type BrowserLaunchOptions, type BrowserName } from './browser-connection.ts';
 import { AttemptSession, type AttemptTab, type StorageState } from './attempt-session.ts';
 import type { CdpEndpointResolver } from './cdp-recovery.ts';
+import { webmcpLaunch } from './webmcp.ts';
 import { LeasedBrowsers, type BrowserProvider, type LeaseDownloads } from './provider.ts';
 import { installAppLog } from './app-log.ts';
 import { TraceFeed } from './trace-feed.ts';
@@ -287,6 +288,16 @@ export interface WebOptions {
    * function, which cannot close over test variables.
    */
   readonly initScripts?: readonly WebInitScript[];
+  /**
+   * Launches the browser with WebMCP, the experimental browser API a page
+   * registers tools through (`document.modelContext`, `navigator.modelContext`
+   * on Firefox), so `browser.webmcp` can list and call them. Off by default:
+   * with it the page sees an API most browsers do not have yet. Chromium and
+   * Firefox, and only for a browser the engine launches; one reached through
+   * `connect` or a provider has to be started with `--enable-features=WebMCP`
+   * itself.
+   */
+  readonly webmcp?: boolean;
 }
 
 /** The test-id attribute when the options name none. */
@@ -303,6 +314,8 @@ export class PlaywrightSurface {
   private readonly browserName: BrowserName;
   private readonly connection = new BrowserConnection();
   private readonly chromiumSandbox: boolean;
+  /** What the options add to the launch of the browser the engine launches. */
+  private readonly launch: BrowserLaunchOptions;
   private readonly connect: WebConnectOptions | undefined;
   /** The provider's browsers, when `browser` names one; the runner and worker halves of the lease bookkeeping. */
   private readonly leases: LeasedBrowsers | undefined;
@@ -349,6 +362,7 @@ export class PlaywrightSurface {
     this.chromiumSandbox = options.chromiumSandbox ?? defaultChromiumSandbox();
     this.leases = typeof options.browser === 'object' && options.browser !== null ? new LeasedBrowsers(options.browser) : undefined;
     this.connect = options.connect;
+    this.launch = options.webmcp === true ? webmcpLaunch(this.browserName) : {};
     this.viewport = options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport;
     this.screencast = options.screencast ?? {};
     this.headers = options.headers === undefined ? undefined : lowercaseNames(options.headers);
@@ -438,6 +452,7 @@ export class PlaywrightSurface {
           headed: this.headed,
           timeoutMs: BROWSER_LAUNCH_TIMEOUT_MS,
           chromiumSandbox: this.chromiumSandbox,
+          launch: this.launch,
           connect: this.connector(signal),
         }),
         signal,
@@ -865,6 +880,31 @@ export class PlaywrightSurface {
     const main = this.openPage()?.mainFrame();
     if (main === undefined || frameOf(request) !== main) return;
     for (const watch of this.navigationAborts) watch.url ??= request.url();
+  }
+
+  /**
+   * Runs page code that may send the page to another document. When it fails
+   * because the page navigated under it, the new document is left to load
+   * before the failure is thrown, so the step after it does not race that
+   * navigation. The failure itself is thrown unchanged.
+   */
+  async throughNavigation<T>(page: Page, operation: OperationContext, work: () => Promise<T>): Promise<T> {
+    const deadline = new Deadline(operation.timeoutMs);
+    const documents = watchDocuments(page);
+    try {
+      return await work();
+    } catch (cause) {
+      if (isNavigationRace(cause) && !isPwTimeout(cause) && !operation.signal.aborted) {
+        // As in `screenshot`: the rejection can arrive before the commit's `framenavigated`.
+        await documents.whenReplaced(Math.min(NAVIGATION_EVENT_GRACE_MS, deadline.remaining()));
+        if (documents.replaced()) {
+          await page.waitForLoadState('load', { timeout: Math.max(1, deadline.remaining()) }).catch(() => undefined);
+        }
+      }
+      throw cause;
+    } finally {
+      documents.stop();
+    }
   }
 
   /** Resolves with what an action resolved with once the trace has the screen it left (`TraceFeed.screenAfterAction`); an action that failed leaves none. */
@@ -1393,7 +1433,7 @@ function withTabs(snapshot: EngineSnapshot, session: AttemptSession): EngineSnap
 }
 
 /**
- * How long a screenshot waits for the navigation event after Playwright has
+ * How long a screenshot or a page call waits for the navigation event after Playwright has
  * already reported the document's context destroyed. The event is the commit
  * that destroyed the context, queued behind the capture's rejection.
  */

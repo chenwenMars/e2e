@@ -110,6 +110,7 @@ test('checkout', async ({ app, agent, screen }) => {
 | `click({ button: 'right' })`, `click({ delay })` | `secondaryTap()`、`longPress({ duration })` |
 | `click({ position })`, `click({ modifiers })` | `tap({ position })`、`tap({ modifiers })` |
 | `fill()`, `pressSequentially()`, `clear()`, `focus()`, `blur()`, `hover()`, `check()`, `uncheck()`, `dragTo()`, `setInputFiles(path)`, `selectOption({ label })` 或 `{ value }` | 相同，但不支持 `force`、`trial` 或 `position` |
+| `setInputFiles({ name, mimeType, buffer })` | 仅限 Web。传入只含 `name`、`mimeType` 和 `buffer` 的普通对象。 |
 | `press(key)` | 单个字符或[命名按键](/reference/engine#keys)的用法相同；按键代码则在 `focus()` 后使用 `browser.keyboard.press` |
 | `innerText()`, `allInnerTexts()`, `scrollIntoViewIfNeeded()` | `textContent()`、`allTextContents()`、`scrollIntoView()` |
 | `textContent()`, `allTextContents()`, `inputValue()`, `getAttribute()`, `boundingBox()`, `isVisible()`, `isHidden()`, `isEnabled()`, `isDisabled()`, `isChecked()`, `waitFor({ state })` | 相同 |
@@ -121,7 +122,7 @@ test('checkout', async ({ app, agent, screen }) => {
 
 | Playwright | e2e |
 | --- | --- |
-| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()` | 相同，支持 `{ visible }`、`{ enabled }`、`{ checked }`、`{ attached }` 和 `{ ignoreCase }` |
+| `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()`, `toBeEditable()` | 相同，支持 `{ visible }`、`{ enabled }`、`{ editable }`、`{ checked }`、`{ attached }` 和 `{ ignoreCase }` |
 | `toHaveId(id)`, `toContainClass(name)` | `toHaveAttribute('id', id)`、`toHaveAttribute('class', RegExp)` |
 | `expect(page).toHaveURL()`, `toHaveTitle()` | `expect(browser).toHaveURL()`、`toHaveTitle()` |
 | `expect(page).toHaveScreenshot()`, `expect(locator).toHaveScreenshot()` | `expect(screen).toHaveScreenshot()` 及定位器形式，参阅[视觉比较](/visual-testing) |
@@ -152,6 +153,7 @@ test('checkout', async ({ app, agent, screen }) => {
 | `page.waitForEvent('popup')` | `browser.waitForPopup(() => trigger)`，会激活新标签页，参阅[标签页](/reference/web#tabs) |
 | `context.pages()`, `context.newPage()`, `page.bringToFront()` | `browser.tabs()`、`browser.newTab()`、`tab.activate()`；没有 `context.on('page')` 事件 |
 | `page.evaluate(fn, arg)` | `browser.evaluate(fn, arg)`，输入和输出均为 JSON |
+| `page.webmcp.tools()`、`page.webmcp.callTool(name, input)` | 在 `browser.webmcp` 上用法相同，用 `web({ webmcp: true })` 代替启动参数或首选项；仅覆盖主框架，见 [WebMCP](/reference/web#webmcp) |
 | `page.addInitScript()`, `page.emulateMedia({ colorScheme, reducedMotion })` | `browser.addInitScript()` 或 `web({ initScripts })`；`browser.emulateMedia()` |
 | `context.addCookies()`, `cookies()`, `clearCookies()` | `browser.setCookies()`、`browser.cookies()`、`browser.clearCookies()` |
 
@@ -164,6 +166,7 @@ test('checkout', async ({ app, agent, screen }) => {
 | 测试中的 `{ page }` | `{ screen, app, browser }` |
 | `test()`, `test.describe()`, `test.only`, `test.fail()`, `test.skip(title, fn)`, `test.skip(condition, reason)`, `test.fixme(title, fn)`, `test.fixme(condition, reason)` | 相同，但 serial 组改为在组上设置 `skip`；条件式可用于测试体或 `beforeEach` 中 |
 | `test.setTimeout()` | 在测试体、`beforeEach` 或 `beforeAll`（该钩子自身的超时）中相同；`afterEach` 和 `afterAll` 不能调用。在 `describe` 回调中，请改为向 `test.describe` 传入 `{ timeout }`。没有表示不限时的 `0`：请传入一个较大的值 |
+| `test.slow()`、`test.slow(condition, description)` | 在测试体或 `beforeEach` 中相同：将当前生效的测试超时乘以 3；在 `beforeAll` 中则是该钩子自身的超时。与 Playwright 一样，每次尝试只生效一次。在 describe 级别（任何形式）会报 `COLLECTION_ERROR`：请在 `beforeEach` 中调用 |
 | `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | 相同，但不带标题；`beforeAll` 和 `afterAll` 得到工作进程测试夹具，而不是 `browser`、`app` 或 `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | describe 上的 `test.fail()` | `test.describe.fail(title, fn)`，或在分组上设置 `{ fail: 'reason' }`；按条件标记则在 `beforeEach` 中调用 `test.fail(condition, 'reason')` |
@@ -239,7 +242,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 | --- | --- |
 | `locator.locator(selector)`, `locator.and()`, `filter({ visible })` | 一个 `browser.locator` 选择器，例如 `'.card >> .close'`，或作用域内的 `screen` 查询 |
 | `locator.evaluate()`, `expect(locator).toHaveClass()`, `toHaveCSS()`, `dispatchEvent()` | `browser.evaluate(fn, selector)`；`expect(browser).toHaveClass(locator, cls)` |
-| `setInputFiles({ buffer })`, `selectOption([...])`, `click({ clickCount })`, `hover({ position })` | 临时文件路径；多选使用 `browser.evaluate`；`browser.mouse` 配合 `boundingBox()` |
+| `selectOption([...])`, `click({ clickCount })`, `hover({ position })` | 多选使用 `browser.evaluate`；`browser.mouse` 配合 `boundingBox()` |
 
 </Accordion>
 <Accordion title="断言">
@@ -247,7 +250,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 | Playwright | 目前可用的方式 |
 | --- | --- |
 | `expect(fn).toPass()`, `expect.poll(fn, { intervals })` | `expect.poll(async () => { ...; return true }).toBe(true)` |
-| `toBeEmpty()`, `toBeEditable()`, `toBeInViewport()` | 表单控件上使用 `toHaveValue('')`，其他元素上使用 `toHaveText('')`；`toBeEnabled()` 和 `.not.toHaveAttribute('readonly')`；通过 `expect.poll` 检查 `boundingBox()` |
+| `toBeEmpty()`, `toBeInViewport()` | 表单控件上使用 `toHaveValue('')`，其他元素上使用 `toHaveText('')`；通过 `expect.poll` 检查 `boundingBox()` |
 | `locator.screenshot()`, `{ fullPage, clip }`, `snapshotPathTemplate`, `ignoreSnapshots` | 对视口或单个定位器使用 `toHaveScreenshot`；通过标签和 `--exclude-tag` 跳过视觉测试 |
 | `expect.configure()` | 每次调用上设置 `{ timeout }` |
 | `@axe-core/playwright` | 通过 `browser.addInitScript({ path: 'node_modules/axe-core/axe.min.js' })` 加载 axe-core，然后在 `browser.evaluate` 中调用 `axe.run()` |
@@ -282,7 +285,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 | `globalSetup`, `globalTeardown`, `webServer` 数组 | 在运行前后执行的脚本，或启动所有进程的一个 `app.command` |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | 测试上的 `platforms` 或标签，或为每个测试目标单独运行 |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`；`npx e2e report`（打开 `htmlReporter()` 写入的 `<output>/report.html`） |
-| `test.slow()`、`test.describe.only()`、`test.describe.fixme()`、`test.fixme(title, details, body)` | 测试或组上的 `{ timeout }` 或 `{ skip: 'fixme' }`，details 中的 `tags` 一并写在旁边（报告的跳过原因为 `explicit`，而非 `fixme`）；每个测试上的 `test.only` |
+| `test.describe.only()`、`test.describe.fixme()`、`test.fixme(title, details, body)` | 测试或组上的 `{ timeout }` 或 `{ skip: 'fixme' }`，details 中的 `tags` 一并写在旁边（报告的跳过原因为 `explicit`，而非 `fixme`）；每个测试上的 `test.only` |
 | `test.skip(callback, description)`、`test.fixme(callback, description)` | 在测试体中使用 `test.skip(condition, reason)` 或 `test.fixme(condition, reason)`，或在测试上设置 `platforms` |
 | `failOnFlakyTests`, `use.navigationTimeout`, `--timeout`, `--quiet` | `report.json` 中的 `run.summary.flaky`；`browser.goto(url, { timeout })`；配置中的 `timeout` |
 | `blob` 报告器和 `merge-reports` | 每个分片一份报告 |

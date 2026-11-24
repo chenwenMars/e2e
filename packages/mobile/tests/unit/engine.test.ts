@@ -15,10 +15,12 @@ import { decodePng, encodePng } from '../helpers/png.ts';
 import type { EngineFixtureContext, EngineSnapshot, FixtureOperations, LocatorExpression, OperationContext, SemanticNode } from '@e2e-dev/core/engine';
 import type { Device } from '../../src/device.ts';
 import type { RawNode } from '../../src/nodes.ts';
-import { mobile } from '../../src/engine.ts';
+import { buildEngine, mobile } from '../../src/engine.ts';
 import { ORIGIN_UNKNOWN_BOUNDS, ORIGIN_WARNING } from '../../src/errors.ts';
+import { AgentDeviceSurface } from '../../src/surface.ts';
 import { swipeWithin } from '../../src/support.ts';
-import { ANDROID_APP_PACKAGE, ANDROID_ID_SNAPSHOT, SETTINGS_NODES, SETTINGS_SNAPSHOT } from '../helpers/fake-client.ts';
+import { tvTools } from '../../src/tools.ts';
+import { ANDROID_APP_PACKAGE, ANDROID_ID_SNAPSHOT, createFakeClient, SETTINGS_NODES, SETTINGS_SNAPSHOT, type FakeClient } from '../helpers/fake-client.ts';
 import { boot, harness, poolVariableIn, PROJECT_ROOT, type Harness } from '../helpers/harness.ts';
 import { ignoreTrace, noSecrets } from '../helpers/secrets.ts';
 
@@ -56,6 +58,12 @@ async function openAttempt(h: Harness, attemptId = 'a1'): Promise<void> {
   await h.engine.startAttempt!({ attemptId, artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets, ...ignoreTrace });
   const { app } = h;
   if (app.bundleId !== undefined || app.appPath !== undefined) await h.engine.session!.restart!(operation());
+}
+
+/** One `tv_remote` call, as the agent makes it. */
+function remoteTool(h: Harness, key: string): Promise<unknown> {
+  const execute = tvTools(h.engine).tv_remote!.tool.execute as (input: unknown, options: object) => Promise<unknown>;
+  return execute({ key }, { toolCallId: 'c1', messages: [] });
 }
 
 /** The observed node with this name, from a fresh observation. */
@@ -273,6 +281,21 @@ describe('lifecycle', () => {
     });
     expect(single.sessions).toEqual(['qa-0']);
     expect(single.fake.lastArgs('devices.boot')).toEqual({ platform: 'ios', device: 'iPhone 16e' });
+  });
+
+  it('binds the device --device names in prepare, over a configured pool or the booted devices, and declares that it selects one', async () => {
+    const info = (device: string) => ({ runId: 'run-1', targetName: 'ios', projectRoot: PROJECT_ROOT, slots: 2, env: {}, signal: new AbortController().signal, headed: false, device, log: () => undefined });
+    for (const configured of [['iPhone 16e', 'iPad Pro 11-inch'], undefined]) {
+      const h = harness(configured === undefined ? {} : { device: configured });
+      expect(h.engine.selectsDevice).toBe(true);
+      const result = await h.prepare(info('iPhone 17 Pro'));
+      // One named device is one worker, whatever the run planned.
+      expect(result?.workers).toBe(1);
+      expect(h.fake.lastArgs('devices.boot')).toEqual({ platform: 'ios', device: 'iPhone 17 Pro' });
+      expect(h.fake.methods()).not.toContain('devices.list');
+      const handed = result?.env ?? {};
+      expect(handed[poolVariableIn(handed, 'IOS')]).toBe(JSON.stringify([{ device: 'iPhone 17 Pro' }]));
+    }
   });
 
   it('warms each device with a plain open and no launch arguments', async () => {
@@ -523,6 +546,406 @@ describe('lifecycle', () => {
     const optioned = refusing({ device: undefined, session: 'mine' });
     await optioned.prepare(info);
     await optioned.engine.finish!(finish);
+  });
+
+  it('moves a device a short-lived agent-device command refused to the next free one, and keeps it when none is free', async () => {
+    // agent-device 0.21.41 claims a device for the length of one command (boot, prepare, install, push) as
+    // `transient:<command>`, refused like a live owner. Another host's runner start holds such a claim while this one
+    // starts its own, so the slot moves when another device is free. That claim ends with the command, so with none
+    // free the slot keeps its device and the worker's start finds it free.
+    const transient = (command: string): AppError =>
+      new AppError('DEVICE_IN_USE', `ios device A is owned by session "transient:${command}" in workspace "/elsewhere".`, {
+        reason: 'DEVICE_CLAIM_LIVE_OWNER',
+        owner: { session: `transient:${command}`, workspace: '/elsewhere', stateDir: '/elsewhere/.agent-device' },
+        dispatched: 'no',
+      });
+    // A rejection is read as a value, so a device that is moved or refused fails an assertion that names the case.
+    const settle = (prepared: ReturnType<Harness['prepare']>) =>
+      prepared.then(
+        (result) => ({ env: (result?.env ?? {}) as Record<string, string>, rejected: undefined as string | undefined }),
+        (error: unknown) => ({ env: {} as Record<string, string>, rejected: error instanceof Error ? error.message : String(error) }),
+      );
+    for (const [method, command] of [['command.prepare', 'install'], ['apps.open', 'install'], ['command.prepare', 'prepare']] as const) {
+      const h = harness({ device: undefined });
+      h.fake.respond('devices.list', () => [{ platform: 'ios', id: 'A', name: 'A', booted: true }]);
+      let refused = 0;
+      h.fake.respond(method, () => {
+        if (refused++ === 0) throw transient(command);
+        return method === 'apps.open' ? { session: 's', appName: 'Settings', appBundleId: 'com.apple.Preferences', identifiers: {} } : {};
+      });
+      const lines: string[] = [];
+      const info = { runId: 'run-1', targetName: 'ios', projectRoot: PROJECT_ROOT, slots: 1, env: {}, signal: new AbortController().signal, headed: false, log: (line: string) => void lines.push(line) };
+      const { env, rejected } = await settle(h.prepare(info));
+      expect(rejected, `${method} refused by transient:${command}`).toBeUndefined();
+      expect(env[poolVariableIn(env, 'IOS')], `${method} refused by transient:${command}`).toBe(JSON.stringify([{ deviceId: 'A' }]));
+      expect(lines, lines.join(' | ')).toContain(`slot 0 keeps A: no other booted device is free, and the claim ends with its command, so the worker's start tries it again`);
+      await expect(boot(h, 'ios', 0, env)).resolves.toBeUndefined();
+    }
+    // Another device free: the runner start or the open refused on A by another host's `transient:prepare` moves to B.
+    for (const method of ['command.prepare', 'apps.open'] as const) {
+      const h = harness({ device: undefined });
+      h.fake.respond('devices.list', () => [{ platform: 'ios', id: 'A', name: 'A', booted: true }, { platform: 'ios', id: 'B', name: 'B', booted: true }]);
+      h.fake.respond(method, (args) => {
+        if ((args as { udid?: string }).udid === 'A') throw transient('prepare');
+        return method === 'apps.open' ? { session: 's', appName: 'Settings', appBundleId: 'com.apple.Preferences', identifiers: {} } : {};
+      });
+      const info = { runId: 'run-1', targetName: 'ios', projectRoot: PROJECT_ROOT, slots: 1, env: {}, signal: new AbortController().signal, headed: false, log: () => undefined };
+      const { env, rejected } = await settle(h.prepare(info));
+      expect(rejected, `${method} refused by transient:prepare, B free`).toBeUndefined();
+      expect(env[poolVariableIn(env, 'IOS')], `${method} refused by transient:prepare, B free`).toBe(JSON.stringify([{ deviceId: 'B' }]));
+      // The worker starts from the bindings prepare handed back, so it boots B, not A.
+      await expect(boot(h, 'ios', 0, env), method).resolves.toBeUndefined();
+      expect(h.fake.lastArgs('devices.boot'), method).toMatchObject({ udid: 'B' });
+    }
+    // A boot it refused still moves the slot: another free device costs nothing, and a boot failure ends the run on main.
+    const busy = harness({ device: undefined });
+    busy.fake.respond('devices.list', () => [{ platform: 'ios', id: 'A', name: 'A', booted: true }, { platform: 'ios', id: 'B', name: 'B', booted: true }]);
+    let bootRefused = 0;
+    busy.fake.respond('devices.boot', () => {
+      if (bootRefused++ === 0) throw transient('prepare');
+      return {};
+    });
+    const info = { runId: 'run-1', targetName: 'ios', projectRoot: PROJECT_ROOT, slots: 1, env: {}, signal: new AbortController().signal, headed: false, log: () => undefined };
+    const moved = await settle(busy.prepare(info));
+    expect(moved.rejected, 'devices.boot refused by transient:prepare').toBeUndefined();
+    expect(moved.env[poolVariableIn(moved.env, 'IOS')]).toBe(JSON.stringify([{ deviceId: 'B' }]));
+    // With no other device free, a refused boot ends the run as on main: the slot never booted, so nothing waits for it.
+    const alone = harness({ device: undefined });
+    alone.fake.respond('devices.list', () => [{ platform: 'ios', id: 'A', name: 'A', booted: true }]);
+    alone.fake.respond('devices.boot', () => {
+      throw transient('prepare');
+    });
+    const failed = await settle(alone.prepare(info));
+    expect(failed.rejected, 'devices.boot refused by transient:prepare, nothing else free').toMatch(/^boot failed: ios device A is owned by session "transient:prepare" in workspace "\/elsewhere"; no other booted ios device is free for worker slot 0: boot another one$/);
+
+    // With two slots and nothing else free, a short-lived refusal after the boot keeps the slot's device rather than
+    // dropping the slot; a refused boot loses it, so that slot is dropped and the run goes on on B.
+    const two = { ...info, slots: 2 };
+    for (const [method, kept] of [
+      ['command.prepare', [{ deviceId: 'A' }, { deviceId: 'B' }]],
+      ['apps.open', [{ deviceId: 'A' }, { deviceId: 'B' }]],
+      ['devices.boot', [{ deviceId: 'B', session: 'e2e-ios-1' }]],
+    ] as const) {
+      const pair = harness({ device: undefined });
+      pair.fake.respond('devices.list', () => [{ platform: 'ios', id: 'A', name: 'A', booted: true }, { platform: 'ios', id: 'B', name: 'B', booted: true }]);
+      pair.fake.respond(method, (args) => {
+        if ((args as { udid?: string }).udid === 'A') throw transient('prepare');
+        return method === 'apps.open' ? { session: 's', appName: 'Settings', appBundleId: 'com.apple.Preferences', identifiers: {} } : {};
+      });
+      const { env, rejected } = await settle(pair.prepare(two));
+      expect(rejected, `${method} refused by transient:prepare, two slots`).toBeUndefined();
+      expect(env[poolVariableIn(env, 'IOS')], `${method} refused by transient:prepare, two slots`).toBe(JSON.stringify(kept));
+    }
+  });
+
+  it('moves a discovered slot to the next free device when another session takes its device between the inventory and the warm-up', async () => {
+    // agent-device 0.21.41 refuses a device another live session holds in three shapes: a claim names the holder in
+    // `owner.session`, a session of the same daemon in `session` with no reason, and a workspace session in `session`.
+    // Past 50 refusals it reports a loop instead, so a retry that never ends fails an assertion rather than the run.
+    let refusals = 0;
+    const looped = (): AppError | undefined => (++refusals > 50 ? new AppError('COMMAND_FAILED', 'looped on a refused device') : undefined);
+    const claimed = (id: string, session = 'e2e-ios-host-other-0'): AppError =>
+      looped() ??
+      new AppError('DEVICE_IN_USE', `ios device ${id} is owned by session "${session}" in workspace "/w".`, {
+        reason: 'DEVICE_CLAIM_LIVE_OWNER',
+        owner: { session, workspace: '/w' },
+        hint: `Inspect the owner with: agent-device device status --platform ios --udid ${id}`,
+        dispatched: 'no',
+      });
+    const inSession = (id: string): AppError =>
+      looped() ??
+      new AppError('DEVICE_IN_USE', 'Device is already in use by session "e2e-ios-host-other-0".', { session: 'e2e-ios-host-other-0', deviceId: id, dispatched: 'no' });
+    const inWorkspace = (id: string): AppError =>
+      looped() ??
+      new AppError('DEVICE_IN_USE', 'Device is already in use by workspace session "e2e-ios-host-other-0".', {
+        reason: 'WORKSPACE_SESSION_SCOPE_CONFLICT',
+        session: 'e2e-ios-host-other-0',
+        deviceId: id,
+        dispatched: 'no',
+      });
+    const refuse = (refusal: (id: string) => AppError, ids: readonly string[]) => (args: unknown) => {
+      const id = (args as { udid?: string }).udid ?? '?';
+      if (ids.includes(id)) throw refusal(id);
+      return {};
+    };
+    const device = (id: string) => ({ platform: 'ios', id, name: id, booted: true });
+    const free = [device('A'), device('B'), device('C')];
+    const info = { runId: 'run-1', targetName: 'ios', projectRoot: PROJECT_ROOT, slots: 1, env: {}, signal: new AbortController().signal, headed: false, log: (_line: string) => undefined };
+    // A rejection is read as a value, so a slot that is not moved fails an assertion rather than the test's await.
+    const bound = async (prepared: ReturnType<Harness['prepare']>): Promise<string | undefined> =>
+      prepared.then(
+        (result) => {
+          const handed = result?.env ?? {};
+          return handed[poolVariableIn(handed, 'IOS')];
+        },
+        (error: unknown) => `rejected: ${(error as Error).message}`,
+      );
+    // One scripted client per session, as agent-device gives each its own, so `finish` is read by the sessions it closed.
+    const { app } = harness();
+    const pool = (script: (fake: FakeClient, session: string) => void) => {
+      const clients: [string, FakeClient][] = [];
+      const engine = buildEngine(
+        new AgentDeviceSurface({ platform: 'ios' }, (session) => {
+          const fake = createFakeClient({ 'apps.open': () => ({ session, appName: 'Settings', appBundleId: 'com.apple.Preferences', identifiers: {} }) });
+          script(fake, session);
+          clients.push([session, fake]);
+          return fake.client;
+        }),
+      );
+      return {
+        clients,
+        prepare: (slots: number, log: (line: string) => void = () => undefined) => bound(engine.prepare!({ ...info, slots, log, app })),
+        closed: async (): Promise<string[]> => {
+          await engine.finish!({ runId: info.runId, targetName: info.targetName, env: {}, signal: new AbortController().signal, timeoutMs: 1000, log: () => undefined });
+          return clients.flatMap(([session, fake]) => fake.methods().filter((method) => method === 'sessions.close').map(() => session)).toSorted();
+        },
+        calls: (method: string) => clients.flatMap(([, fake]) => fake.calls.filter((call) => call.method === method).map((call) => (call.args as { udid?: string }).udid)),
+      };
+    };
+
+    // Refused at boot under a claim, at the runner start and at the open by a session of the same daemon or workspace.
+    for (const [method, refusal] of [['devices.boot', claimed], ['command.prepare', inSession], ['apps.open', inSession], ['apps.open', inWorkspace]] as const) {
+      const h = pool((fake) => {
+        fake.respond('devices.list', () => free);
+        fake.respond(method, refuse(refusal, ['A']));
+      });
+      const lines: string[] = [];
+      expect(await h.prepare(1, (line) => lines.push(line)), method).toBe(JSON.stringify([{ deviceId: 'B' }]));
+      expect(lines, method).toContain('A is held by agent-device session "e2e-ios-host-other-0"; trying the next free device');
+      expect(lines, method).toContain('slot 0 drives B (B) instead');
+      // The refused client is not closed besides the slot's next one: one session, one close.
+      expect(await h.closed(), method).toEqual(['e2e-ios-0']);
+    }
+
+    // Two slots, the second refused: the first keeps the device it opened, and the next inventory, which lists the
+    // first slot's device first, gives the second one a device no slot drives.
+    let inventories = 0;
+    const second = pool((fake) => {
+      fake.respond('devices.list', () => (++inventories === 1 ? free : [free[0], free[2], free[1]]));
+      fake.respond('devices.boot', refuse(claimed, ['B']));
+    });
+    expect(await second.prepare(2)).toBe(JSON.stringify([{ deviceId: 'A' }, { deviceId: 'C' }]));
+    expect(second.calls('apps.open')).toEqual(['A', 'C']);
+    expect(await second.closed()).toEqual(['e2e-ios-0', 'e2e-ios-1']);
+
+    // Two slots, the first refused: it skips the device the second slot was bound to.
+    const first = pool((fake) => {
+      fake.respond('devices.list', () => free);
+      fake.respond('devices.boot', refuse(claimed, ['A']));
+    });
+    expect(await first.prepare(2)).toBe(JSON.stringify([{ deviceId: 'C' }, { deviceId: 'B' }]));
+
+    // The next inventory lists a device another session holds ahead of a free one: the slot takes the free one.
+    let foreignLists = 0;
+    const foreign = harness({ device: undefined });
+    foreign.fake.respond('devices.list', () => (++foreignLists === 1 ? free : [device('A'), { ...device('B'), claimedBy: { session: 't3-holder', workspace: '/elsewhere' } }, device('C')]));
+    foreign.fake.respond('devices.boot', refuse(claimed, ['A']));
+    expect(await bound(foreign.prepare(info))).toBe(JSON.stringify([{ deviceId: 'C' }]));
+
+    // A launch() host's own session name carries its host id: a device held under that name stays the host's own when
+    // its slot moves.
+    const host = harness({ device: undefined });
+    host.fake.respond('devices.list', () => [device('A'), { ...device('B'), claimedBy: { session: 'e2e-ios-abc123-0', workspace: '/project' } }]);
+    host.fake.respond('devices.boot', refuse(claimed, ['A']));
+    expect(await bound(host.prepare({ ...info, hostId: 'abc123' }))).toBe(JSON.stringify([{ deviceId: 'B' }]));
+
+    // A device the config names and a provider's lease are never moved: refused at boot they fail, refused at the
+    // open or the runner start they are left to the first attempt, as before. So is a slot no device was found for.
+    const lease = {
+      name: 'toy-cloud',
+      acquire: async (request: { slot: number }) => ({ id: `lease-${request.slot}`, daemon: { baseUrl: 'https://0.example' }, deviceId: 'A' }),
+      release: async () => undefined,
+    };
+    for (const configured of ['A', lease] as const) {
+      const atBoot = harness({ device: configured });
+      atBoot.fake.respond('devices.boot', () => {
+        throw claimed('A');
+      });
+      expect(await bound(atBoot.prepare(info))).toMatch(/^rejected: boot failed: ios device A is owned by session/);
+      expect(atBoot.fake.methods()).not.toContain('devices.list');
+    }
+    // So is the device `e2e run --device` names over a target that names none, even with another one free: refused at
+    // the open or the runner start, it is left to the first attempt.
+    for (const method of ['apps.open', 'command.prepare'] as const) {
+      const pinned = harness({ device: undefined });
+      pinned.fake.respond('devices.list', () => free);
+      pinned.fake.respond(method, () => {
+        throw inSession('A');
+      });
+      expect(await bound(pinned.prepare({ ...info, device: 'A' })), method).toBe(JSON.stringify([{ device: 'A' }]));
+      expect(pinned.fake.methods(), method).not.toContain('devices.list');
+    }
+    for (const configured of ['A', lease, undefined] as const) {
+      for (const [method, left] of [['apps.open', /did not open \(open Settings failed: Device is already in use/], ['command.prepare', /automation runner not prepared \(.*Device is already in use/]] as const) {
+        const h = harness({ device: configured });
+        h.fake.respond('devices.list', () => []);
+        h.fake.respond(method, () => {
+          throw inSession('A');
+        });
+        const lines: string[] = [];
+        expect(await bound(h.prepare({ ...info, log: (line) => lines.push(line) })), method).not.toMatch(/^rejected/);
+        expect(lines.some((line) => left.test(line)), `${method}: ${lines.join(' | ')}`).toBe(true);
+      }
+    }
+
+    // A claim whose owner is dead and awaits recovery, or one agent-device cannot verify, is not a race, even when it
+    // names its owner: its own error and advice stand.
+    for (const reason of ['DEVICE_CLAIM_RECOVERY_PENDING', 'DEVICE_CLAIM_OWNER_UNCERTAIN']) {
+      const stale = harness({ device: undefined });
+      stale.fake.respond('devices.list', () => free);
+      stale.fake.respond('devices.boot', () => {
+        throw new AppError('DEVICE_IN_USE', 'ios device A is owned by session "e2e-ios-host-gone-0" in workspace "/w".', {
+          reason,
+          owner: { session: 'e2e-ios-host-gone-0', workspace: '/w' },
+          dispatched: 'no',
+        });
+      });
+      expect(await bound(stale.prepare(info)), reason).toBe('rejected: boot failed: ios device A is owned by session "e2e-ios-host-gone-0" in workspace "/w".');
+    }
+
+    // A session of the same daemon is a live holder whatever its name: one named like a short-lived claim moves too,
+    // and with nothing else free it fails like any other holder.
+    const oddlyNamed = (id: string): AppError => new AppError('DEVICE_IN_USE', 'Device is already in use by session "transient:smoke-0".', { session: 'transient:smoke-0', deviceId: id, dispatched: 'no' });
+    const smoke = harness({ device: undefined });
+    smoke.fake.respond('devices.list', () => free);
+    smoke.fake.respond('apps.open', refuse(oddlyNamed, ['A']));
+    expect(await bound(smoke.prepare(info))).toBe(JSON.stringify([{ deviceId: 'B' }]));
+    const smokeAlone = harness({ device: undefined });
+    smokeAlone.fake.respond('devices.list', () => [device('A')]);
+    smokeAlone.fake.respond('apps.open', refuse(oddlyNamed, ['A']));
+    expect(await bound(smokeAlone.prepare(info))).toMatch(/^rejected: open Settings failed: Device is already in use by session "transient:smoke-0"; no other booted ios device is free for worker slot 0: boot another one$/);
+
+    // Two slots on the only two devices, a live session takes the first one's at the open: the other slot's device is
+    // not free for it, so the slot is dropped and the run goes on with one worker, which boots B as slot 0 under the
+    // session B warmed with.
+    const pair = harness({ device: undefined });
+    pair.fake.respond('devices.list', () => [device('A'), device('B')]);
+    pair.fake.respond('apps.open', refuse(inSession, ['A']));
+    const pairLines: string[] = [];
+    const paired = await pair.prepare({ ...info, slots: 2, log: (line) => pairLines.push(line) });
+    expect(paired?.workers).toBe(1);
+    const pairEnv = paired?.env ?? {};
+    expect(pairEnv[poolVariableIn(pairEnv, 'IOS')]).toBe(JSON.stringify([{ deviceId: 'B', session: 'e2e-ios-1' }]));
+    expect(pairLines).toContain('no other booted device is free for slot 0; the run goes on with 1 worker(s)');
+    await expect(boot(pair, 'ios', 0, pairEnv)).resolves.toBeUndefined();
+    expect(pair.fake.lastArgs('devices.boot')).toMatchObject({ udid: 'B' });
+    expect(pair.sessions.at(-1)).toBe('e2e-ios-1');
+
+    // The slots after a dropped one take the numbers below and keep the sessions they were bound under, so each worker
+    // resumes the session its device warmed with, and every session the warm-up opened is closed once.
+    for (const [lost, kept, warmedAs] of [
+      [['A'], [{ deviceId: 'B', session: 'e2e-ios-1' }, { deviceId: 'C', session: 'e2e-ios-2' }], [['e2e-ios-0', 'A'], ['e2e-ios-1', 'B'], ['e2e-ios-2', 'C']]],
+      [['B'], [{ deviceId: 'A' }, { deviceId: 'C', session: 'e2e-ios-2' }], [['e2e-ios-0', 'A'], ['e2e-ios-1', 'B'], ['e2e-ios-2', 'C']]],
+      [['C'], [{ deviceId: 'A' }, { deviceId: 'B' }], [['e2e-ios-0', 'A'], ['e2e-ios-1', 'B'], ['e2e-ios-2', 'C']]],
+    ] as const) {
+      const h = pool((fake) => {
+        fake.respond('devices.list', () => free);
+        fake.respond('apps.open', refuse(inSession, lost));
+      });
+      expect(await h.prepare(3), `lost ${lost.join()}`).toBe(JSON.stringify(kept));
+      const opened = h.clients.flatMap(([session, fake]) => fake.calls.filter((call) => call.method === 'apps.open').map((call) => [session, (call.args as { udid?: string }).udid]));
+      expect(opened, `lost ${lost.join()}`).toEqual(warmedAs);
+      expect(await h.closed(), `lost ${lost.join()}`).toEqual(['e2e-ios-0', 'e2e-ios-1', 'e2e-ios-2']);
+    }
+
+    // B still holds this target's own `e2e-ios-1` from an earlier run, which the inventory reads as the run's own and
+    // agent-device lets only that session use. When A is taken and slot 0 dropped, B keeps warming under `e2e-ios-1`.
+    const resumed = pool((fake, session) => {
+      fake.respond('devices.list', () => [device('A'), { ...device('B'), claimedBy: { session: 'e2e-ios-1' } }]);
+      fake.respond('apps.open', (args) => {
+        const id = (args as { udid?: string }).udid;
+        if (id === 'A') throw inSession('A');
+        if (id === 'B' && session !== 'e2e-ios-1') throw claimed('B', 'e2e-ios-1');
+        return { session, appName: 'Settings', appBundleId: 'com.apple.Preferences', identifiers: {} };
+      });
+    });
+    expect(await resumed.prepare(2)).toBe(JSON.stringify([{ deviceId: 'B', session: 'e2e-ios-1' }]));
+
+    // A renumbered slot that then moves keeps its session: A is taken with nothing free, so slot 0 is dropped; B, now
+    // slot 0 under `e2e-ios-1`, is taken too, and C, free by the next inventory, takes over under `e2e-ios-1`.
+    let listed = 0;
+    const shifted = pool((fake) => {
+      fake.respond('devices.list', () => (++listed <= 2 ? [device('A'), device('B')] : [device('A'), device('B'), device('C')]));
+      fake.respond('apps.open', refuse(inSession, ['A', 'B']));
+    });
+    expect(await shifted.prepare(2)).toBe(JSON.stringify([{ deviceId: 'C', session: 'e2e-ios-1' }]));
+
+    // An inventory that fails after a refusal is the error: it never reads as "nothing free", which would drop a slot.
+    let inventories2 = 0;
+    const blind = pool((fake) => {
+      fake.respond('devices.list', () => {
+        if (++inventories2 > 1) throw new AppError('COMMAND_FAILED', 'simctl list failed');
+        return [device('A'), device('B')];
+      });
+      fake.respond('apps.open', refuse(inSession, ['A']));
+    });
+    expect(await blind.prepare(2)).toMatch(/^rejected: .*simctl list failed/);
+
+    // With no slot left, the run fails with the holder rather than starting a worker on a device another session holds.
+    const none = harness({ device: undefined });
+    none.fake.respond('devices.list', () => [device('A'), device('B')]);
+    none.fake.respond('apps.open', refuse(inSession, ['A', 'B']));
+    expect(await bound(none.prepare({ ...info, slots: 2 }))).toBe(
+      'rejected: open Settings failed: Device is already in use by session "e2e-ios-host-other-0"; no other booted ios device is free for worker slot 0: boot another one',
+    );
+
+    // A refusal that names a session but is not DEVICE_IN_USE (a session bound to another device) names no holder:
+    // the open is logged and left to the first attempt, and the slot keeps its device.
+    const rebound = harness({ device: undefined });
+    rebound.fake.respond('devices.list', () => free);
+    rebound.fake.respond('apps.open', () => {
+      throw new AppError('INVALID_ARGS', 'Session "e2e-ios-host-other-0" is already bound to A, but this request selected B.', { session: 'e2e-ios-host-other-0' });
+    });
+    const reboundLines: string[] = [];
+    expect(await bound(rebound.prepare({ ...info, log: (line) => reboundLines.push(line) }))).toBe(JSON.stringify([{ deviceId: 'A' }]));
+    expect(reboundLines.some((line) => line.includes('did not open')), reboundLines.join(' | ')).toBe(true);
+
+    // Another project's run holds A under this target's own session name, which the inventory reads as this run's:
+    // once refused, A counts as held, and with nothing else free agent-device's refusal is the error.
+    const elsewhere = harness({ device: undefined });
+    elsewhere.fake.respond('devices.list', () => [{ ...device('A'), claimedBy: { session: 'e2e-ios-0', workspace: '/other' } }]);
+    elsewhere.fake.respond('devices.boot', () => {
+      throw claimed('A', 'e2e-ios-0');
+    });
+    await expect(elsewhere.prepare(info)).rejects.toMatchObject({
+      code: 'ENGINE_FAILURE',
+      message: expect.stringMatching(/^boot failed: ios device A is owned by session "e2e-ios-0" in workspace "\/w"\..*; no other booted ios device is free for worker slot 0: /),
+      cause: expect.objectContaining({ message: expect.stringMatching(/^boot failed: ios device A is owned by session "e2e-ios-0"/) }),
+    });
+    expect(elsewhere.fake.methods().filter((method) => method === 'devices.boot')).toHaveLength(1);
+
+    // Every free device taken in turn, or every device gone from the next inventory: the last refusal is the error,
+    // with its holder, workspace and advice, and is its cause.
+    for (const after of [free, []]) {
+      let lists = 0;
+      const taken = harness({ device: undefined });
+      taken.fake.respond('devices.list', () => (++lists === 1 ? free : after));
+      taken.fake.respond('devices.boot', (args) => {
+        throw claimed((args as { udid?: string }).udid ?? '?');
+      });
+      const last = after.length === 0 ? 'A' : 'C';
+      await expect(taken.prepare(info)).rejects.toMatchObject({
+        code: 'ENGINE_FAILURE',
+        message: expect.stringMatching(
+          new RegExp(`^boot failed: ios device ${last} is owned by session "e2e-ios-host-other-0" in workspace "/w"\\. Hint: Inspect the owner with: agent-device device status --platform ios --udid ${last}; no other booted ios device is free for worker slot 0: `),
+        ),
+        cause: expect.objectContaining({ message: expect.stringMatching(new RegExp(`^boot failed: ios device ${last} is owned by`)) }),
+      });
+    }
+
+    // Any other boot failure is not a reason to move: it fails as before, after one inventory.
+    // Past 50 inventories it fails there, outside the retry, so a retry that never ends fails an assertion.
+    const broken = harness({ device: undefined });
+    let brokenInventories = 0;
+    broken.fake.respond('devices.list', () => {
+      if (++brokenInventories > 50) throw new AppError('COMMAND_FAILED', 'looped on a failed boot');
+      return free;
+    });
+    broken.fake.respond('devices.boot', () => {
+      throw new AppError('COMMAND_FAILED', 'simctl boot failed');
+    });
+    expect(await bound(broken.prepare(info))).toBe('rejected: boot failed: simctl boot failed');
+    expect(brokenInventories).toBe(1);
   });
 
   it('drives a discovered Android emulator by its serial, and reads a configured serial, UDID, or name as agent-device does', async () => {
@@ -1579,6 +2002,7 @@ describe('perform', () => {
     for (const action of [
       { kind: 'selectOption', value: 'x' },
       { kind: 'setInputFiles', paths: ['/tmp/x'] },
+      { kind: 'setInputFilePayloads', files: [{ name: 'x', mimeType: 'text/plain', buffer: new Uint8Array([120]) }] },
       { kind: 'scrollIntoView' },
       // Named keys other than Enter and Space, and every modifier, have no soft-keyboard equivalent.
       { kind: 'press', key: 'Escape' },
@@ -1806,6 +2230,49 @@ describe('device fixture', () => {
     } as unknown as EngineFixtureContext;
     return h.engine.fixtures!['device']!(context) as Device;
   }
+
+  it.each([
+    ['up', 'up'],
+    ['down', 'down'],
+    ['left', 'left'],
+    ['right', 'right'],
+    ['select', 'select'],
+    ['back', 'back'],
+    ['menu', 'menu'],
+    ['home', 'home'],
+    ['play', 'media-play'],
+    ['pause', 'media-pause'],
+    ['play-pause', 'media-play-pause'],
+    ['stop', 'media-stop'],
+    ['rewind', 'media-rewind'],
+    ['fast-forward', 'media-fast-forward'],
+    ['next', 'media-next'],
+    ['previous', 'media-previous'],
+  ] as const)('device.pressRemote(%j) presses the agent-device tv-remote button %s', async (key, button) => {
+    const h = harness();
+    await openAttempt(h);
+    const before = h.fake.calls.length;
+    await fixture(h).pressRemote(key);
+    expect(h.fake.calls.slice(before).map((call) => [call.method, call.args])).toEqual([['command.tvRemote', { platform: 'ios', button }]]);
+  });
+
+  it.each(['Menu', 'Home', 'toString', '', 3])('device.pressRemote refuses %j, a name outside the list, before any device call', async (key) => {
+    const h = harness();
+    await openAttempt(h);
+    const before = h.fake.calls.length;
+    await expect(fixture(h).pressRemote(key as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('not a remote key; press one of up, down, left, right, select, back, menu, home, play') });
+    expect(h.fake.calls).toHaveLength(before);
+  });
+
+  it('fails a remote key the device has no button for with UNSUPPORTED_CAPABILITY', async () => {
+    const h = harness();
+    await openAttempt(h);
+    h.fake.respond('command.tvRemote', () => {
+      throw new AppError('UNSUPPORTED_OPERATION', 'tv-remote is not supported on this device');
+    });
+    await expect(fixture(h).pressRemote('menu')).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+    expect(h.fake.methods()).toContain('command.tvRemote');
+  });
 
   describe('viewport', () => {
     it.each(['ios', 'android'] as const)('reads the %s viewport as a recorded resource without capturing pixels', async (platform) => {
@@ -2548,7 +3015,7 @@ describe('device fixture', () => {
     expect(h.fake.lastArgs('interactions.scroll')).toEqual({ direction: 'down', postGestureStabilization: false });
   });
 
-  it('counts a back, home, alert, keyboard, rotation, or fold as an action, so a control that arrives with it waits out the transition budget', async () => {
+  it('counts a back, home, remote press, shake, alert, keyboard, rotation, or fold as an action, so a control that arrives with it waits out the transition budget', async () => {
     autoAdvanceTimers();
     const h = harness({ transition: 120 });
     await openAttempt(h);
@@ -2557,6 +3024,9 @@ describe('device fixture', () => {
     for (const change of [
       () => device.back(),
       () => device.home(),
+      () => device.pressRemote('menu'),
+      () => remoteTool(h, 'select'),
+      () => device.shake(),
       () => device.alert('accept'),
       () => device.dismissKeyboard(),
       () => device.setOrientation('landscape-left'),
@@ -2685,6 +3155,7 @@ describe('device fixture', () => {
     expect(await device.foregroundApp()).toEqual({ name: 'Settings', bundleId: 'com.apple.Preferences' });
     await device.home();
     await device.back();
+    await device.shake();
     await device.alert('accept');
     await device.dismissKeyboard();
     expect(await device.clipboard()).toBe('pasted');
@@ -2705,6 +3176,7 @@ describe('device fixture', () => {
       ['command.appState', {}],
       ['command.home', { platform: 'ios' }],
       ['command.back', { settle: true, settleQuietMs: 150 }],
+      ['command.shake', { platform: 'ios' }],
       ['command.alert', { platform: 'ios', action: 'accept' }],
       ['command.keyboard', { action: 'dismiss' }],
       ['command.clipboard', { platform: 'ios', action: 'read' }],
@@ -2892,6 +3364,9 @@ describe('device fixture', () => {
       () => selected.clipboard(),
       () => selected.setClipboard('x'),
       () => selected.setPermission('camera', 'grant'),
+      // A remote reaches the launcher, so a test presses it with no app open.
+      () => selected.pressRemote('home'),
+      () => remoteTool(h, 'home'),
       // iOS refuses going offline before any command, so the radios are Android's.
       ...(platform === 'ios' ? [
         () => selected.enrollBiometrics('touchid', true),
@@ -3062,6 +3537,25 @@ describe('device fixture', () => {
     const count = android.fake.calls.length;
     await expect(fixture(android).clearKeychain()).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
     expect(android.fake.calls.length).toBe(count);
+  });
+
+  it('shakes the selected simulator or emulator, and maps agent-device\'s refusal of a physical device to UNSUPPORTED_CAPABILITY with its hint', async () => {
+    const android = harness({ platform: 'android', device: 'emulator-5554', bundleId: 'com.example.app' });
+    await openAttempt(android);
+    await expect(fixture(android).shake()).resolves.toBeUndefined();
+    expect(android.fake.lastArgs('command.shake')).toEqual({ platform: 'android', serial: 'emulator-5554' });
+
+    const phone = harness({ platform: 'android', device: 'R58M123ABC', bundleId: 'com.example.app' });
+    await openAttempt(phone);
+    // agent-device 0.21.42's own refusal: the message names no reason, the details do.
+    const hint = 'shake overrides the accelerometer through the Android emulator console; a physical device has no console, so shake it by hand.';
+    phone.fake.respond('command.shake', () => {
+      throw new AppError('UNSUPPORTED_OPERATION', 'Runtime operation shake is unavailable', { reason: 'unsupported-device-kind', hint });
+    });
+    await expect(fixture(phone).shake()).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CAPABILITY',
+      message: expect.stringContaining(hint),
+    });
   });
 
   it('folds an iOS simulator or an Android emulator through the one device command, and maps a hingeless device to UNSUPPORTED_CAPABILITY', async () => {
