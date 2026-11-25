@@ -30,7 +30,7 @@ test('General opens in dark mode', async ({ app, device, screen }) => {
 });
 ```
 
-- 从 `@e2e-dev/mobile` 导入 `test`，为 `device` 提供类型。在同时运行于网页端的测试套件中声明 `requires: ['device']`。
+- 从 `@e2e-dev/mobile` 导入 `test`，为 `device` 提供类型。在同时运行于网页端的测试套件中声明 `platforms: ['ios', 'android']`。
 - 在 `e2e init` 中选择 **Mobile (iOS/Android)**，添加此包及“设置”应用示例。iOS 需要 Xcode 和模拟器；Android 需要 Android SDK 和模拟器。
 - 此包包含兼容版本的 `agent-device`，无需单独安装。
 
@@ -297,6 +297,21 @@ export default {
 ```
 
 - iOS 将参数交给应用进程（`ProcessInfo.processInfo.arguments`）。Android 将其追加到 `am start`，因此 `['--ez', 'e2e', 'true']` 是一个布尔类型的 intent extra。
+
+    ```ts title="e2e.config.ts"
+    export default {
+      targets: [
+        {
+          name: 'iphone',
+          engine: mobile({ platform: 'ios' }),
+          app: {
+            bundleId: 'com.example.app',
+            launchArguments: ['-flag', 'false', '-title', 'a b'],
+          },
+        },
+      ],
+    } satisfies E2EConfig;
+    ```
 - 每项权限为 `grant`、`deny` 或 `reset`。在 iOS 上，`deny` 会记录拒绝，应用会直接收到拒绝结果，不显示提示；在 Android 上，它会撤销权限，应用再次请求时系统会重新询问。
 - 权限在应用启动前按名称设置，不会先打开应用，因为 iOS 会终止权限发生变化的运行中应用，Android 会终止权限被撤销的应用。
 - 预热不会传入启动参数，也不会更改权限。
@@ -335,7 +350,7 @@ export default {
 ```
 
 <Note>
-当步骤停止等待或运行被中断时，等待中的点击、双击、聚焦、选中或取消选中操作会被取消。这也包括用于关闭键盘提示的点击。
+当步骤停止等待或运行被中断时，等待中的点击、双击、连击、聚焦、选中或取消选中操作会被取消。这也包括用于关闭键盘提示的点击。
 
 已经发送到设备的输入仍可能完成。其他命令可能在调用方超时后继续执行；下一次尝试会等待它们完成。
 </Note>
@@ -345,11 +360,11 @@ export default {
 | 契约成员 | 设备上的行为 |
 | --- | --- |
 | `observe` | 带矩形边界的无障碍树。元素类型按[角色](#roles)中的列表映射；`Switch` 或 `CheckBox`，以及 Android `RadioButton`，携带设备报告的 `checked` 状态；`SecureTextField` 或被 Android UIAutomator 标记为 `password` 的字段是安全的 `textbox`。iOS 字段保留与标签相同的值（无标签字段以其文本命名）；Android 将文本视图标签重复作为值的情况会被去除。无障碍标识符（iOS）或资源 ID（Android）是节点的 `testId`。Android 节点优先使用应用设置的内容描述命名（React Native 的 `accessibilityLabel`），否则使用文本；它的 `text` 是显示的内容，因此带标签的文本视图或已填写字段会用标签响应 `getByLabel`，用文本响应 `getByText`。字段提示是其 `placeholder` 属性，无论当前是否显示。Compose Multiplatform 在 iOS 上不报告占位符：空字段会将绘制的文本追加到标签中（`Name, Ada Lovelace`），其下有一个 `StaticText` 子节点，因此该文本被视为字段的 `placeholder`，子节点则省略。空字段没有值：Android 会标记正在显示的提示，XCTest 会将空 iOS 字段的占位符报告为值，因此值与占位符去除首尾空白后相同的 iOS 字段会被视为空，即使输入的文本恰好与占位符一致也是如此。有一项 Android 行为来自 agent-device，而非平台本身：`rect` 和所有坐标点都是屏幕物理像素；它报告的显示密度尚未应用。Android 的状态栏和导航栏、沿屏幕边缘占据全宽的 `com.android.systemui` 窗口，以及 agent-device 在该边缘区域单独报告的窄状态图标（时钟、信号、电池）会被省略；通知栏、系统对话框，以及两侧留有边距的悬浮通知或其他弹出层会保留。按需提供像素，并将每个安全节点的边界区域涂黑。 |
-| `perform` | 支持 `tap`、`doubleTap`、`longPress`、`fill`、`clear`、`hover`、`check`、`uncheck`、`press`（`Enter`、`Space` 或单个字符）、`swipe`、`dragTo`，以及可编辑字段上的 `focus`。点击 `switch` 或 `checkbox` 时会落在最内层的控件上，因为 UIKit 将设置行报告为一个带标签的开关，真正的切换控件是其子节点。`check` 和 `uncheck` 需要 `checked` 状态。两个平台上的开关都会报告此状态，原生 Android `CheckBox` 也是如此；React Native 复选框或单选按钮只有在应用设置 `accessibilityState.checked` 时才会报告。没有状态的控件会产生 `UNSUPPORTED_CAPABILITY`，请改为点击。`doubleTap` 是两次按下，在 iOS 上间隔 284 至 285 ms（agent-device 的 XCTest 点击节奏）：agent-device 自己的双击手势在 React Native `Pressable` 上只会被接收为一次按下。时间窗口为 300 ms 或更短的检测器可能会将这两次按下视为两次单击。`longPress` 默认按住一秒，除非测试传入 `duration`；这超过了 React Native `Pressable` 的 500 ms `delayLongPress`，以及应用设置的更长阈值。agent-device 自己的默认按住时间较短，会被这些控件识别为点击。未声明 `selectOption`、`setInputFiles`、`scrollIntoView` 和 `secondaryTap`，也未声明 `tapModifiers`，因此带 `modifiers` 的 `tap` 或 `doubleTap` 会产生 `UNSUPPORTED_CAPABILITY`。如果节点已被新快照替换，操作会重新查找节点，而不会操作其他元素。 |
+| `perform` | 支持 `tap`、`doubleTap`、`multiTap`、`longPress`、`fill`、`clear`、`hover`、`check`、`uncheck`、`press`（`Enter`、`Space` 或单个字符）、`swipe`、`dragTo`，以及可编辑字段上的 `focus`。点击 `switch` 或 `checkbox` 时会落在最内层的控件上，因为 UIKit 将设置行报告为一个带标签的开关，真正的切换控件是其子节点。`check` 和 `uncheck` 需要 `checked` 状态。两个平台上的开关都会报告此状态，原生 Android `CheckBox` 也是如此；React Native 复选框或单选按钮只有在应用设置 `accessibilityState.checked` 时才会报告。没有状态的控件会产生 `UNSUPPORTED_CAPABILITY`，请改为点击。`doubleTap` 是两次按下，在 iOS 上间隔 284 至 285 ms（agent-device 的 XCTest 点击节奏）：agent-device 自己的双击手势在 React Native `Pressable` 上只会被接收为一次按下。时间窗口为 300 ms 或更短的检测器可能会将这两次按下视为两次单击。`multiTap` 是以与 `doubleTap` 相同的节奏按下 `count` 次，因此同样适用上述短时间窗口的注意事项；`count` 超过 agent-device 的上限 200 时，会在按下前产生 `UNSUPPORTED_CAPABILITY`。在 iOS 上每次按下约需 285 ms，200 次约需一分钟，超过默认的操作超时（30 秒），因此较大的 `count` 需要传入更长的 `timeout`。`longPress` 默认按住一秒，除非测试传入 `duration`；这超过了 React Native `Pressable` 的 500 ms `delayLongPress`，以及应用设置的更长阈值。agent-device 自己的默认按住时间较短，会被这些控件识别为点击。未声明 `blur`、`selectOption`、`setInputFiles`、`scrollIntoView` 和 `secondaryTap`，也未声明 `tapModifiers`，因此带 `modifiers` 的 `tap`、`doubleTap` 或 `multiTap` 会产生 `UNSUPPORTED_CAPABILITY`。如果节点已被新快照替换，操作会重新查找节点，而不会操作其他元素。 |
 | `performAt` | 支持在屏幕坐标点执行 `tap`、`doubleTap`、`longPress` 和 `swipeTo`，因此 `screen.tapAt`、`screen.doubleTapAt`、`tap({ position })`、`screen.swipe({ from, to })` 以及智能体的 `tap_at` 能操作树中未列出的控件。不支持在坐标点执行 `hover`、`secondaryTap` 或 `dragTo`：触控在没有节点时不提供这些操作，因此 `hover_at` 需要已列出的控件。 |
 | `keyboard` | 向聚焦字段执行 `type` 和 `press`，对应智能体不带测试目标的 `type` 和 `press`，以及 `type_at` 和 `press_at` 的回退操作；还支持 `dismiss`，对应智能体的 `dismiss_keyboard`。 |
 | `locate` | 支持所有 `screen` 查询。文本和标签查询返回最内层匹配项，因为设备会沿树向上重复它们（React Native 输入框由宿主视图和内部字段组成，两者都有标签）。在 Android 上，当屏幕没有节点匹配完整 ID 时，字符串或 RegExp 测试 ID 查询也会匹配去掉 `<package>:id/` 前缀的资源 ID，适用于框架 `android` 之外的所有包。`screen.locator('id=…')` 是 agent-device 选择器，接受完整 ID。 |
-| `validateApp` | 需要 `app.bundleId` 或 `app.appPath`，暂不接受 `app.url`，并提示如何从该平台的设备访问本机。具备任一项的测试目标就是 `native-app` 测试目标，因此 `requires: ['native-app']` 会选择设备测试目标。 |
+| `validateApp` | 需要 `app.bundleId` 或 `app.appPath`，暂不接受 `app.url`，并提示如何从该平台的设备访问本机。 |
 | `session` | 支持 `back`、`restart`、`reset` 和 `openLink`；设置了 `app.linkBase` 的测试目标通过后者实现 `app.open(path)`。没有 `open`：不带路径的 `app.open()` 由 `restart` 实现，即重新启动指定应用；智能体的 `navigate` 动词不可用，`device.openLink(url)` 可打开深度链接或网页链接。 |
 | `artifacts` | 脱敏截图位于 `screenshots/NNN-<label>.png` 下；无法脱敏的截图会失败，而不是写入。当尝试的[视频模式](/reference/config#video)要求录制时，视频保存为 `video/video.mp4`，或使用设备提供方自己的录像。 |
 | `location` | `<bundle id> / <screen title>`，即回放缓存的锚点。标题在 iOS 上来自导航栏，在 Android 上来自工具栏。 |
@@ -729,6 +744,7 @@ openApp(app: string, options?: OpenAppOptions): Promise<void>;
 ```ts
 await device.openApp('Settings');
 await device.openApp('com.example.app', { relaunch: true, permissions: { camera: 'grant' } });
+await device.openApp('com.example.app', { relaunch: true, launchArguments: { AppleLocale: 'fr_FR' } });
 ```
 
 - 链接会在发送给设备前被拒绝，因为 agent-device 会将任何 `scheme:rest` 字符串作为 URL 打开。
@@ -1148,11 +1164,12 @@ export interface OpenAppOptions {
   /** Terminate the app first, so it starts fresh; without it a running app is brought forward as it is. */
   readonly relaunch?: boolean;
   /**
-   * Arguments this launch hands the app: its process arguments on iOS,
-   * `am start` arguments on Android. Replaces the target's `app.launchArguments`
-   * for a relaunch of the pinned app.
+   * Arguments this launch hands the app, a list or an object like
+   * `app.launchArguments`: its process arguments on iOS, `am start`
+   * arguments on Android. Replaces the target's `app.launchArguments` for a
+   * relaunch of the pinned app.
    */
-  readonly launchArguments?: readonly string[];
+  readonly launchArguments?: LaunchArguments;
   /**
    * Permissions the app holds before this launch, each granted, denied, or
    * reset. Replaces the target's `app.permissions` for a relaunch of the

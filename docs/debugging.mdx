@@ -144,12 +144,12 @@ one `attempt-<n>` per attempt. A serial group's tests share one directory:
 ```
 
 Each run that reaches its tests empties `results/` first. A `--last-failed`
-rerun keeps the files that the report it reruns names, and writes its own
+rerun keeps the files that the runs before it name, and writes its own
 attempts under each test's `rerun-<n>/`.
 
 | Artifact | When |
 | --- | --- |
-| Screenshots | A failed attempt captures one when the engine can. The built-in `agent.assert` captures one after either verdict, unless `screenshot: false`. `app.screenshot('label')` captures one on request. They mask secure fields only. See [screenshots after a secret fill](/reference/security#screenshots-after-a-secret-fill). |
+| Screenshots | A failed attempt captures one when the engine can. The built-in `agent.assert` captures one after either verdict, unless `screenshot: false`. `app.screenshot('label')` captures one on request, and `locator.screenshot('label')` one element. They mask secure fields only. See [screenshots after a secret fill](/reference/security#screenshots-after-a-secret-fill). |
 | Downloads | Files saved through `browser.waitForDownload`, kind `download`, as the app served them. [Downloads](/reference/security#downloads) says when the runner masks secrets in them. |
 | Videos | When you [record them](#watch-it-happen). Videos mask nothing. See [where redaction stops](/reference/security#where-redaction-stops). |
 | Agent transcripts | With [`--debug`](#agent-steps). |
@@ -566,7 +566,7 @@ to trace the whole flow or rule out a stale [recording](/cache).
 | `ACTION_FAILED` | Element covered, disabled, or detached, or an operation timed out | Wait on the right condition with `expect` first; close overlays |
 | `STEP_BUDGET_EXHAUSTED`, `STEP_TIMEOUT` | The agent ran out of actions, model calls, or time | Scope the goal to one step. Raise the agent entry's `maxSteps` or `maxModelCalls` for the budget, the config `timeout` for an `act` step, or the agent's `judgmentTimeout` for `assert`, `waitFor`, and `extract` |
 | `MODEL_UNAVAILABLE` | No model constructed in the config, or GitHub Copilot doesn't serve the configured model to your account | See [Models](/models); for Copilot, [Pick a model](/subscriptions#pick-a-model) |
-| `MODEL_PROVIDER_FAILED` | Bad key, rate limit, no credits, or every try of one request went 120 s without an answer | Check the key the provider reads and the quota; for a slow local model, a smaller screen (`agents.<name>.maxObservationBytes`) or a faster model |
+| `MODEL_PROVIDER_FAILED` | Missing or bad key, rate limit, no credits, or every try of one request went 120 s without an answer | Check the key the provider reads and the quota; for a slow local model, a smaller screen (`agents.<name>.maxObservationBytes`) or a faster model |
 | `MODEL_REFUSED` | The model refused the prompt (finish reason `content-filter`). Exit 1 | Rephrase the instruction, or switch to another model |
 
 The [errors reference](/reference/errors) lists every code, its class, and

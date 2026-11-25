@@ -11,6 +11,7 @@ import { createAgentDeviceClient } from 'agent-device';
 import { ConfigurationError, defineEngine, obj, type EngineAppCheckInfo, type EngineAppDeclaration, type EngineHandle } from '@e2e-dev/core/engine';
 import { createDeviceFixture } from './device.ts';
 import type { ClientFactory, MobileOptions, MobilePlatform } from './options.ts';
+import { assertLaunchArgumentsFor } from './launch-arguments.ts';
 import { isLink, linkTarget } from './links.ts';
 import { DEVICE_ACTIONS, DEVICE_POINTER_ACTIONS } from './actions.ts';
 import { AgentDeviceSurface, assertPermissions } from './surface.ts';
@@ -35,6 +36,7 @@ export function buildEngine(surface: AgentDeviceSurface): MobileEngine {
     ...(surface.pool.size === undefined ? {} : { workers: surface.pool.size }),
     // `e2e run --device` names the device `prepare` binds; see DevicePool.prepare.
     ...(surface.pool.selectsDevice ? { selectsDevice: true } : {}),
+    launchArgumentValues: true,
     prepare: (info) => surface.pool.prepare(info),
     finish: (info) => surface.pool.finish(info),
     doctor: (info) => surface.doctor(info),
@@ -46,6 +48,7 @@ export function buildEngine(surface: AgentDeviceSurface): MobileEngine {
     // operation enforces its own; see InputBudget in support.ts.
     observe: (operation, options) => surface.observe(operation, options, surface.inputBudget('observe', operation)),
     locate: (expression, operation) => surface.locate(expression, operation, surface.inputBudget('locate', operation)),
+    viewportIntersection: (ref, operation) => surface.viewportIntersection(ref, operation, surface.inputBudget('viewport intersection', operation)),
     perform: (ref, action, operation) => surface.perform(ref, action, operation, surface.inputBudget(action.kind, operation)),
     actions: DEVICE_ACTIONS,
     performAt: (point, action, operation) => surface.performAt(point, action, operation, surface.inputBudget(action.kind, operation)),
@@ -139,6 +142,7 @@ function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckIn
       `${where} app.bundleId names an app by bundle id, package, or display name, not a link; a test opens a deep link or web link with device.openLink`,
     );
   }
+  assertLaunchArgumentsFor(platform, `${where} app.launchArguments`, app.launchArgumentValues ?? app.launchArguments);
   if (app.permissions !== undefined) assertPermissions(`${where} app.permissions`, app.permissions, 'INVALID_CONFIG');
 }
 

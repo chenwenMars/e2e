@@ -222,6 +222,7 @@ describe('web engine lifecycle', () => {
       'observation',
       'pointer',
       'state',
+      'viewport-intersection',
     ]);
     expect(engine.name).toBe('web');
   });
@@ -944,6 +945,38 @@ describe('web engine lifecycle', () => {
       await expect(
         engine.state!.restore({ format: 'playwright-storage-state', version: 1, data: '/etc/passwd' }, operation('s1')),
       ).rejects.toMatchObject({ code: 'INVALID_STATE' });
+    });
+  });
+
+  it('renders at deviceScaleFactor: app.screenshot() is at device pixels, the observation at CSS pixels', async () => {
+    const engine = web({ viewport: { width: 400, height: 300 }, deviceScaleFactor: 2 });
+    await withAttempt(engine, app, artifactsDir, 'd1', async () => {
+      await engine.session!.open!(`${app.url}/form`, operation('d1'));
+      expect(await surfaceOf(engine)!.page().evaluate(() => devicePixelRatio)).toBe(2);
+
+      const file = await engine.artifacts!.screenshot('scaled', operation('d1'));
+      expect(decodePng(new Uint8Array(readFileSync(path.join(artifactsDir, file))))).toMatchObject({ width: 800, height: 600 });
+
+      const snapshot = await engine.observe!(operation('d1'), { pixels: true });
+      expect(snapshot.viewport).toEqual({ width: 400, height: 300 });
+      expect(snapshot.pixels).toMatchObject({ width: 400, height: 300, scale: 1 });
+    });
+  });
+
+  it('keeps deviceScaleFactor on the contexts that replace the first: a state reset and a session restore', async () => {
+    const engine = web({ viewport: { width: 400, height: 300 }, deviceScaleFactor: 2 });
+    await withAttempt(engine, app, artifactsDir, 'd2', async () => {
+      const ratio = (): Promise<number> => surfaceOf(engine)!.page().evaluate(() => devicePixelRatio);
+      await engine.session!.open!(`${app.url}/form`, operation('d2'));
+      const state = await engine.state!.capture(operation('d2'));
+
+      await engine.session!.reset!(operation('d2'));
+      await engine.session!.open!(`${app.url}/form`, operation('d2'));
+      expect(await ratio()).toBe(2);
+
+      await engine.state!.restore(state, operation('d2'));
+      await engine.session!.open!(`${app.url}/form`, operation('d2'));
+      expect(await ratio()).toBe(2);
     });
   });
 

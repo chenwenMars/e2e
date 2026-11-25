@@ -71,7 +71,9 @@ gives an engine a device or browser provider:
 is `mobile({ platform: 'ios', device: limrun() })`. That session has one
 target, no credentials, secrets, or project tools, and `engine` excludes
 `target`, `config`, and `test`. `ENGINE_NOT_INSTALLED` names the command that installs the package
-into `~/.e2e/engines`: ask the user to run it, wait, then open again. `e2e run` and
+into `~/.e2e/engines`: run it, then open again. When you cannot run it, because
+the sandbox has no network or cannot write there, ask the user to run it or to
+allow it, and wait. `e2e run` and
 `open_session {test}` still need a config, so set the project up before
 writing tests (topic `setup`). No model is needed: without the optional `ai` package, sessions
 open and the deterministic tools work. A test a session runs needs one only for
@@ -116,7 +118,7 @@ The catalog, per session:
 | `select_at` | Picks the option whose visible label is `value` in the select-like control at a point; the point must land on a listed select. Listed when the engine declares `select`. |
 | `start_recording` | Starts a video of the app (`name` optional, for the file name). Listed when the engine records video. |
 | `stop_recording` | Stops it and returns the absolute path of each video file, under `<output>/videos/<session>/` (`.e2e` by default), or the URL of a provider's own recording. |
-| Project tools | Every `defineTool` in the agent's `tools` that applies to the target's platform, under its own name; an engine pack such as `mobileTools` adds `open_app`, `swipe`, `alert`. |
+| Project tools | Every `defineTool` in the agent's `tools` that applies to the target's platform, under its own name; an engine pack such as `mobileTools` adds `open_app`, `swipe`, `alert`, and `foldTools` adds `fold` for a foldable device. |
 
 Project tools use their `toModelOutput` renderer for strings as well as
 structured results. Its `error-text` and `error-json` outputs set the MCP

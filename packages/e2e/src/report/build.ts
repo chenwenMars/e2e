@@ -2,6 +2,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { isFileApp } from '@e2e-dev/core/lib/config/app';
 import { BLOCKABLE_CODES } from '@e2e-dev/core/lib/agent/executor';
 import { DEFAULT_LIMITS } from '@e2e-dev/core/lib/config/agent';
 import type { ResolvedConfig, ResolvedLimits, ResolvedTarget } from '@e2e-dev/core/lib/config/resolve';
@@ -13,8 +14,9 @@ import { packageVersion } from '@e2e-dev/core/lib/internal/package-version';
 import { onBun } from '../internal/runtime.ts';
 import { projectRelativePath } from '@e2e-dev/core/lib/internal/source';
 import type { VcsInfo } from '../internal/vcs.ts';
+import { summarizeResults } from './summary.ts';
 import type { SkipInfo } from '@e2e-dev/core/lib/run/records';
-import { expectedFailureOf, memberRan, someSkippedAfterFailure } from '@e2e-dev/core/lib/run/records';
+import { expectedFailureOf, someSkippedAfterFailure } from '@e2e-dev/core/lib/run/records';
 import { describeTarget, type TargetProvenance } from '@e2e-dev/core/lib/run/provision';
 import type { EngineSpiVersion } from '@e2e-dev/core/lib/engine/contract';
 import type {
@@ -64,6 +66,14 @@ export interface BuildReportOptions {
   changes?: ReportChanges | undefined;
   /** The test filters the run applied, in order; written only when there is one. */
   filters?: readonly ReportFilter[] | undefined;
+  /** The one shard of the selection the run ran (`--shard 2/3`); absent when the run was not sharded. */
+  shard?: ReportShard | undefined;
+}
+
+/** One shard of a run split `total` ways, `index` counted from 1. */
+export interface ReportShard {
+  index: number;
+  total: number;
 }
 
 /**
@@ -438,6 +448,12 @@ export interface Report1Document {
      * What joins a verdict to the pull request that produced the code.
      */
     vcs?: VcsInfo;
+    /**
+     * Which shard of the selection this run was (`--shard 2/3`); absent when
+     * it was not sharded. The report marks rows this invocation's cut gave
+     * to another shard with `skip.otherShard`.
+     */
+    shard?: ReportShard;
     targets: readonly ReportTarget[];
     serialGroups: readonly ReportSerialGroup[];
     results: readonly ReportResult[];
@@ -491,10 +507,24 @@ export function projectSource(
 /** A step that named no line in the project: a fixture's own call, or a step minted outside one. */
 const UNKNOWN_STEP_SOURCE: ReportSource = { file: 'unknown', line: 1, column: 1 };
 
+/** Code points of a step label report-v1 admits (its `maxLength`, which counts code points). */
+const MAX_STEP_LABEL_CODE_POINTS = 8192;
+
+/**
+ * A label cut to what report-v1 admits. It is cut here, at the report, after
+ * the recorder redacted it whole: a guest session's step reaches its owner
+ * uncut, so the owner's ledger can still match a value it alone knows.
+ */
+function reportLabel(label: string): string {
+  const points = [...label];
+  return points.length <= MAX_STEP_LABEL_CODE_POINTS ? label : `${points.slice(0, MAX_STEP_LABEL_CODE_POINTS - 1).join('')}…`;
+}
+
 function serializeStep(step: StepRecord): ReportStep {
   const { error, source, ...rest } = step;
   return {
     ...rest,
+    label: reportLabel(step.label),
     source: source ?? UNKNOWN_STEP_SOURCE,
     error: error === undefined ? undefined : serializeErrorRecord(error),
   };
@@ -627,57 +657,12 @@ function serializeTarget(
       id: target.name,
       index: target.index,
       platform: target.platform,
-      baseOrigin: target.app.base?.origin,
+      // A file has no origin: the field is left out, as for a target with no URL.
+      baseOrigin: isFileApp(target.app) ? undefined : target.app.base?.origin,
       environment: target.app.environment,
     }),
     ...(provenance ?? describeTarget(target)),
   };
-}
-
-/**
- * Computes report-1 summary counts from results; the status counts are over
- * the selected ones. A result executed when it made an attempt; a serial
- * member's attempts are its records in its group's attempts.
- */
-function computeSummary(results: readonly ResultRecord[], serialGroups: readonly SerialGroupRecord[]): ReportSummary {
-  const ranMembers = new Set(
-    serialGroups.flatMap((group) =>
-      group.attempts.flatMap((attempt) => attempt.members.filter(memberRan).map((member) => `${group.id}\u0000${member.testId}`)),
-    ),
-  );
-  let selected = 0;
-  let executed = 0;
-  let passed = 0;
-  let failed = 0;
-  let interrupted = 0;
-  let flaky = 0;
-  let skipped = 0;
-  for (const result of results) {
-    if (result.attempts.length > 0 || (result.serialGroupId !== undefined && ranMembers.has(`${result.serialGroupId}\u0000${result.test.id}`))) {
-      executed += 1;
-    }
-    if (!result.selected) continue;
-    selected += 1;
-    switch (result.status) {
-      case 'passed':
-        passed += 1;
-        break;
-      case 'flaky':
-        flaky += 1;
-        break;
-      case 'failed':
-      case 'timed-out':
-        failed += 1;
-        break;
-      case 'interrupted':
-        interrupted += 1;
-        break;
-      case 'skipped':
-        skipped += 1;
-        break;
-    }
-  }
-  return { discovered: results.length, selected, executed, passed, failed, interrupted, flaky, skipped };
 }
 
 /**
@@ -824,7 +809,7 @@ export function buildReport(options: BuildReportOptions): Report1Document {
     .toSorted((a, b) => compareSerialGroups(a, b, targetIndex))
     .map(serializeSerialGroup);
 
-  const summary = computeSummary(options.results, options.serialGroups);
+  const summary = summarizeResults(results, serialGroups);
   const finishedAt = timestamp();
   const durationMs = Math.max(0, Date.parse(finishedAt) - Date.parse(options.startedAt) - (options.heldMs ?? 0));
 
@@ -855,6 +840,7 @@ export function buildReport(options: BuildReportOptions): Report1Document {
         runtime: onBun ? `bun v${process.versions['bun']}` : `node ${process.version}`,
       },
       ...(options.vcs === undefined ? {} : { vcs: options.vcs }),
+      ...(options.shard === undefined ? {} : { shard: { index: options.shard.index, total: options.shard.total } }),
       targets,
       serialGroups,
       results,

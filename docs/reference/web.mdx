@@ -50,6 +50,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 | [`browser`](#browser) | `BrowserName \| BrowserProvider` | `'chromium'` |
 | [`chromiumSandbox`](#chromiumsandbox) | `boolean` | `true`, `false` on Linux |
 | [`viewport`](#viewport) | `ViewportSize \| null` | 1280 by 720 |
+| [`deviceScaleFactor`](#devicescalefactor) | `number` | `1` |
 | [`screencast`](#screencast) | `WebScreencastOptions` | the viewport's size |
 | [`connect`](#connect) | `WebConnectOptions` | launches locally |
 | [`headers`](#headers) | `Record<string, string>` | - |
@@ -68,15 +69,14 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
   `appPath`, `launchArguments`). Its `app.permissions` takes `'grant'` only,
   for names its browser grants; see
   [`permissions`](/reference/config#permissions).
-- A target with `app.url` is a `browser` target, so `requires: ['browser']`
-  selects web targets.
 - The full declaration with its JSDoc is [`WebOptions`](#weboptions) under
   Types.
 
 | Throws | When |
 | --- | --- |
 | `INVALID_CONFIG` | An option `web()` does not take (`url` or any other app key included), or an unknown key inside `connect` or `basicAuth`. The message names the nearest known key for a likely typo (`viewprt` is `viewport`), else every key. |
-| `INVALID_CONFIG` | `headers`, `basicAuth`, `userAgent`, `locale`, or `timezoneId` on a [persistent context](#recovering-a-cdp-transport) (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`). |
+| `INVALID_CONFIG` | A browser provider, `connect`, `headers`, or `basicAuth` on a target whose [`app.url` is a file](/reference/config#a-file-as-the-app). |
+| `INVALID_CONFIG` | `headers`, `basicAuth`, `userAgent`, `locale`, `timezoneId`, or `deviceScaleFactor` on a [persistent context](#recovering-a-cdp-transport) (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`). |
 
 #### `browser`
 
@@ -136,6 +136,25 @@ fixes one.
 | Throws | When |
 | --- | --- |
 | `INVALID_CONFIG` | A value that is not `null` or `{ width, height }` in whole pixels, each at least 1, or a size with any other key. |
+
+#### `deviceScaleFactor`
+
+Device pixels per CSS pixel on every attempt's page, as
+`window.devicePixelRatio` reads it.
+
+```ts
+web({ deviceScaleFactor: 2 }); // default: 1
+```
+
+- Saved screenshots are in device pixels:
+  [`app.screenshot()`](/reference/app#screenshot), a failure's, and an
+  `agent.assert`'s. At 2, a 1280 by 720 viewport makes a 2560 by 1440 file.
+- The factor does not change the image the model reads or the one
+  [`toHaveScreenshot`](/reference/expect#tohavescreenshot) compares.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_CONFIG` | A value that is not a number above 0, or one beside `viewport: null`. |
 
 #### `screencast`
 
@@ -264,7 +283,8 @@ A saved session carries it, not a shared browser.
 
 <Note>
 A persistent context does not support `headers`, `basicAuth`, `userAgent`,
-`locale`, `timezoneId` (see [Options](#options)), `app.clearState`, or
+`locale`, `timezoneId`, `deviceScaleFactor` (see [Options](#options)),
+`app.clearState`, or
 session state capture and restore. `app.clearState` fails with
 `UNSUPPORTED_CAPABILITY`. `app.restart` remains available.
 </Note>
@@ -476,7 +496,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
   page, and the action or assertion on it is the step.
 - A relative URL resolves against the target's `app.url`, else
   `APP_URL_REQUIRED`.
-- Declare `requires: ['browser']` in a suite that also runs on other
+- Declare `platforms: ['web']` in a suite that also runs on other
   platforms.
 - `expect(browser)` returns the `BrowserExpectation` the engine attaches:
   `toHaveURL`, `toHaveTitle`, and `toHaveClass`. See
@@ -540,7 +560,7 @@ await browser.goto('/dashboard', { waitUntil: 'networkidle' }); // default: 'loa
 
 | Throws | When |
 | --- | --- |
-| `POLICY_DENIED` | A URL whose scheme is not `http:` or `https:`. `about:blank` is admitted. |
+| `POLICY_DENIED` | A URL whose scheme is not `http:` or `https:`. `about:blank` is admitted. On a target whose [`app.url` is a file](/reference/config#a-file-as-the-app), a `file:` URL outside that file's directory, or of a directory. |
 | `APP_URL_REQUIRED` | A relative URL, on a target that declares no `app.url`. |
 | `ACTION_FAILED` | The navigation failed. |
 
@@ -574,17 +594,29 @@ Waits for the current URL to match. It reads the URL at 0, 20, and 50 ms, then
 every 100 ms from the start, the same poll as `expect(browser).toHaveURL`.
 
 ```ts
+await browser.waitForURL('**/checkout');
 await browser.waitForURL(/\/orders\/\d+$/, { timeout: 15_000 });
 ```
 
-- A relative string resolves against the base URL and matches exactly after
-  normalization.
+- A string is a glob, read as Playwright reads a URL glob: `*` matches within
+  one path segment, `**` across `/`, `{a,b}` matches either, and `\` escapes
+  the next character. `?` is literal, so a query string reads as written, and a
+  string with no wildcard matches that URL exactly. A glob resolves against the
+  base URL unless it starts with `*` or is an absolute URL such as
+  `https://x.test/**` or `about:blank`, and a
+  resolved glob's scheme and host match in any letter case. Non-ASCII text and
+  spaces in a glob's path and query match the URL as the browser encodes it. The empty string
+  matches any URL.
+- `expect(browser).toHaveURL` reads `*` and `{` as themselves, as Playwright's
+  does; [`route`](#route), `unroute`, and `waitForResponse` read the same
+  globs as this wait.
 - A `RegExp` tests the full URL.
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | A pattern that is not a string or `RegExp` (a predicate function, say), or an option other than `timeout`, such as Playwright's `waitUntil`. |
+| `INVALID_ARGUMENT` | A pattern that is not a string or `RegExp` (a predicate function, say), a glob that nests a `{` or leaves a `{` or `}` unmatched, or an option other than `timeout`, such as Playwright's `waitUntil`. |
 | `ASSERTION_FAILED` | The URL did not match before the timeout. |
+| `APP_URL_REQUIRED` | A relative pattern on a target with no `app.url`. |
 
 #### `locator`
 
@@ -692,10 +724,10 @@ with the configured headers when its origin gets them, under the action
 timeout, without deciding the route.
 It does not follow redirects, which could take it past the navigation rule.
 
-- The pattern is a string or a `RegExp`, both tested against the full URL. In
-  a string, `*` matches within a path segment, `**` across `/`, `?` any one
-  character, and `\` escapes the next. `unroute` and `waitForResponse` take
-  the same patterns.
+- The pattern is a string or a `RegExp`, read as [`waitForURL`](#waitforurl)
+  reads one: a string is a glob in Playwright's grammar (`?` literal, `{a,b}`
+  either) resolved against the base URL, so one with no wildcard is an exact
+  URL. `unroute` and `waitForResponse` take the same patterns.
 - `{ method, url }` narrows the pattern to one HTTP method too. `method` is
   case-insensitive, `url` keeps the string or `RegExp` grammar above, and
   `unroute` and `waitForResponse` take the same form.
@@ -722,7 +754,8 @@ It does not follow redirects, which could take it past the navigation rule.
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, or `{ method, url }`; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`. Separately, an option a decision does not take (Playwright's `abort(errorCode)`, a misspelled key such as `bodyy`) aborts the request and fails the next step. |
+| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, or `{ method, url }`; a glob that nests a `{` or leaves a `{` or `}` unmatched; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`. Separately, an option a decision does not take (Playwright's `abort(errorCode)`, a misspelled key such as `bodyy`) aborts the request and fails the next step. |
+| `APP_URL_REQUIRED` | A relative pattern on a target with no `app.url`. |
 | `ACTION_FAILED` | The handler decided twice or not at all. |
 | `POLICY_DENIED` | A `continue` URL with a forbidden scheme. |
 | `CLEANUP_TIMEOUT` | A handler outlived the cleanup budget. It fails the attempt. |
@@ -844,22 +877,27 @@ expect((await created).status).toBe(201);
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, or `{ method, url }`; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`. |
+| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, or `{ method, url }`; a glob that nests a `{` or leaves a `{` or `}` unmatched; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`. |
+| `APP_URL_REQUIRED` | A relative pattern on a target with no `app.url`. |
 | `ACTION_FAILED` | Nothing matches inside the deadline. From `body()`, `text()`, and `json()`: a body still streaming when their budget runs out, or a body the browser could not read (a connection reset short of the declared `Content-Length`, a request the page aborted, or a redirect, whose body the browser never keeps), instead of an empty string. |
 
 ```ts
+/**
+ * An HTTP response: what `request` calls, the web engine's
+ * `browser.waitForResponse`, and `route.fetch()` return.
+ */
 export interface WebResponse {
   /** Response URL. */
   readonly url: string;
   /** HTTP status. */
   readonly status: number;
-  /** Response headers, lower-cased names; `route.fetch()` joins several `set-cookie` values with `\n`, `waitForResponse` leaves cookie headers out. */
+  /** Response headers, lower-cased names; `request` and `route.fetch()` join several `set-cookie` values with `\n`, `waitForResponse` leaves cookie headers out. */
   readonly headers: Readonly<Record<string, string>>;
-  /** Waits for the body and returns its bytes. */
+  /** Waits for the body and returns its bytes; rejects with `ACTION_FAILED` when the body could not be read. */
   body(): Promise<Buffer>;
-  /** Waits for the body and parses it as JSON. */
+  /** Waits for the body and parses it as JSON; rejects with `ACTION_FAILED` when the body could not be read. */
   json<T = unknown>(): Promise<T>;
-  /** Waits for the body and reads it as text. */
+  /** Waits for the body and reads it as text; rejects with `ACTION_FAILED` when the body could not be read. */
   text(): Promise<string>;
 }
 ```
@@ -886,6 +924,7 @@ await browser.setCookies([{ url: 'http://localhost:3000', name: 'tz', value: 'UT
 
 | Throws | When |
 | --- | --- |
+| `INVALID_ARGUMENT` | Not an array, or a cookie the `Cookie` type does not allow (a wrong field type, neither or both of `url` and `domain`/`path`, a `domain` that is not a bare host, an `expires` that is not in seconds, an unknown key). Nothing is set. |
 | `POLICY_DENIED` | An unparseable target or a forbidden scheme. Nothing is set. |
 
 ```ts
@@ -1215,7 +1254,10 @@ bunx @e2e-dev/web install chromium --with-deps
 - Name any of `chromium`, `firefox`, and `webkit`. With none named it
   installs `chromium`.
 - `--with-deps` also installs the system libraries the browsers need on
-  Linux.
+  Linux. When chromium or firefox is installed without them,
+  [`e2e doctor`](/reference/cli#e2e-doctor) fails its `browser` check and a
+  run's launch fails; both messages name the missing libraries and this
+  command.
 - The command exits with the installer's exit code.
 
 ## Semantic capture recovery
@@ -1309,6 +1351,18 @@ export interface WebOptions {
    * `browser.setViewport` still fixes one for the rest of the attempt.
    */
   readonly viewport?: ViewportSize | null;
+  /**
+   * Device pixels per CSS pixel on every attempt's page, as
+   * `window.devicePixelRatio` reads it; default 1. At 2 the page renders as
+   * on a high-density display, and every saved screenshot
+   * (`app.screenshot()`, a failure's, an `agent.assert`'s) is twice the
+   * viewport's size on each side. The factor does not change the image the
+   * model reads or the one `toHaveScreenshot` compares. It needs a viewport
+   * size, so `viewport: null` refuses it, and a persistent context
+   * (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`)
+   * refuses it.
+   */
+  readonly deviceScaleFactor?: number;
   /**
    * How the engine's own screencast records an attempt that records video.
    * A browser provider that records (`BrowserProvider.record`) records in

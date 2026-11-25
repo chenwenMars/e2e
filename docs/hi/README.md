@@ -114,6 +114,16 @@ translation moves or goes with it in the same change.
 | executor | एक्ज़ीक्यूटर | m |
 | provider | प्रोवाइडर | m |
 | hosted browser | होस्टेड ब्राउज़र | m |
+| sandbox | सैंडबॉक्स | m |
+| browser context | ब्राउज़र कॉन्टेक्स्ट | m |
+| slot (worker slot) | स्लॉट | m |
+| queue | क्यू | f |
+| image (container or VM) | इमेज | f |
+| tunnel | टनल | m |
+| plan (vendor pricing) | प्लान | m |
+| limit (vendor quota, in prose) | लिमिट | f |
+| per-attempt lease | हर अटेम्प्ट वाली लीज़ | f |
+| idle (in prose) | आइडल | |
 | device | डिवाइस | m |
 | app, apps | ऐप, ऐप्स | m |
 | worker | वर्कर | m |
@@ -122,6 +132,7 @@ translation moves or goes with it in the same change.
 | secret | सीक्रेट | m |
 | session | सेशन | m |
 | judge (config field), to judge | जज मॉडल, परखना | m |
+| judgment (`assert`, `waitFor`, `extract`) | परख | f |
 | decision model | डिसीज़न मॉडल | m |
 | model | मॉडल | m |
 | coding agent | कोडिंग एजेंट | m |
@@ -182,6 +193,7 @@ translation moves or goes with it in the same change.
 | command | कमांड | f |
 | call (noun) | कॉल | f |
 | lease | लीज़ | f |
+| release (a lease, a device) | रिलीज़ करना | |
 | request | रिक्वेस्ट | f |
 | reference (docs) | रेफ़रेंस | m |
 | action | एक्शन | m |
@@ -192,6 +204,14 @@ translation moves or goes with it in the same change.
 | accessibility | ऐक्सेसिबिलिटी | f |
 | account | अकाउंट | m |
 | job (CI) | जॉब | m |
+| workflow (CI) | वर्कफ़्लो | m |
+| pipeline | पाइपलाइन | f |
+| job summary | जॉब समरी | f |
+| merge request (GitLab) | मर्ज रिक्वेस्ट | f |
+| repository | रिपॉज़िटरी | f |
+| token | टोकन | m |
+| lockfile | लॉकफ़ाइल | f |
+| build profile | बिल्ड प्रोफ़ाइल | f |
 | observation | ऑब्ज़र्वेशन | m |
 | viewport | व्यूपोर्ट | m |
 | origin | ऑरिजिन | m |

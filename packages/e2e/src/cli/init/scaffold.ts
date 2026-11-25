@@ -3,7 +3,7 @@ import type { PackageManager } from '../../internal/package-manager.ts';
 import { getEnginePreset, type EngineId, type EnginePreset } from './engines.ts';
 import type { FrameworkApp } from './frameworks.ts';
 import { dependencyRange, siblingDependency } from './versions.ts';
-import { getGatewayPreset, type GatewayId } from './gateways.ts';
+import { AI_DEPENDENCIES, getGatewayPreset, type GatewayId } from './gateways.ts';
 
 /** The model choice `init` writes: which gateway, and for an OpenAI-compatible one, where. */
 export interface ScaffoldModel {
@@ -118,7 +118,7 @@ function targetsConfig(engines: readonly EnginePreset[], app: ScaffoldApp | unde
 
 /**
  * The example tests. One engine writes `tests/example.e2e.ts`; several write
- * one file per engine, each test requiring its engine's fixture so the other
+ * one file per engine, each test scoped to its engine's platform so the other
  * engines' targets skip it.
  */
 function exampleTests(engines: readonly EnginePreset[], ai: boolean): ScaffoldTest[] {
@@ -126,7 +126,7 @@ function exampleTests(engines: readonly EnginePreset[], ai: boolean): ScaffoldTe
   if (engine === undefined) return [{ name: 'example', content: NO_ENGINE_EXAMPLE }];
   if (others.length === 0) return [{ name: 'example', content: engine.example('') + (ai ? engine.aiExample('') : '') }];
   return engines.map((preset) => {
-    const options = `{ requires: ['${preset.fixture}'] }, `;
+    const options = `{ platforms: ['${preset.platform}'] }, `;
     return { name: preset.file, content: preset.example(options) + (ai ? preset.aiExample(options) : '') };
   });
 }
@@ -158,8 +158,7 @@ export function createScaffold(engineIds: readonly EngineId[], model: ScaffoldMo
       ...Object.fromEntries(engines.flatMap((engine) => Object.entries(engine.dependencies))),
       // Every engine peers on `@e2e-dev/core`; npm and pnpm install peers, Yarn does not, and Plug'n'Play then cannot load the engine.
       ...(engines.length === 0 ? {} : siblingDependency('@e2e-dev/core')),
-      // zod is a peer of `ai` and every provider; npm and pnpm install peers, Yarn does not.
-      ...(gateway === undefined ? {} : { ai: '^7.0.0', zod: '^4.1.8', ...gateway.dependencies }),
+      ...(gateway === undefined ? {} : { ...AI_DEPENDENCIES, ...gateway.dependencies }),
     },
     config: `${imports.join('\n')}
 

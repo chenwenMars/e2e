@@ -74,6 +74,7 @@ await expect(screen.getByTestId('cart-empty'), 'the cart is empty').toBeVisible(
 | --- | --- |
 | [`toBeVisible`](#tobevisible-and-tobehidden) | Waits for visibility |
 | [`toBeHidden`](#tobevisible-and-tobehidden) | Waits for hidden or absent state |
+| [`toBeInViewport`](#tobeinviewport) | Waits for the match to be in view |
 | [`toBeAttached`](#tobeattached) | Waits for one match to exist |
 | [`toBeEnabled`](#tobeenabled-and-tobedisabled) | Waits for enabled state |
 | [`toBeDisabled`](#tobeenabled-and-tobedisabled) | Waits for disabled state |
@@ -82,6 +83,7 @@ await expect(screen.getByTestId('cart-empty'), 'the cart is empty').toBeVisible(
 | [`toBeSelected`](#tobechecked-tobeselected-and-tobeexpanded) | Waits for selected state |
 | [`toBeExpanded`](#tobechecked-tobeselected-and-tobeexpanded) | Waits for expanded state |
 | [`toBeFocused`](#tobefocused) | Waits for focused state |
+| [`toBeEmpty`](#tobeempty) | Waits for an empty field or a node with no text |
 | [`toHaveText`](#tohavetext-and-tocontaintext) | Waits for exact normalized text |
 | [`toContainText`](#tohavetext-and-tocontaintext) | Waits for contained normalized text |
 | [`toHaveValue`](#tohavevalue) | Waits for a form control's value |
@@ -104,6 +106,34 @@ await expect(screen.getByRole('dialog')).toBeVisible();
 await expect(screen.getByRole('dialog')).not.toBeVisible({ timeout: 10_000 });
 await expect(screen.getByRole('dialog')).toBeVisible({ visible: false }); // as toBeHidden()
 ```
+
+#### `toBeInViewport`
+
+Waits for part of the one match to be inside the viewport. It never scrolls,
+and it says nothing about another element covering the match. No match counts
+as outside the viewport, so `.not` accepts zero matches. A zero-size box, or a
+web element with no box such as `display: none`, also counts as outside.
+
+```ts
+await expect(screen.getByRole('toolbar', 'Selection')).toBeInViewport();
+await expect(screen.getByRole('toolbar', 'Selection')).toBeInViewport({ ratio: 0.5 });
+await expect(screen.getByRole('alert')).not.toBeInViewport();
+```
+
+`ratio` is a number from `0` to `1` setting the share of the box that must be
+inside. `0` means any positive area, the same as omitting `ratio`. Any value
+outside `0` to `1` fails with `INVALID_ARGUMENT`. What counts as inside depends
+on the engine:
+
+| Engine | Measures | `ratio` |
+| --- | --- | --- |
+| `@e2e-dev/web` | Uses the page's `IntersectionObserver`, matching Playwright. The viewport, scrolling or `overflow` ancestors, and frames clip the box. Replacing `IntersectionObserver` changes the result | Supported |
+| `@e2e-dev/mobile` | Checks device-reported bounds against the confirmed screen. Scroll containers clip the bounds, and offscreen nodes leave the tree | `ratio > 0` fails with `UNSUPPORTED_CAPABILITY` once the node is on screen, because the device reports only the visible part |
+
+It fails at once with `UNSUPPORTED_CAPABILITY`, `.not` included, if the target's
+engine does not implement
+[`viewportIntersection`](/reference/engine#viewport-intersection), or if the
+engine cannot report a node's bounds or screen position.
 
 #### `toBeAttached`
 
@@ -190,6 +220,29 @@ Waits for focused state.
 ```ts
 await expect(screen.getByLabel('Email')).toBeFocused();
 ```
+
+#### `toBeEmpty`
+
+Waits for the one match to be empty.
+
+```ts
+await expect(screen.getByLabel('Search')).toBeEmpty();
+await expect(screen.getByTestId('cart')).not.toBeEmpty();
+```
+
+- Empty is the state the engine reports. The web engine follows Playwright:
+  an `input` or `textarea` is empty when its value is `''`, read as it is, so
+  a space is not empty. Any other element is empty when its text content,
+  trimmed, is `''`. Hidden text counts, unlike
+  [`toHaveText`](#tohavetext-and-tocontaintext), so a `select` with options
+  is never empty, and neither is a `<div>` whose only text is hidden.
+- The mobile engine reads a text field by its value, so a label or hint is
+  not content, and any other node by the text and values in its subtree. iOS
+  reports a field Flutter or Compose Multiplatform draws as a plain view, so
+  its placeholder counts and an empty one is not empty.
+- The desktop engine reports no empty state yet. There, and on an engine
+  release from before this matcher, it fails either way, and the failure
+  message says so.
 
 #### `toHaveText` and `toContainText`
 
@@ -361,7 +414,8 @@ await expect(browser).toHaveURL(/\/orders\/\d+$/);
 ```
 
 - A relative string resolves against the base URL and matches exactly after
-  normalization.
+  normalization. As in Playwright, `*` and `{` are literal here; a glob is for
+  [`browser.waitForURL`](/reference/web#waitforurl).
 - A `RegExp` tests the full URL.
 - Anything else, such as a predicate function, is `INVALID_ARGUMENT`.
 - It takes Playwright's `ignoreCase`, as the locator matchers do
@@ -862,11 +916,12 @@ has held:
 
 - A positive locator matcher requires exactly one match. The exceptions are
   `toHaveCount` and the list form of `toHaveText` and `toContainText`.
-- Zero matches keep polling until the timeout.
+- Zero matches keep polling until the timeout, except for the matchers below
+  that accept them.
 - Multiple matches fail immediately with `LOCATOR_AMBIGUOUS`.
 - `toBeHidden`, `toBeVisible({ visible: false })`,
-  `toBeAttached({ attached: false })`, negated visibility, and negated
-  `toBeAttached` accept zero matches.
+  `toBeAttached({ attached: false })`, negated visibility, negated
+  `toBeAttached`, and negated `toBeInViewport` accept zero matches.
 - For those, for `toHaveCount` and the list forms, and for
   `waitFor({ state: 'detached' })` and `'hidden'`, a locator under a frame
   that is not in the document is zero matches rather than a wait for the
@@ -895,7 +950,7 @@ withholds its value and text.
 
 | Matcher | On a secure field |
 | --- | --- |
-| `toHaveValue`, `toHaveText`, `toContainText` | `POLICY_DENIED`, like `inputValue()` and `textContent()`, negated or in list form too |
+| `toHaveValue`, `toHaveText`, `toContainText`, `toBeEmpty` | `POLICY_DENIED`, like `inputValue()` and `textContent()`, negated or in list form too |
 | `toHaveAttribute` | `POLICY_DENIED`, like `getAttribute()`, for every attribute name and negated too |
 | `toHaveAccessibleName`, `toHaveRole`, and the state matchers | Answer as usual |
 
@@ -971,6 +1026,12 @@ export interface AsyncExpectation {
   toBeVisible(options?: { visible?: boolean; timeout?: number }): Promise<void>;
   /** Waits for hidden or absent state. */
   toBeHidden(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Waits for part of the match to be inside the viewport, after clipping by
+   * scrolling and overflow ancestors; `ratio` (0 to 1) sets the share of its
+   * box that must be. No match is outside the viewport. It never scrolls.
+   */
+  toBeInViewport(options?: { ratio?: number; timeout?: number }): Promise<void>;
   /** Waits for one match to exist, visible or not; `attached: false` waits for none. */
   toBeAttached(options?: { attached?: boolean; timeout?: number }): Promise<void>;
   /** Waits for enabled state; `enabled: false` waits for disabled state. */
@@ -987,6 +1048,13 @@ export interface AsyncExpectation {
   toBeExpanded(options?: { timeout?: number }): Promise<void>;
   /** Waits for focused state. */
   toBeFocused(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Waits for a node the engine reports empty: on the web an input or
+   * textarea with no value, or any other element whose text content trims to
+   * nothing; on a device a text field with no value, or a node with no text
+   * or value in its subtree. Denied on a secure field.
+   */
+  toBeEmpty(options?: { timeout?: number }): Promise<void>;
   /** Waits for exact normalized text; a list waits for exactly that many matches, each with its entry's text, in order. */
   toHaveText(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
   toHaveText(expected: readonly TextMatch[], options?: TextMatcherOptions): Promise<void>;

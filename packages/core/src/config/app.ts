@@ -7,10 +7,11 @@
 import type { EngineAppDeclaration, EngineAppInfo, EngineHandle } from '../engine/index.ts';
 import { ConfigurationError } from '../internal/errors.ts';
 import { obj } from '../internal/objects.ts';
+import { checkLaunchArguments, engineLaunchArguments } from '../internal/launch-arguments.ts';
 import { rejectUnknownKeys } from '../internal/options.ts';
 import { didYouMean } from '../internal/suggest.ts';
-import { isImplicitTestHost, isRefusedLinkScheme, normalizeBaseUrl, portOf, requestsFreePort, siteOf, withPort, type NormalizedBaseUrl } from '../internal/urls.ts';
-import type { AppPermissionState, CommandConfig, TargetApp } from '../types.ts';
+import { isFileBase, isImplicitTestHost, namesFile, isRefusedLinkScheme, normalizeBaseUrl, portOf, requestsFreePort, siteOf, withPort, type NormalizedBaseUrl } from '../internal/urls.ts';
+import type { AppPermissionState, CommandConfig, ResolvedLaunchArguments, TargetApp } from '../types.ts';
 import { checkLog, digestCommand, isRecord, normalizeCommand } from './command.ts';
 import { httpUrl } from './validate.ts';
 
@@ -22,7 +23,7 @@ export interface TargetAppDeclaration {
   readonly appPath: string | undefined;
   readonly identity: string | undefined;
   readonly environment: 'test' | 'staging' | 'production' | undefined;
-  readonly launchArguments: readonly string[] | undefined;
+  readonly launchArguments: ResolvedLaunchArguments | undefined;
   readonly permissions: Readonly<Record<string, AppPermissionState>> | undefined;
   readonly command: CommandConfig | undefined;
   readonly readyUrl: string | undefined;
@@ -68,7 +69,7 @@ export interface ResolvedApp {
   readonly appPath: string | undefined;
   /** The link base `app.open(path)` joins on a device target; see `TargetApp.linkBase`. */
   readonly linkBase: string | undefined;
-  readonly launchArguments: readonly string[] | undefined;
+  readonly launchArguments: ResolvedLaunchArguments | undefined;
   readonly permissions: Readonly<Record<string, AppPermissionState>> | undefined;
   /** `app.command` with `{port}` expanded to the port the app is served on. */
   readonly command: CommandConfig | undefined;
@@ -133,12 +134,16 @@ export function checkTargetApp(targetName: string, engine: EngineHandle | undefi
       `target "${targetName}" declares app without an engine; only an engine can drive an app, so name one: engine: web() or mobile({ platform })`,
     );
   }
-  const { environment, launchArguments, permissions } = app;
+  const { environment, permissions } = app;
   if (environment !== undefined && !ENVIRONMENTS.has(environment)) {
     throw new ConfigurationError('INVALID_CONFIG', `${where}.environment must be one of test, staging, production, got ${JSON.stringify(environment)}`);
   }
-  if (launchArguments !== undefined && (!Array.isArray(launchArguments) || !launchArguments.every((argument) => typeof argument === 'string'))) {
-    throw new ConfigurationError('INVALID_CONFIG', `${where}.launchArguments must be an array of strings`);
+  const launchArguments = checkLaunchArguments(`${where}.launchArguments`, app.launchArguments);
+  if (launchArguments !== undefined && !Array.isArray(launchArguments) && engine !== undefined && engine.launchArgumentValues !== true) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `${where}.launchArguments is an object, and engine "${engine.name}" takes only a list of strings: write the arguments as a list, or use an engine version that supports the object syntax`,
+    );
   }
   if (permissions !== undefined && !isRecord(permissions)) {
     throw new ConfigurationError('INVALID_CONFIG', `${where}.permissions must be an object of permission name to grant, deny, or reset`);
@@ -161,11 +166,16 @@ export function checkTargetApp(targetName: string, engine: EngineHandle | undefi
     readyUrl: nonEmptyString(app.readyUrl, `${where}.readyUrl`),
   };
   const { url, bundleId, appPath } = checked;
-  engine?.validateApp?.(obj({ url, bundleId, appPath, launchArguments, permissions }) satisfies EngineAppDeclaration, { targetName });
+  const file = url !== undefined && namesFile(url);
+  if (file && engine !== undefined && engine.fileApps !== true) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `${where}.url is a file, and engine "${engine.name}" does not declare that it opens one from this machine's disk: use an engine version that does, or serve the app over http(s)`,
+    );
+  }
+  engine?.validateApp?.(obj({ url, bundleId, appPath, ...engineLaunchArguments(launchArguments), permissions }) satisfies EngineAppDeclaration, { targetName, ...(file ? { fileApp: true } : {}) });
   return checked;
 }
-
-/** Schemes a link base may not name: local content, an inline document, and the wrappers that carry one. */
 
 /**
  * A link base: an absolute URL, or a bare custom scheme (`shopapp://`), with
@@ -259,7 +269,9 @@ export function resolveTargetApp(targetName: string, app: TargetAppDeclaration, 
     declaredBase === undefined || !requestsFreePort(declaredBase) ? undefined : { host: new URL(declaredBase.href).hostname, port };
   const base = declaredBase !== undefined && portRequest?.port !== undefined ? withPort(declaredBase, portRequest.port) : declaredBase;
   const appPort = base === undefined ? undefined : portOf(base);
-  const hostname = base === undefined ? undefined : new URL(base.href).hostname;
+  // A file has no host: no site to read frames on, no origin, and nothing to poll.
+  const file = isFileApp({ base });
+  const hostname = base === undefined || file ? undefined : new URL(base.href).hostname;
 
   if (app.command === undefined && portRequest !== undefined) {
     throw new ConfigurationError(
@@ -276,9 +288,14 @@ export function resolveTargetApp(targetName: string, app: TargetAppDeclaration, 
     );
   }
   const readyUrl =
-    httpUrl(app.readyUrl === undefined ? undefined : expandPort(app.readyUrl, appPort, `${where} app.readyUrl`), `${where} app.readyUrl`) ?? base?.href;
+    httpUrl(app.readyUrl === undefined ? undefined : expandPort(app.readyUrl, appPort, `${where} app.readyUrl`), `${where} app.readyUrl`) ?? (file ? undefined : base?.href);
   if (command !== undefined && readyUrl === undefined) {
-    throw new ConfigurationError('APP_URL_REQUIRED', `${where} declares app.command without a URL to poll: declare app.url or app.readyUrl beside it`);
+    throw new ConfigurationError(
+      'APP_URL_REQUIRED',
+      file
+        ? `${where} declares app.command beside a file app.url, and a file answers no readiness poll: declare app.readyUrl, the http(s) URL the command serves once it is ready`
+        : `${where} declares app.command without a URL to poll: declare app.url or app.readyUrl beside it`,
+    );
   }
 
   return {
@@ -286,7 +303,7 @@ export function resolveTargetApp(targetName: string, app: TargetAppDeclaration, 
     portRequest,
     site: hostname === undefined ? undefined : siteOf(hostname),
     environment: app.environment ?? (hostname !== undefined && !isImplicitTestHost(hostname) ? 'production' : 'test'),
-    identity: app.identity ?? (declaredBase === undefined ? undefined : `${declaredBase.origin}${declaredBase.basePath}`) ?? app.bundleId ?? app.appPath,
+    identity: app.identity ?? (declaredBase === undefined ? undefined : file ? declaredBase.href : `${declaredBase.origin}${declaredBase.basePath}`) ?? app.bundleId ?? app.appPath,
     bundleId: app.bundleId,
     appPath: app.appPath,
     linkBase: app.linkBase,
@@ -295,6 +312,11 @@ export function resolveTargetApp(targetName: string, app: TargetAppDeclaration, 
     command,
     readyUrl: command === undefined ? undefined : readyUrl,
   };
+}
+
+/** Whether the target's app is a file the browser opens from disk. */
+export function isFileApp(app: Pick<ResolvedApp, 'base'>): boolean {
+  return app.base !== undefined && isFileBase(app.base);
 }
 
 /**
@@ -306,7 +328,9 @@ export function resolveTargetApp(targetName: string, app: TargetAppDeclaration, 
 export function engineAppInfo(app: ResolvedApp): EngineAppInfo {
   const { base, portRequest, site, bundleId, appPath, launchArguments, permissions } = app;
   const unassigned = portRequest !== undefined && portRequest.port === undefined;
-  return obj({ origin: unassigned ? undefined : base?.origin, site, bundleId, appPath, launchArguments, permissions });
+  // A file has no origin to scope a credential to.
+  const origin = unassigned || base === undefined || isFileBase(base) ? undefined : base.origin;
+  return obj({ origin, site, bundleId, appPath, ...engineLaunchArguments(launchArguments), permissions });
 }
 
 /**

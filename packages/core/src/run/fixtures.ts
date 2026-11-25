@@ -20,6 +20,7 @@ import { sessionRecordings } from './recordings.ts';
 import { resolveSecretValue, sessionLedger } from './secrecy.ts';
 import { baseUrlOf, resolveNavigationUrl } from '../internal/urls.ts';
 import { FixtureRecorder } from './fixture-recording.ts';
+import { createRequest } from './request.ts';
 import type { AttemptBudget } from './budget.ts';
 import { LocatorEngine } from '../locator/engine.ts';
 import {
@@ -106,6 +107,7 @@ interface ScreenWiring {
   readonly config: ResolvedConfig;
   readonly steps: StepRecorder;
   readonly secrets: SecretResolver;
+  readonly artifacts: ArtifactSink;
   /** The session's secret ledger, which `screen.tree()` passes its text through. */
   readonly redaction: NodeRedaction;
   /** The app URL's origin, so the tree shows a link on it by its path. */
@@ -136,6 +138,7 @@ export function createScreenContext(wiring: ScreenWiring): ScreenContext {
     engine,
     steps,
     secrets: wiring.secrets,
+    artifacts: wiring.artifacts,
     projectRoot: config.projectRoot,
     renderTree: (observation) =>
       prepareObservation(observation, {
@@ -162,6 +165,7 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     config: environment.config,
     steps: environment.steps,
     secrets,
+    artifacts: environment.artifacts,
     redaction: ledger,
     appOrigin: environment.target.app.base?.origin,
     ...(environment.test === undefined
@@ -316,6 +320,7 @@ export const CORE_FIXTURES: { readonly [Name in keyof CoreFixtureValues]: CoreFi
   app: { scope: 'engine', create: ({ environment, engine }) => createApp(environment, engine) },
   screen: { scope: 'engine', create: ({ screenContext }) => createScreen(screenContext) },
   platform: { scope: 'worker', ofTarget: (target) => target.platform },
+  request: { scope: 'test', create: ({ environment, engine }) => createRequest({ environment, actionTimeout: () => engine.actionTimeout }) },
   session: {
     scope: 'test',
     create: ({ environment }) => ({
@@ -416,7 +421,6 @@ const PROBED_KEYS = new Set(['then', 'constructor', 'toJSON', 'toString', 'value
 const FOREIGN_FIXTURE_HINTS: Readonly<Record<string, string>> = {
   page: 'there is no Playwright page: open the app with app.open() and find elements through screen; browser-only APIs are on the browser fixture of a Playwright target',
   context: 'the browser context is owned by the engine: cookies, routes, and storage are on the browser fixture of a Playwright target',
-  request: 'there is no request fixture: call fetch() directly, or reach the browser through the browser fixture of a Playwright target',
   driver: 'there is no WebDriver session: drive the device through app, screen, and (on an agent-device target) device',
 };
 
@@ -623,7 +627,8 @@ export function createApp(
   const navigate = (api: string, label: string, url: string | undefined): Promise<void> =>
     steps.run('app', api, label, async () => {
       requireAppUrl(target);
-      const resolved = url === undefined ? target.app.base.href : resolveNavigationUrl(url, target.app.base).url;
+      // The base goes through the rule too: a file app's file may have become a directory since the config loaded.
+      const resolved = resolveNavigationUrl(url ?? target.app.base.href, target.app.base).url;
       await openAt(resolved, lifecycleMs());
     });
 
@@ -640,7 +645,7 @@ export function createApp(
       const deadline = new Deadline(lifecycleMs());
       await hook(engine.operation(deadline.remaining()));
       if (target.app.base === undefined || !engine.session.verbs.has('navigate')) return;
-      await openAt(target.app.base.href, deadline.remaining());
+      await openAt(resolveNavigationUrl(target.app.base.href, target.app.base).url, deadline.remaining());
     });
 
   /**

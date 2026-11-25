@@ -106,17 +106,20 @@ rules:
 | `spiVersion` | Anything but `1`. |
 | `platform` | Empty. |
 | `workers` | Not a positive safe integer. |
-| `observe`, `readStyle`, `locate`, `perform`, `performAt`, `prepare`, `finish`, `doctor`, `init`, `startAttempt`, `settleAttempt`, `endAttempt`, `dispose`, `validateApp` | Not a function. |
+| `observe`, `readStyle`, `viewportIntersection`, `locate`, `perform`, `performAt`, `prepare`, `finish`, `doctor`, `init`, `startAttempt`, `settleAttempt`, `endAttempt`, `dispose`, `validateApp` | Not a function. |
 | any other top-level key | On an object literal, `app` included: declare the app on the target and check it in `validateApp`. A class instance's own fields are not checked. |
 | `readStyle`, `perform`, `locate`, `performAt`, `keyboard` | Declared without `observe`. |
+| `viewportIntersection` | Declared without `locate`. |
 | `perform`, `actions` | One without the other. An `actions` list that is empty, repeats a kind, or names one outside `KNOWN_LOCATOR_ACTION_KINDS`. |
 | `performAt`, `pointerActions` | One without the other. A `pointerActions` list that is empty, repeats a kind, or names one outside `POINTER_ACTION_KINDS`. |
 | `tapModifiers` | Not a boolean, or `true` without `perform`. |
 | `selectsDevice` | Not a boolean, or `true` without `prepare`. |
+| `launchArgumentValues` | Not a boolean. |
+| `fileApps` | Not a boolean. |
 | `isolation` | Anything but `'attempt'` or `'worker'`. |
 | `keyboard`, `state`, `artifacts`, `session` | An unknown key or a non-function member. `keyboard` without `type` and `press`; `state` without both `capture` and `restore`; `artifacts` without `screenshot`; `startVideo` without `stopVideo`, or the reverse. |
 | `secrets` | Not an array of `secrets.get()` handles. |
-| `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, or `session`. |
+| `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, `request`, or `session`. |
 
 <Note>
 `artifacts.startTrace` and `artifacts.stopTrace` were removed from the
@@ -139,11 +142,14 @@ The body of one target. Every member but `name`, `version`, and
 | `workers` | `number` |
 | [`observe`](#observation) | method |
 | [`readStyle`](#rendered-node-properties) | method |
+| [`viewportIntersection`](#viewport-intersection) | method |
 | [`perform`, `actions`](#actions) | method, kinds |
 | [`locate`](#capabilities) | method |
 | [`performAt`, `pointerActions`](#pointer-actions) | method, kinds |
 | [`tapModifiers`](#capabilities) | `boolean` |
 | [`selectsDevice`](#capabilities) | `boolean` |
+| [`launchArgumentValues`](#engineappinfo) | `boolean` |
+| [`fileApps`](#capabilities) | `boolean` |
 | [`keyboard`](#keyboard) | `EngineKeyboard` |
 | [`fixtures`](#contributed-fixtures) | factories |
 | [`isolation`](#fixture-isolation) | `'attempt' \| 'worker'` |
@@ -187,6 +193,8 @@ export interface Engine {
   observe?(context: OperationContext, options?: EngineObserveOptions): Promise<EngineSnapshot>;
   /** capability: computed-style, requires observation. Read-only rendered properties of an observation ref. */
   readStyle?(ref: NodeRef, properties: readonly ComputedStyleProperty[], context: OperationContext): Promise<ComputedStyleValues>;
+  /** capability: viewport-intersection, requires location. How much of a located node is inside the viewport. */
+  viewportIntersection?(ref: NodeRef, context: OperationContext): Promise<ViewportIntersection>;
   /**
    * Performs one action on a ref from the newest observation or `locate`,
    * with the platform's actionability checks. Both agent tools and locator
@@ -239,8 +247,8 @@ export interface Engine {
    */
   readonly pointerActions?: readonly PointerActionKind[];
   /**
-   * The surface honors `modifiers` on the `tap`, `doubleTap`, and
-   * `secondaryTap` actions `perform` receives. Without it the harness fails
+   * The surface honors `modifiers` on the `tap`, `doubleTap`, `multiTap`,
+   * and `secondaryTap` actions `perform` receives. Without it the harness fails
    * an action that carries modifiers with `UNSUPPORTED_CAPABILITY` before it
    * reaches the engine.
    */
@@ -251,12 +259,27 @@ export interface Engine {
    * for the target before anything is prepared.
    */
   readonly selectsDevice?: boolean;
+  /**
+   * The engine reads the object form of `app.launchArguments` from
+   * `EngineAppInfo.launchArgumentValues`. Without it the harness refuses an
+   * object at config load.
+   */
+  readonly launchArgumentValues?: boolean;
+  /**
+   * The engine opens an app whose `url` is a `file:` URL, reading the file
+   * from the disk of the machine the harness runs on. The harness checks
+   * every file navigation against that disk, so an engine whose surface
+   * may read another one must not declare this, or must refuse such a
+   * target in `validateApp` (`EngineAppCheckInfo.fileApp`). Without it the
+   * harness refuses a file `app.url` at config load.
+   */
+  readonly fileApps?: boolean;
   /** capability: keyboard - requires observation. Input to whatever holds focus; see `EngineKeyboard`. */
   readonly keyboard?: EngineKeyboard;
   /**
    * Named deterministic surfaces this engine contributes to TestFixtures
    * (a device fixture, a document fixture - anything). Keys become fixture and
-   * capability names; `requires: ['<name>']` gates at selection.
+   * capability names.
    */
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
   /**
@@ -384,10 +407,8 @@ export interface OperationContext {
 The members an engine implements set its capabilities. A `screen`,
 `Locator`, or `app` call that needs a missing one fails with
 `UNSUPPORTED_CAPABILITY`. [Test APIs](#test-apis) lists what needs which
-member. Three gaps end differently:
+member. Two gaps end differently:
 
-- A test that `requires` a fixture the engine lacks is skipped
-  (`capability-unavailable`).
 - A selected test that uses a `test.setup` session, on an engine without
   `state`, is a collection error before the setup runs.
 - A `video` mode on an engine without video recording prints a notice and
@@ -399,8 +420,11 @@ member. Three gaps end differently:
 | `readStyle` | `computed-style` | `observe` | Allow-listed rendered properties for read-only project tools. |
 | `perform` + `actions` | `actions` | `observe` | Node actions of the declared kinds, with platform actionability checks. |
 | `locate` | `location` | `observe` | `screen`, `Locator`, `expect(locator)`. |
-| `tapModifiers: true` | - | `perform` | `modifiers` on `tap`, `doubleTap`, and `secondaryTap`. |
+| `viewportIntersection` | `viewport-intersection` | `locate` | `expect(locator).toBeInViewport()`. |
+| `tapModifiers: true` | - | `perform` | `modifiers` on `tap`, `doubleTap`, `multiTap`, and `secondaryTap`. |
 | `selectsDevice: true` | - | `prepare` | `e2e run --device`, the device `prepare` binds. |
+| `launchArgumentValues: true` | - | - | The object form of `app.launchArguments`, in `EngineAppInfo.launchArgumentValues`. |
+| `fileApps: true` | - | - | A target whose `app.url` is a `file:` URL. `validateApp` is told with `fileApp: true`. |
 | `performAt` + `pointerActions` | `pointer` | `observe` | One pointer action at a viewport point, with no node behind it. |
 | `keyboard.{type,press,dismiss?}` | `keyboard` | `observe` | Input to whatever holds focus. |
 | `fixtures.<name>` | `<name>` | - | A contributed fixture. |
@@ -430,6 +454,30 @@ export type ComputedStyleValues = Readonly<Partial<Record<ComputedStyleProperty,
 throws `INVALID_ARGUMENT` for an empty list or a property outside the
 allow-list. Call it before page access.
 See [Project tools](/tools#read-a-nodes-computed-style) for `ToolContext.read`.
+
+#### Viewport intersection
+
+`viewportIntersection(ref, context)` measures how much of a located node is
+inside the viewport for [`toBeInViewport`](/reference/expect#tobeinviewport),
+without scrolling or changing app state. Clip the box by the viewport and every
+clipping ancestor, such as a scroll container, `overflow: hidden`, or a frame.
+
+```ts
+export interface ViewportIntersection {
+  /** Whether a positive area of the box is inside; false for a node with no box or an empty one. */
+  readonly intersects: boolean;
+  /** The inside area's share of the whole box, from 0 to 1; absent where the platform reports only the visible part of a box. */
+  readonly ratio?: number;
+}
+```
+
+Omit `ratio` when the platform reports only the visible part of a box, as a
+device does. `toBeInViewport` with `ratio > 0` then fails with
+`UNSUPPORTED_CAPABILITY` instead of reading that part as the whole box. Throw
+retryable `NODE_STALE` if the node no longer binds, and
+`UNSUPPORTED_CAPABILITY` if the platform cannot report the node's bounds or
+screen position. A `ratio` is above `0` exactly when `intersects` is true. The
+harness fails the step with `ENGINE_FAILURE` on an answer outside this shape.
 
 #### Agent verbs
 
@@ -494,12 +542,12 @@ engine.
 | `locator.pressSequentially` | the `focus` action and `keyboard`; the harness composes `focus` then `keyboard.type` |
 | `test.setup` sessions, the `session:` option | `state` |
 | `app.screenshot()`, assertion evidence, the failure screenshot | `artifacts` |
+| `locator.screenshot()` | `artifacts`, with `observe` and `locate`; the `scrollIntoView` action when declared |
 | every [`video` mode](/reference/config#recording) but `off`, from the config, a target, a test, or `--video` | `artifacts` |
 | `app.open()` | `session.open`; on a target with no app URL, `session.restart`, or `session.openLink` for a path on a target with `app.linkBase` |
 | `app.back()` | `session.back` |
 | `app.restart()` | `session.restart` |
 | `app.clearState()` | `session.reset` |
-| `requires: ['<name>']` | `fixtures.<name>` |
 
 #### `engine.capabilities`
 
@@ -510,10 +558,6 @@ The computed `ReadonlySet` of capability names. Selection, the report, and
 const engine = kiosk({ host: 'kiosk.local' });
 engine.capabilities.has('location'); // true: the engine implements locate
 ```
-
-Selection also grades a target by the kind of app it declares, not by its
-engine. A target with `app.url` has `browser`, and one with `app.bundleId` or
-`app.appPath` has `native-app`, so a test can `requires: ['native-app']`.
 
 ```ts
 /**
@@ -527,6 +571,7 @@ engine. A target with `app.url` has `browser`, and one with `app.bundleId` or
 export type EngineCapability =
   | 'observation'
   | 'computed-style'
+  | 'viewport-intersection'
   | 'actions'
   | 'location'
   | 'pointer'
@@ -1178,6 +1223,7 @@ honors in `actions` and `pointerActions`.
 | --- | --- | --- | --- |
 | `tap` | `modifiers?` on a node | yes | yes |
 | `doubleTap` | `modifiers?` on a node | yes | yes |
+| `multiTap` | `count` (3 or more), `modifiers?`; `tap({ count })` | yes | - |
 | `secondaryTap` | `modifiers?` on a node | yes | yes |
 | `longPress` | `durationMs?` | yes | yes |
 | `fill` | `value`, `sensitive` | yes | - |
@@ -1226,6 +1272,12 @@ export type LocatorAction =
   | {
       readonly kind: 'tap' | 'doubleTap' | 'secondaryTap';
       /** Keys held for the click; only an engine that declares `tapModifiers` receives it. */
+      readonly modifiers?: readonly KeyModifier[];
+    }
+  | {
+      /** `count` taps in a row (3 or more; 2 is `doubleTap`): one multi-click in a browser, presses at the device's cadence on a device. */
+      readonly kind: 'multiTap';
+      readonly count: number;
       readonly modifiers?: readonly KeyModifier[];
     }
   | {
@@ -1279,7 +1331,7 @@ export const LOCATOR_ACTION_KINDS = [
 ] as const satisfies readonly LocatorActionKind[];
 
 /** Every action kind understood by this version of core. */
-export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads'] as const satisfies readonly LocatorActionKind[];
+export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap'] as const satisfies readonly LocatorActionKind[];
 ```
 
 #### Pointer actions
@@ -1408,7 +1460,7 @@ the declaration to [`validateApp`](#validateapp) at config load.
 | `url` | `validateApp` only. The harness opens it through `session.open`. |
 | the origin of `url`, on the run's port | `info.app.origin` in `prepare` and `init` |
 | the site of `url` | `info.app.site` in `prepare` and `init` |
-| `bundleId`, `appPath`, `launchArguments`, `permissions` | `validateApp`, and `info.app` in `prepare` and `init`, as the target declared them |
+| `bundleId`, `appPath`, `launchArguments`, `permissions` | `validateApp`, and `info.app` in `prepare` and `init`, as the target declared them; `launchArguments` declared as an object arrives as `launchArgumentValues` |
 | `command`, `readyUrl` | Never. The runner starts the app. |
 
 `CommandConfig` is exported from `e2e`, not `e2e/engine`.
@@ -1453,6 +1505,18 @@ export interface EngineAppCheckInfo {
 
 /** A permission's state when the app launches: held, refused, or not asked for yet, so the OS asks again. */
 export type AppPermissionState = 'grant' | 'deny' | 'reset';
+
+/** One value in the object form of `launchArguments`; the engine spells it for its platform. */
+export type LaunchArgumentValue = string | number | boolean | readonly string[];
+
+/** A target's launch arguments: the strings the launch command takes, or an object of argument name to value. */
+export type LaunchArguments = readonly string[] | Readonly<Record<string, LaunchArgumentValue | undefined>>;
+
+/** The object form after the shape check: the `undefined` entries are gone. */
+export type LaunchArgumentValues = Readonly<Record<string, LaunchArgumentValue>>;
+
+/** Launch arguments after the shape check: a list of strings, or the object form. */
+export type ResolvedLaunchArguments = readonly string[] | LaunchArgumentValues;
 ```
 
 #### `EngineAppInfo`
@@ -1477,13 +1541,14 @@ export interface EngineAppInfo {
   /**
    * The app URL's origin on the run's port (`scheme://host:port`, as
    * `URL.origin` serializes it): where injected request credentials go.
-   * Absent when the app has no URL, and for a free port the run has not
-   * assigned (`e2e doctor`).
+   * Absent when the app has no URL or its URL is a file, and for a free port
+   * the run has not assigned (`e2e doctor`).
    */
   readonly origin?: string;
   /**
    * The app URL's registrable domain, as read by `siteOf`. Use `sameSite`
-   * to scope observed child frames. Absent when the app has no URL. The
+   * to scope observed child frames. Absent when the app has no URL or its
+   * URL is a file. The
    * runner passes navigation URLs separately through `session.open`.
    */
   readonly site?: string;
@@ -1491,12 +1556,36 @@ export interface EngineAppInfo {
   readonly bundleId?: string;
   /** The build to install, as the target declared it; relative to `projectRoot`. */
   readonly appPath?: string;
-  /** Arguments every fresh launch passes the app. */
+  /** Arguments every fresh launch passes the app, when the target declared them as a list of strings. */
   readonly launchArguments?: readonly string[];
+  /**
+   * Arguments every fresh launch passes the app, when the target declared
+   * them as an object; only an engine that declares `launchArgumentValues`
+   * receives one.
+   */
+  readonly launchArgumentValues?: LaunchArgumentValues;
   /** Permissions the app holds, by name; what each state means is the engine's (a device sets them before every fresh launch). */
   readonly permissions?: Readonly<Record<string, AppPermissionState>>;
 }
 ```
+
+A target declares `app.launchArguments` as a list of strings or as an object.
+A list arrives in `launchArguments`. An object arrives in
+`launchArgumentValues`, and only on an engine that declares
+`launchArgumentValues: true`; for any other engine it fails at config load
+with `INVALID_CONFIG`. The harness sets one of the two fields, never both, so
+an engine that takes both forms reads whichever is present and spells an
+object for its platform's launch command. An iOS or macOS engine spells it
+with `appleUserDefaults`:
+
+```ts
+const launchArguments = info.app.launchArgumentValues ?? info.app.launchArguments;
+const args = launchArguments === undefined ? [] : appleUserDefaults(launchArguments);
+```
+
+An engine for another platform spells the object itself. `mobile()` on Android
+sends each entry as an `am start` extra of the value's type, such as
+`--ez e2e true` or `--es locale fr_FR`.
 
 ### Session
 
@@ -1698,6 +1787,8 @@ reproduces these semantics; import them instead of carrying a copy.
 | [`pollCondition`, `Deadline`](#pollcondition) | `Promise<void>`, `Deadline` |
 | [`validateJsonValue`](#validatejsonvalue) | `void` |
 | [`rejectUnknownKeys`](#rejectunknownkeys) | `void` |
+| [`checkLaunchArguments`](#checklauncharguments) | `ResolvedLaunchArguments \| undefined` |
+| [`appleUserDefaults`](#appleuserdefaults) | `readonly string[]` |
 | [`rejectUnknownOptions`](#rejectunknownoptions) | `void` |
 | [`obj`](#obj) | `WithoutUndefined<T>` |
 | [`raceAbort`, `withTimeout`, `withinCleanupBudget`](#timing-helpers) | `Promise<T>`, `Promise<T>`, `Promise<void>` |
@@ -1873,6 +1964,55 @@ rejectUnknownKeys('web()', options, ['browser', 'viewport']);
   the known keys otherwise.
 - Pass `'INVALID_ARGUMENT'` as `code` for an object a test passes to a
   fixture method.
+
+#### `checkLaunchArguments`
+
+The shape check the runner runs on a target's `app.launchArguments`, for a
+launch a test asks for by hand, such as `device.openApp(app, { launchArguments })`.
+Returns the arguments with every `undefined` object property left out, or
+throws; an `undefined` list item is refused like any other non-string.
+
+```ts
+export function checkLaunchArguments(
+  label: string,
+  declared: unknown,
+  code?: 'INVALID_CONFIG' | 'INVALID_ARGUMENT', // default: 'INVALID_CONFIG'
+): ResolvedLaunchArguments | undefined;
+```
+
+```ts
+const launchArguments = checkLaunchArguments('device.openApp({ launchArguments })', options.launchArguments, 'INVALID_ARGUMENT');
+// device.openApp({ launchArguments }).env must be a string, number, boolean, or array of strings, got null
+```
+
+- A list holds strings. An object maps a non-empty name with no whitespace or
+  control characters to a string, a finite number below 2^53 in magnitude, a
+  boolean, or a list of strings. Nothing holds a NUL character.
+- An object's argument name does not start with a dash: write `AppleLocale`,
+  not `-AppleLocale`. The engine adds the dash, so a dashed name fails.
+- The engine adds its platform's rules after this check, with the same
+  `code`.
+
+#### `appleUserDefaults`
+
+Spells launch arguments as the process arguments of an iOS or macOS app. A
+list stays as it is. An object becomes `-name value` for each entry, in the
+form `NSUserDefaults` reads. Pass the result to the launch command.
+
+```ts
+export function appleUserDefaults(launchArguments: ResolvedLaunchArguments): readonly string[];
+```
+
+```ts
+appleUserDefaults({ AppleLanguages: ['fr', 'en-GB'], e2e: true, offset: -1, mode: '(draft)' });
+// ['-AppleLanguages', '(fr, en-GB)', '-e2e', 'YES', '-offset', '"-1"', '-mode', '"(draft)"']
+```
+
+- A boolean is `YES` or `NO`. A list is an old-style plist array.
+- A string or number is bare when it holds only letters, digits, and
+  `_ $ / : . -` and does not start with `-` or `//`. Other values are quoted,
+  with `\` and `"` escaped. The same rule applies to each item of a list, so
+  `{ cdn: ['//cdn.example'] }` is `-cdn ("//cdn.example")`.
 
 #### `rejectUnknownOptions`
 
@@ -2226,7 +2366,7 @@ import { test as base } from 'e2e';
 
 const test = base.extend<{ printer: { print(text: string): Promise<void> } }>();
 
-test('prints a receipt', { requires: ['printer'] }, async ({ printer }) => {
+test('prints a receipt', { platforms: ['kiosk'] }, async ({ printer }) => {
   await printer.print('Order 42');
 });
 ```
@@ -2462,12 +2602,27 @@ export interface SemanticNode {
    * select by its `readonly` attribute, an element whose ARIA role takes
    * `aria-readonly` by that attribute, any other editing host `false`), and
    * only where the platform knows, as Android does: absent means the node has
-   * no read-only state to read, not `false`.
+   * no read-only state to read, not `false`. `empty` is whether the node
+   * holds nothing, as Playwright's `toBeEmpty` reads it on the web (an input or
+   * textarea by its raw value, any other element by its trimmed text content),
+   * and on a device a text field by its value, any other node by the text
+   * and values in its subtree. An engine reports it on the nodes `locate`
+   * returns, never in an observation, and never on a secure field: absent
+   * means the engine does not say.
    */
   readonly states?: Readonly<
     Partial<
       Record<
-        'checked' | 'disabled' | 'selected' | 'expanded' | 'pressed' | 'focused' | 'hidden' | 'secure' | 'readonly',
+        | 'checked'
+        | 'disabled'
+        | 'selected'
+        | 'expanded'
+        | 'pressed'
+        | 'focused'
+        | 'hidden'
+        | 'secure'
+        | 'readonly'
+        | 'empty',
         boolean
       >
     >

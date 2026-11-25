@@ -50,6 +50,7 @@ const lifecycle = (member: LifecycleMethod['member']): LifecycleMethod => ({ kin
 export const METHODS = {
   'engine/observe': operation('observe', ['operation', 'options'], 'snapshot'),
   'engine/readStyle': operation('readStyle', ['ref', 'properties', 'operation']),
+  'engine/viewportIntersection': operation('viewportIntersection', ['ref', 'operation']),
   'engine/locate': operation('locate', ['expression', 'operation']),
   'engine/perform': operation('perform', ['ref', 'action', 'operation']),
   'engine/performAt': operation('performAt', ['point', 'action', 'operation']),
@@ -118,6 +119,10 @@ export interface EngineManifest {
   readonly tapModifiers?: boolean;
   /** See `Engine.selectsDevice`. */
   readonly selectsDevice?: boolean;
+  /** See `Engine.launchArgumentValues`. */
+  readonly launchArgumentValues?: boolean;
+  /** See `Engine.fileApps`. */
+  readonly fileApps?: boolean;
   /** See `Engine.isolation`; left out for `attempt`. */
   readonly isolation?: 'worker';
 }

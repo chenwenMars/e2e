@@ -178,12 +178,27 @@ export interface SemanticNode {
    * select by its `readonly` attribute, an element whose ARIA role takes
    * `aria-readonly` by that attribute, any other editing host `false`), and
    * only where the platform knows, as Android does: absent means the node has
-   * no read-only state to read, not `false`.
+   * no read-only state to read, not `false`. `empty` is whether the node
+   * holds nothing, as Playwright's `toBeEmpty` reads it on the web (an input or
+   * textarea by its raw value, any other element by its trimmed text content),
+   * and on a device a text field by its value, any other node by the text
+   * and values in its subtree. An engine reports it on the nodes `locate`
+   * returns, never in an observation, and never on a secure field: absent
+   * means the engine does not say.
    */
   readonly states?: Readonly<
     Partial<
       Record<
-        'checked' | 'disabled' | 'selected' | 'expanded' | 'pressed' | 'focused' | 'hidden' | 'secure' | 'readonly',
+        | 'checked'
+        | 'disabled'
+        | 'selected'
+        | 'expanded'
+        | 'pressed'
+        | 'focused'
+        | 'hidden'
+        | 'secure'
+        | 'readonly'
+        | 'empty',
         boolean
       >
     >
@@ -250,6 +265,23 @@ export interface ViewportSize {
 }
 
 /**
+ * How much of a node's box is inside the viewport, after clipping by the
+ * viewport and by every ancestor that clips its content (a scroll container,
+ * `overflow: hidden`, a frame), as `Engine.viewportIntersection` measures it.
+ * It says nothing about another node covering the box.
+ */
+export interface ViewportIntersection {
+  /** Whether a positive area of the box is inside; false for a node with no box or an empty one. */
+  readonly intersects: boolean;
+  /**
+   * The inside area over the whole box's area, from 0 to 1. Absent where
+   * the platform reports only the visible part of a box, so the whole is
+   * unknown.
+   */
+  readonly ratio?: number;
+}
+
+/**
  * Masked viewport pixels captured for one observation revision.
  *
  * `width` and `height` MUST be the true dimensions of `data`, because they are
@@ -282,6 +314,19 @@ export type LocatorAction =
        * an engine that declares `tapModifiers` receives it; the harness
        * refuses it for any other before dispatch.
        */
+      readonly modifiers?: readonly KeyModifier[];
+    }
+  | {
+      /**
+       * `count` taps in a row on one point: 3 or more, since 2 is
+       * `doubleTap`. A browser reads them as one multi-click (a triple click
+       * selects a paragraph); a device presses them at its own cadence,
+       * which a gesture detector may not read as one. Not a kind of SPI v1,
+       * so an engine lists it explicitly.
+       */
+      readonly kind: 'multiTap';
+      readonly count: number;
+      /** As on `tap`: only an engine that declares `tapModifiers` receives it. */
       readonly modifiers?: readonly KeyModifier[];
     }
   | {
@@ -335,7 +380,7 @@ export const LOCATOR_ACTION_KINDS = [
 ] as const satisfies readonly LocatorActionKind[];
 
 /** Every action kind understood by this version of core. */
-export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads'] as const satisfies readonly LocatorActionKind[];
+export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap'] as const satisfies readonly LocatorActionKind[];
 
 /**
  * One action `performAt` carries out at a viewport point, with no node

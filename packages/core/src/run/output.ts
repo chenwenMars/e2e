@@ -7,12 +7,18 @@
 import path from 'node:path';
 
 export interface OutputLayout {
-  /** The canonical `report.json`; the file reporters write beside it too (`junit.xml`, `summary.md`). */
+  /** The canonical `report.json`; the file reporters write beside it too (`junit.xml`, `summary.md`, `ctrf.json`). */
   readonly report: string;
   /** The `--ai-trace` recording, `ai-trace.json`. */
   readonly aiTrace: string;
   /** The timings history, `timings.json`: what a CI cache restores to order the next run's files. */
   readonly timings: string;
+  /**
+   * `report-with-reruns.json`, written by a `--last-failed` rerun beside its
+   * report: the first run and every rerun since, folded into one report-1
+   * document with the same run id as `report.json`.
+   */
+  readonly withReruns: string;
   /**
    * One directory per test, `results/<test>/`, holding its trace page
    * (`trace.md`) and its attempts' artifacts (`attempt-<n>/`); the report's
@@ -34,6 +40,7 @@ export function outputLayout(output: string): OutputLayout {
     report: path.join(output, 'report.json'),
     aiTrace: path.join(output, 'ai-trace.json'),
     timings: path.join(output, 'timings.json'),
+    withReruns: path.join(output, 'report-with-reruns.json'),
     results: path.join(output, 'results'),
     sessions: path.join(output, 'sessions'),
     videos: (sessionId) => path.join(output, 'videos', sessionId),

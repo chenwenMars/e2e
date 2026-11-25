@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 
-test('observes the first navigation response', { requires: ['browser'], tags: ['network'] }, async ({ browser, screen }) => {
+test('observes the first navigation response', { platforms: ['web'], tags: ['network'] }, async ({ browser, screen }) => {
   const [response] = await Promise.all([
     browser.waitForResponse('**/network'),
     browser.goto('/network'),
@@ -19,7 +19,15 @@ test('calls the API at a path joined onto app.baseUrl', { tags: ['network'] }, a
   expect(await response.json()).toHaveLength(3);
 });
 
-test.describe('network', { requires: ['browser'], tags: ['network'] }, () => {
+test('calls the API through the request fixture', { tags: ['network'] }, async ({ request }) => {
+  const response = await request.get('/api/users');
+  expect(response.status).toBe(200);
+  expect(response.headers['content-type']).toBe('application/json');
+  expect(await response.json()).toEqual([{ name: 'Ada' }, { name: 'Grace' }, { name: 'Margaret' }]);
+  expect((await request.get('/api/missing')).status).toBe(404);
+});
+
+test.describe('network', { platforms: ['web'], tags: ['network'] }, () => {
   test.beforeEach(async ({ app }) => {
     await app.open('/network');
   });

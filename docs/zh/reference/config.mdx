@@ -239,7 +239,7 @@ targets: [
 | [`video`](#video) | `RecordingMode` | 配置中的 `video` |
 
 - `{ engine: web(), app: { url } }` 就是一个完整的测试目标。
-- 如果测试的 `requires` 指定了测试目标缺少的能力，该测试会在此测试目标上跳过。被选中测试所依赖的 `test.setup` 必须能够在该测试目标上运行，否则选择过程会以 `COLLECTION_ERROR` 失败。
+- 如果测试的 `platforms` 不包含测试目标的平台，该测试会在此测试目标上跳过。被选中测试所依赖的 `test.setup` 必须能够在该测试目标上运行，否则选择过程会以 `COLLECTION_ERROR` 失败。
 
 完整声明见 [`Target`](#target)。
 
@@ -311,7 +311,7 @@ targets: [
 | [`linkBase`](#linkbase) | `string` | - |
 | [`identity`](#identity) | `string` | 根据应用推导 |
 | [`environment`](#environment) | `'test' \| 'staging' \| 'production'` | `'test'` 或 `'production'` |
-| [`launchArguments`](#launcharguments) | `string[]` | - |
+| [`launchArguments`](#launcharguments) | `string[] \| Record<string, LaunchArgumentValue>` | - |
 | [`permissions`](#permissions) | `Record<string, AppPermissionState>` | - |
 | [`command`](#command) | `CommandConfig` | - |
 | [`readyUrl`](#readyurl) | `string` | `url` |
@@ -415,6 +415,15 @@ environment: 'staging', // default: 'test' for a local host or no URL, else 'pro
 
 ```ts
 launchArguments: ['-e2e', 'YES'],
+```
+
+```ts
+launchArguments: { AppleLanguages: ['fr'], AppleLocale: 'fr_FR', e2e: true },
+```
+
+```ts
+type LaunchArgumentValue = string | number | boolean | readonly string[];
+type LaunchArguments = readonly string[] | Readonly<Record<string, LaunchArgumentValue | undefined>>;
 ```
 
 选择构建模式的参数会改变应用本身：为每种模式设置独立的 `identity`。

@@ -35,7 +35,7 @@ test('General opens in dark mode', async ({ app, device, screen }) => {
 ```
 
 - Import `test` from `@e2e-dev/mobile` to have `device` typed. Declare
-  `requires: ['device']` in a suite that also runs on the web.
+  `platforms: ['ios', 'android']` in a suite that also runs on the web.
 - Choose **Mobile (iOS/Android)** in `e2e init` to add the package with a
   Settings example. iOS needs Xcode and a simulator; Android needs the Android
   SDK and an emulator.
@@ -316,7 +316,7 @@ export default {
 
 | Throws | When |
 | --- | --- |
-| `INVALID_CONFIG` | At config load: no `app.bundleId` and no `app.appPath`; an `app.url` (not supported yet); a link in `bundleId` (a test opens one with `device.openLink`); an unknown permission name. |
+| `INVALID_CONFIG` | At config load: no `app.bundleId` and no `app.appPath`; an `app.url` (not supported yet); a link in `bundleId` (a test opens one with `device.openLink`); an unknown permission name; an Apple launch argument such as `AppleLocale`, or a list item `am start` cannot carry, in an object on an Android target. |
 | `UNSUPPORTED_CAPABILITY` | `app.open()`, `app.restart()`, or `app.clearState()` on a target with no `app.bundleId` before its build is installed. |
 
 #### Launch arguments and permissions
@@ -344,6 +344,49 @@ export default {
 - iOS hands the arguments to the app process
   (`ProcessInfo.processInfo.arguments`). Android appends them to `am start`,
   so `['--ez', 'e2e', 'true']` is a boolean intent extra.
+- An object gives each argument a name.
+  - On iOS, each entry becomes `-name value` in the format that
+    `NSUserDefaults` reads. A string that the parser could read as a plist or
+    a comment, such as `(draft)`, `a b`, or `//cdn`, gets quotes. An app that
+    reads `ProcessInfo.processInfo.arguments` receives this format, with `NO`
+    for `false` and the quotes included. If your app reads
+    `ProcessInfo.processInfo.arguments`, use the `launchArguments` list format
+    instead:
+
+    ```ts title="e2e.config.ts"
+    export default {
+      targets: [
+        {
+          name: 'iphone',
+          engine: mobile({ platform: 'ios' }),
+          app: {
+            bundleId: 'com.example.app',
+            launchArguments: ['-flag', 'false', '-title', 'a b'],
+          },
+        },
+      ],
+    } satisfies E2EConfig;
+    ```
+  - On Android, each entry becomes an `am start` extra of the value's type.
+    The app reads it with the matching `Intent` getter. A whole number such
+    as `1.0` is an `int`. Android does not read Apple arguments, so
+    `AppleLanguages` or `AppleLocale` in an object on an Android target fails
+    with `INVALID_CONFIG`. A list of strings goes to `am start` unchanged.
+- `am start` splits a list extra at each comma that has no backslash before
+  it, and it keeps that backslash. So on Android, a list in an object fails
+  with `INVALID_CONFIG` when the list is empty, or when an item is empty,
+  contains a comma, or ends with a backslash.
+
+| Value | iOS | Android |
+| --- | --- | --- |
+| `'fr_FR'` | `-name fr_FR` | `--es name fr_FR` |
+| `'(draft)'` | `-name "(draft)"` | `--es name (draft)` |
+| `true` | `-name YES` | `--ez name true` |
+| `3` | `-name 3` | `--ei name 3`, `--el` outside Java's `int` |
+| `1.5` | `-name 1.5` | `--ef name 1.5` |
+| `-1` | `-name "-1"` | `--ei name -1` |
+| `['fr', 'de']` | `-name (fr, de)` | `--esa name fr,de` |
+
 - Each permission is `grant`, `deny`, or `reset`. `deny` is a recorded
   refusal on iOS, where the app is told no without a prompt, and a revocation
   on Android, where the OS asks again when the app requests the permission.
@@ -401,8 +444,8 @@ failed `open <app>` step:
 ```
 
 <Note>
-A pending tap, double tap, focus, check or uncheck is cancelled when the step
-stops waiting for it or the run is interrupted. This also covers the tap that
+A pending tap, double tap, multi-tap, focus, check or uncheck is cancelled when
+the step stops waiting for it or the run is interrupted. This also covers the tap that
 dismisses a keyboard tip.
 
 Input already sent to the device may still finish.
@@ -415,11 +458,11 @@ them to finish.
 | Contract member | On a device |
 | --- | --- |
 | `observe` | The accessibility tree with rects. Element types map onto roles as listed under [Roles](#roles); a `Switch` or `CheckBox`, and an Android `RadioButton`, carry the `checked` state the device reports, and a `SecureTextField` or an Android field UIAutomator flags as `password` is a secure `textbox`. An iOS field keeps a value equal to its label (an unlabeled field is named by its text); Android's echo of a text view's label as its value is dropped. The accessibility identifier (iOS) or resource id (Android) is the node's `testId`. An Android node is named by the content description its app set (React Native's `accessibilityLabel`), else by its text, and its `text` is what it shows, so a labeled text view or a filled field answers `getByLabel` by its label and `getByText` by its text. A field's hint is its `placeholder` attribute, showing or not. Compose Multiplatform reports no placeholder on iOS: an empty field appends the text it draws to its label (`Name, Ada Lovelace`) over one `StaticText` child, so that text is the field's `placeholder` and the child is left out. An empty field has no value: Android flags a showing hint, and XCTest reports an empty iOS field's placeholder as its value, so an iOS field whose value equals its placeholder (trimmed) reads empty, text typed to match the placeholder exactly included. One Android fact is agent-device's, not the platform's: `rect` and every point are the screen's physical pixels; the display density it reports is not applied yet. Android's status bar and navigation bar, the full-width `com.android.systemui` windows along the screen's edges and the narrow status icons (clock, signal, battery) agent-device reports on their own inside that edge band, are left out; the notification shade, system dialogs, and a heads-up notification or other popup inset from the sides stay. Pixels on request, with every secure node's bounds painted black. |
-| `perform` | `tap`, `doubleTap`, `longPress`, `fill`, `clear`, `hover`, `check`, `uncheck`, `press` (`Enter`, `Space`, or one character), `swipe`, `dragTo`, and `focus` on editable fields. A tap on a `switch` or `checkbox` lands on its innermost control, since UIKit reports a settings row as one labelled switch with the real toggle as a child. `check` and `uncheck` need a `checked` state. Switches report one on both platforms, and so does a native Android `CheckBox`; a React Native checkbox or radio reports one only when the app sets `accessibilityState.checked`. A control with no state is `UNSUPPORTED_CAPABILITY`, so tap it instead. `doubleTap` is two presses, 284 to 285 ms apart on iOS (the cadence of agent-device's XCTest tap): agent-device's own double-tap gesture reaches a React Native `Pressable` as one press. A detector with a window of 300 ms or less can read the pair as two single taps. `longPress` holds for one second unless the test passes `duration`, past a React Native `Pressable`'s `delayLongPress` of 500 ms and the longer thresholds apps set; agent-device's own default hold is shorter and registers as a tap on those. `blur`, `selectOption`, `setInputFiles`, `scrollIntoView`, and `secondaryTap` are not declared, and neither is `tapModifiers`, so `tap` or `doubleTap` with `modifiers` is `UNSUPPORTED_CAPABILITY`. An action on a node that a newer snapshot replaced finds the node again instead of acting on a different element. |
+| `perform` | `tap`, `doubleTap`, `multiTap`, `longPress`, `fill`, `clear`, `hover`, `check`, `uncheck`, `press` (`Enter`, `Space`, or one character), `swipe`, `dragTo`, and `focus` on editable fields. A tap on a `switch` or `checkbox` lands on its innermost control, since UIKit reports a settings row as one labelled switch with the real toggle as a child. `check` and `uncheck` need a `checked` state. Switches report one on both platforms, and so does a native Android `CheckBox`; a React Native checkbox or radio reports one only when the app sets `accessibilityState.checked`. A control with no state is `UNSUPPORTED_CAPABILITY`, so tap it instead. `doubleTap` is two presses, 284 to 285 ms apart on iOS (the cadence of agent-device's XCTest tap): agent-device's own double-tap gesture reaches a React Native `Pressable` as one press. A detector with a window of 300 ms or less can read the pair as two single taps. `multiTap` is `count` presses at the same cadence as `doubleTap`, so the same short-window caveat applies; a `count` above agent-device's 200 is `UNSUPPORTED_CAPABILITY` before any press. At about 285 ms a press on iOS, 200 presses take about a minute, past the default action timeout of 30 s, so pass a longer `timeout` for a large `count`. `longPress` holds for one second unless the test passes `duration`, past a React Native `Pressable`'s `delayLongPress` of 500 ms and the longer thresholds apps set; agent-device's own default hold is shorter and registers as a tap on those. `blur`, `selectOption`, `setInputFiles`, `scrollIntoView`, and `secondaryTap` are not declared, and neither is `tapModifiers`, so `tap`, `doubleTap`, or `multiTap` with `modifiers` is `UNSUPPORTED_CAPABILITY`. An action on a node that a newer snapshot replaced finds the node again instead of acting on a different element. |
 | `performAt` | `tap`, `doubleTap`, `longPress`, and `swipeTo` at a bare screen point, so `screen.tapAt`, `screen.doubleTapAt`, `tap({ position })`, `screen.swipe({ from, to })`, and the agent's `tap_at` reach a control the tree does not list. No `hover`, `secondaryTap`, or `dragTo` at a point: touch has none without a node, so `hover_at` needs a listed control. |
 | `keyboard` | `type` and `press` into the focused field, the agent's `type` and `press` without a target and the fallback of `type_at` and `press_at`, and `dismiss`, the agent's `dismiss_keyboard`. |
 | `locate` | Every `screen` query. Text and label queries answer with the innermost match, since a device echoes both up the tree (a React Native input is a host view and the field inside it, both labelled). On Android a test id query, a string or a RegExp, also matches a resource id without its `<package>:id/` prefix, for any package but the framework's `android`, when nothing on the screen matches the full id. `screen.locator('id=…')` is agent-device's selector and takes the full id. |
-| `validateApp` | Requires `app.bundleId` or `app.appPath` and refuses `app.url` for now, with a note on reaching this machine from the platform's device. A target with either is a `native-app` target, so `requires: ['native-app']` selects device targets. |
+| `validateApp` | Requires `app.bundleId` or `app.appPath` and refuses `app.url` for now, with a note on reaching this machine from the platform's device. |
 | `session` | `back`, `restart`, `reset`, and `openLink`, behind `app.open(path)` on a target with `app.linkBase`. No `open`: `app.open()` with no path is served with `restart`, the fresh launch of the pinned app; the agent's `navigate` verb is unavailable, and `device.openLink(url)` opens a deep link or web link. |
 | `artifacts` | Redacted screenshots under `screenshots/NNN-<label>.png`; a screenshot that cannot be redacted fails instead of being written. Video, when the attempt's [video mode](/reference/config#video) records, as `video/video.mp4`, or a device provider's own recording. |
 | `location` | `<bundle id> / <screen title>`, the replay cache's anchor. The title is the navigation bar's on iOS and the toolbar's on Android. |
@@ -823,6 +866,7 @@ openApp(app: string, options?: OpenAppOptions): Promise<void>;
 ```ts
 await device.openApp('Settings');
 await device.openApp('com.example.app', { relaunch: true, permissions: { camera: 'grant' } });
+await device.openApp('com.example.app', { relaunch: true, launchArguments: { AppleLocale: 'fr_FR' } });
 ```
 
 - A link is refused before the device sees it, since agent-device opens any
@@ -831,7 +875,7 @@ await device.openApp('com.example.app', { relaunch: true, permissions: { camera:
 | Throws | When |
 | --- | --- |
 | `POLICY_DENIED` | A `file:`, `data:`, `javascript:`, `view-source:`, `blob:`, or `filesystem:` link. |
-| `INVALID_ARGUMENT` | Any other link, with a message pointing at `openLink`; or an invalid permission name or state (see [Launch arguments and permissions](#launch-arguments-and-permissions)). |
+| `INVALID_ARGUMENT` | Any other link, with a message pointing at `openLink`; an invalid permission name or state; or `launchArguments` outside the declared shape, or one Android cannot carry (see [Launch arguments and permissions](#launch-arguments-and-permissions)). |
 
 #### `openLink`
 
@@ -1161,6 +1205,27 @@ the TV tests.
 | --- | --- | --- |
 | `tv_remote` | gap | Press a [remote button](#pressremote) by `key`, up to 20 `times` in one call. |
 
+`foldTools(...engines)` adds the hinge for engines that drive a foldable: the
+iPhone Duo simulator or a foldable Android emulator. With it in the agent's
+`tools`, `agent.act`, `e2e explore`, and the MCP server's `call` can fold the
+device.
+
+```ts
+tools: { ...mobileTools(iphoneDuo), ...foldTools(iphoneDuo) },
+```
+
+- Tools are offered by platform, as with `tvTools`. When a device without a
+  hinge shares the foldable's platform, put `foldTools` on a
+  [named agent](/reference/config#agents) and select it on the foldable
+  tests.
+- The engine never resets the pose, so a pose the agent leaves carries over
+  to the next test. Fold back in `afterEach`, as for
+  [`device.fold`](#fold).
+
+| Tool | Replay | Purpose |
+| --- | --- | --- |
+| `fold` | gap | Put the device in a hinge [`pose`](#fold): `closed`, `half-open`, or `open`. A device without a hinge fails with `UNSUPPORTED_CAPABILITY`. |
+
 | Throws | When |
 | --- | --- |
 | `INVALID_STATE` | An engine that `mobile()` did not return. In the config this fails the load as `CONFIG_LOAD_FAILED`, whose message includes this one. |
@@ -1387,11 +1452,12 @@ export interface OpenAppOptions {
   /** Terminate the app first, so it starts fresh; without it a running app is brought forward as it is. */
   readonly relaunch?: boolean;
   /**
-   * Arguments this launch hands the app: its process arguments on iOS,
-   * `am start` arguments on Android. Replaces the target's `app.launchArguments`
-   * for a relaunch of the pinned app.
+   * Arguments this launch hands the app, a list or an object like
+   * `app.launchArguments`: its process arguments on iOS, `am start`
+   * arguments on Android. Replaces the target's `app.launchArguments` for a
+   * relaunch of the pinned app.
    */
-  readonly launchArguments?: readonly string[];
+  readonly launchArguments?: LaunchArguments;
   /**
    * Permissions the app holds before this launch, each granted, denied, or
    * reset. Replaces the target's `app.permissions` for a relaunch of the
@@ -1500,8 +1566,8 @@ export interface DeviceSelection {
 `beforeEach`, `afterEach`, `beforeAll`, and `afterAll`, typed with the `device`
 fixture. A device keeps its state between tests, so `device`, `app`, and
 `screen` are [worker fixtures](/reference/test#worker-fixtures), and
-`beforeAll` and `afterAll` get them. `mobileTools` and `tvTools` come from
-`@e2e-dev/mobile/tools`.
+`beforeAll` and `afterAll` get them. `mobileTools`, `tvTools`, and `foldTools`
+come from `@e2e-dev/mobile/tools`.
 
 ## Related
 

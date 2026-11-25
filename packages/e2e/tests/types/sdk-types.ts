@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { json, junit, line, list as listReporter, markdown } from '../../src/reporters.ts';
+import { ctrf, json, junit, line, list as listReporter, markdown } from '../../src/reporters.ts';
 import {
   credentials,
   expect,
@@ -17,6 +17,8 @@ import {
   type ActionEvent,
   type ActionName,
   type Agent,
+  type APIRequest,
+  type WebResponse,
   type App,
   type ArtifactStore,
   type AsyncExpectation,
@@ -60,8 +62,9 @@ import {
   beforeAll,
   beforeEach,
   describe,
+  foldLastRun,
 } from '../../src/index.ts';
-import type { Engine, EngineAttemptContext, EngineCleanupContext, EngineDisposeContext, EngineFixtureContext, EngineHandle, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
+import type { Engine, EngineAppInfo, EngineAttemptContext, EngineCleanupContext, EngineDisposeContext, EngineFixtureContext, EngineHandle, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
 import {
   BASE_RULES,
   createGrammarTools,
@@ -246,6 +249,25 @@ customExecutorObservation.keyboardVisible satisfies boolean | undefined;
 ({ targets: [{ engine, app: { bundleId: 'dev.shop.app', permissions: { camera: 'allow' } } }] }) satisfies E2EConfig;
 // @ts-expect-error launch arguments are the strings the launch command takes
 ({ targets: [{ engine, app: { bundleId: 'dev.shop.app', launchArguments: [1] } }] }) satisfies E2EConfig;
+// An object value is a string, number, boolean, or list of strings, or undefined straight from the environment.
+declare const tokenFromEnv: string | undefined;
+({
+  targets: [{ engine, app: { bundleId: 'dev.shop.app', launchArguments: { AppleLanguages: ['fr'], AppleLocale: 'fr_FR', e2e: true, retries: 3, token: tokenFromEnv } } }],
+}) satisfies E2EConfig;
+// @ts-expect-error an object value is flat: no nested object
+({ targets: [{ engine, app: { bundleId: 'dev.shop.app', launchArguments: { locale: { language: 'fr' } } } }] }) satisfies E2EConfig;
+// @ts-expect-error a list value holds strings only
+({ targets: [{ engine, app: { bundleId: 'dev.shop.app', launchArguments: { languages: [1] } } }] }) satisfies E2EConfig;
+// An engine that predates the object form spreads `launchArguments`; the object arrives in `launchArgumentValues` only.
+declare const engineApp: EngineAppInfo;
+[...(engineApp.launchArguments ?? [])] satisfies string[];
+engineApp.launchArgumentValues?.['AppleLanguages'] satisfies string | number | boolean | readonly string[] | undefined;
+// An engine says it opens a file app, and is told at the check when the target's app is one.
+({ fileApps: true }) satisfies Pick<import('../../src/engine/index.ts').Engine, 'fileApps'>;
+({ targetName: 'web', fileApp: true }) satisfies import('../../src/engine/index.ts').EngineAppCheckInfo;
+// @ts-expect-error the declaration is a boolean, not a list of schemes
+({ fileApps: ['file:'] }) satisfies Pick<import('../../src/engine/index.ts').Engine, 'fileApps'>;
+
 // @ts-expect-error the app URL is the target's app.url, not a key of the target itself
 ({ targets: [{ engine, url: 'http://localhost:3000' }] }) satisfies E2EConfig;
 // @ts-expect-error an engine only drives the app: the target declares it
@@ -384,6 +406,9 @@ if (runEvent.type === 'step') {
 ({ targets, reporters: [listReporter(), json(), junit({ outputFile: 'reports/junit.xml' }), markdown(), 'junit', reporter] }) satisfies E2EConfig;
 // @ts-expect-error the junit reporter takes an outputFile, nothing else
 junit({ output: 'reports' });
+({ targets, reporters: ['ctrf', ctrf(), ctrf({ outputFile: 'reports/ctrf.json' })] }) satisfies E2EConfig;
+// @ts-expect-error the ctrf reporter takes an outputFile, nothing else
+ctrf({ output: 'reports' });
 ({
   name: 'dots',
   interactive: true,
@@ -477,6 +502,11 @@ declare const finishedRun: FinishedRun;
 finishedRun.status satisfies RunStatus;
 finishedRun.exitCode satisfies RunExitCode;
 finishedRun.lastRun satisfies FinishedRun['report'] | undefined;
+// A reporter folds a --last-failed rerun into the runs before it the way the runner does.
+foldLastRun(finishedRun.report, finishedRun.lastRun ?? finishedRun.report) satisfies Report;
+finishedRun.report.run.shard?.index satisfies number | undefined;
+// @ts-expect-error the shard marker is set or absent, never false
+({ cause: 'filtered', reason: 'outside the shard', otherShard: false }) satisfies NonNullable<Report['run']['results'][number]['skip']>;
 // @ts-expect-error the run status is a closed union
 'skipped' satisfies RunStatus;
 // @ts-expect-error the exit codes are the closed set a run ends with
@@ -512,6 +542,9 @@ void (screen.getByTestId('todo').allTextContents() satisfies Promise<string[]>);
 void (screen.getByTestId('todo').isHidden() satisfies Promise<boolean>);
 void (screen.getByTestId('todo').isDisabled() satisfies Promise<boolean>);
 void asyncExpectation.toBeAttached({ timeout: 1000 });
+void asyncExpectation.not.toBeEmpty({ timeout: 1000 });
+// @ts-expect-error toBeEmpty compares nothing, so it has no case to ignore
+void asyncExpectation.toBeEmpty({ ignoreCase: true });
 void asyncExpectation.toHaveText(['a', /b/], { timeout: 1000 });
 void asyncExpectation.toContainText(['a', /b/]);
 // @ts-expect-error a text list holds strings and RegExps only
@@ -525,10 +558,16 @@ void screen.getByRole('button').waitFor({ state: 'gone' });
 // Playwright's state flags and ignoreCase are taken where Playwright takes them, and nowhere else.
 void asyncExpectation.toBeChecked({ checked: false });
 void asyncExpectation.toBeVisible({ visible: false, timeout: 1000 });
+void asyncExpectation.toBeInViewport({ ratio: 0 });
+void asyncExpectation.toBeInViewport({ ratio: 0.5, timeout: 1000 });
 void asyncExpectation.toContainText('error', { ignoreCase: true });
 void asyncExpectation.toHaveAttribute('data-kind', 'error', { ignoreCase: true });
 // @ts-expect-error toBeChecked has no indeterminate state
 void asyncExpectation.toBeChecked({ indeterminate: true });
+// @ts-expect-error toBeInViewport takes a numeric ratio
+void asyncExpectation.toBeInViewport({ ratio: 'half' });
+// @ts-expect-error toBeInViewport has no threshold option
+void asyncExpectation.toBeInViewport({ threshold: 0.5 });
 // @ts-expect-error a value is compared as it is, case included
 void asyncExpectation.toHaveValue('a', { ignoreCase: true });
 // @ts-expect-error presence has no case to ignore
@@ -679,6 +718,9 @@ test.extend<{ x: number }>().runIf(true)('uses x', async ({ x }) => { x satisfie
 test.skipIf(true)('no body');
 // @ts-expect-error the registrar takes test options, not describe options
 test.runIf(true)('serial', { serial: true }, async () => {});
+// @ts-expect-error requires was removed; platforms scopes a test to targets
+test('scoped', { requires: ['browser'] }, async () => {});
+test('scoped', { platforms: ['web'] }, async () => {});
 // @ts-expect-error the registrar registers a test, it is not test.skip
 test.skipIf(true)(true, 'reason');
 // A condition of any non-Promise type passes, an unknown one included; a Promise must be awaited first.
@@ -787,6 +829,11 @@ void screen.getByLabel('Plan').selectOption({ value: 'pro', index: 1 });
 // @ts-expect-error role queries never match hidden nodes; visible is the one visibility knob
 screen.getByRole('button', { hidden: true });
 
+// A locator's screenshot is a file path under a label, as app.screenshot's is.
+void (screen.getByTestId('summary').screenshot('summary') satisfies Promise<string>);
+// @ts-expect-error the file goes with the attempt's artifacts; there is no path option.
+void screen.getByTestId('summary').screenshot({ path: 'summary.png' });
+
 // Coordinate input: a viewport point on screen, a node-relative one on a locator.
 declare const point: import('../../src/index.ts').Point;
 void (executorContext.actions.tapAt(point) satisfies Promise<PointTapResult>);
@@ -811,6 +858,15 @@ void screen.getByRole('row').dblclick({ modifiers: ['Shift'], timeout: 1_000 });
 // @ts-expect-error modifiers are the key grammar's modifier names
 void screen.getByRole('row').doubleTap({ modifiers: ['Hyper'] });
 void screen.getByRole('image').click({ position: point });
+void screen.getByRole('button').tap({ count: 3, timeout: 1_000 });
+void screen.getByRole('button').click({ count: 3, modifiers: ['Shift'] });
+// @ts-expect-error a tap count is a number
+void screen.getByRole('button').tap({ count: '3' });
+// @ts-expect-error a double tap is two taps already; count rides tap and click only
+void screen.getByRole('button').doubleTap({ count: 3 });
+declare const multiTapAction: Extract<import('../../src/engine/index.ts').LocatorAction, { kind: 'multiTap' }>;
+void (multiTapAction.count satisfies number);
+void (multiTapAction.modifiers satisfies readonly KeyModifier[] | undefined);
 // @ts-expect-error a point has both coordinates.
 void screen.tapAt({ x: 1 });
 // @ts-expect-error a path swipe names both ends.
@@ -1213,6 +1269,37 @@ void (expect(await readBody()).toMatchSchema(userSchema) satisfies { id: number 
 void (expect.soft(await readBody()).toMatchSchema(userSchema) satisfies { id: number } | undefined);
 void (expect(JSON.parse('{}')).toMatchSchema(userSchema) satisfies { id: number });
 void (expect.soft(JSON.parse('{}')).toMatchSchema(userSchema) satisfies { id: number } | undefined);
+
+// request: each call returns the WebResponse waitForResponse and route.fetch() return.
+test('request', async ({ request }) => {
+  void (request satisfies APIRequest);
+  const created = await request.post('/api/orders', { json: { sku: 'A1' }, headers: { authorization: 'Bearer t' } });
+  void (created satisfies WebResponse);
+  void (created.status satisfies number);
+  void ((await created.body()) satisfies Buffer);
+  // @ts-expect-error json() is unknown unless the caller names a type
+  void (await created.json()).id;
+  void ((await created.json<{ id: number }>()).id satisfies number);
+  void (expect(await created.json()).toMatchSchema(userSchema) satisfies { id: number });
+  expect(created.status).toBe(201);
+  await request.fetch('/api/orders', { method: 'PUT', body: 'raw' });
+  await request.get('/api/export', { timeout: 0 });
+  await request.get('/api/login', { redirect: 'manual' });
+  await request.get('/api/login', { redirect: 'follow' });
+  await request.get('/api/login', { redirect: 'error' });
+  // @ts-expect-error redirect accepts only follow, manual, or error
+  await request.get('/api/login', { redirect: 'none' });
+  // @ts-expect-error a timeout is milliseconds, not a string
+  await request.get('/api/export', { timeout: '45s' });
+  // @ts-expect-error the method goes in request.fetch's options, not a shorthand's
+  await request.get('/api/orders', { method: 'POST' });
+  // @ts-expect-error a body is a string; an object goes in json
+  await request.post('/api/orders', { body: { sku: 'A1' } });
+});
+// @ts-expect-error a project fixture typed as its own `request` conflicts with the built-in one
+test.extend<{ request: { hello(): string } }>({ request: async ({}, use) => { await use({ hello: () => 'mine' }); } });
+// @ts-expect-error request is a test fixture, so a worker fixture cannot name it
+test.extend<{}, { seeded: number }>({ seeded: [async ({ request }, use) => { void request; await use(1); }, { scope: 'worker' }] });
 // @ts-expect-error A function isn't inferred from a return-only generic.
 void expect(await readBody()).toPass();
 

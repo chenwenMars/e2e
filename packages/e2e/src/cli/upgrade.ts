@@ -14,14 +14,16 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import picocolors from 'picocolors';
 import { z } from 'zod';
+import { installedPackage } from '../internal/installed-package.ts';
 import { detectWorkspacePackageManager, execCommand, LOCKFILE_NAMES, type PackageManager } from '../internal/package-manager.ts';
 import { isCiMode } from '@e2e-dev/core/lib/config/resolve';
 import { insideProjectRoot, realpathOfExisting } from '@e2e-dev/core/lib/internal/paths';
+import { DEPENDENCY_SECTIONS, RUNNER } from '../internal/project-package.ts';
 import { compareVersions, parseVersion, satisfies } from '../internal/semver.ts';
 import type { UpgradeOutcome, UpgradeResult } from '../telemetry/events.ts';
 import { describeLinks, describeObstacles, findInstalledSkillDirs, planSkillInstall } from './init/agent-skill.ts';
 import { describeManifestError, readPackage, serializePackage } from './init/package.ts';
-import { readSkillFiles, SKILL_NAME } from './skill.ts';
+import { packagedSkillDirectory, readSkillFiles, SKILL_NAME } from './skill.ts';
 import type { UpgradeTarget } from './upgrade-target.ts';
 import { upgradeCelebration } from './star.ts';
 
@@ -42,14 +44,12 @@ interface SpawnOutcome {
   readonly error?: Error | undefined;
 }
 
-const RUNNER = 'e2e';
 const SCOPE = '@e2e-dev/';
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
 const RELEASES_URL = 'https://github.com/e2e-inc/e2e/releases/tag/';
 /** Each metadata request gets this long; a person waits on it. */
 const REGISTRY_TIMEOUT_MS = 15_000;
-/** The sections a package manager installs from, in the order a package is looked up. */
-const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
+const SECTIONS = DEPENDENCY_SECTIONS;
 type Section = (typeof SECTIONS)[number];
 /** Specs that do not name a registry version: a workspace, a path, a git or tarball URL, an alias, a pnpm catalog. */
 const NON_REGISTRY_SPEC = /^(?:workspace|link|file|portal|patch|catalog|npm|git|git\+[a-z]+|github|gitlab|bitbucket|https?):|[/\\]/u;
@@ -256,33 +256,13 @@ function declaredPackages(dir: string, manifest: Manifest): { declared: Declared
     for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
       if ((name !== RUNNER && !name.startsWith(SCOPE)) || seen.has(name)) continue;
       seen.add(name);
-      all.push({ name, section, spec, installed: installedVersion(dir, name) });
+      all.push({ name, section, spec, installed: installedPackage(dir, name)?.version });
     }
   }
   // The runner leads every list the command prints.
   all.sort((a, b) => Number(b.name === RUNNER) - Number(a.name === RUNNER));
   const registry = (entry: Declared): boolean => !NON_REGISTRY_SPEC.test(entry.spec.trim());
   return { declared: all.filter(registry), linked: all.filter((entry) => !registry(entry)) };
-}
-
-/** The version under the nearest `node_modules/<name>`, or undefined (not installed, or Plug'n'Play). */
-function installedVersion(dir: string, name: string): string | undefined {
-  return installedPackage(dir, name)?.version;
-}
-
-/** The nearest `node_modules/<name>` from `dir` up whose package.json names a version, or undefined (not installed, or Plug'n'Play). */
-function installedPackage(dir: string, name: string): { dir: string; version: string } | undefined {
-  for (let current = dir; ; current = path.dirname(current)) {
-    const packageDir = path.join(current, 'node_modules', name);
-    try {
-      const manifest: unknown = JSON.parse(readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
-      const version = typeof manifest === 'object' && manifest !== null && 'version' in manifest ? manifest.version : undefined;
-      if (typeof version === 'string') return { dir: packageDir, version };
-    } catch {
-      // Not here; a workspace hoists to a parent.
-    }
-    if (path.dirname(current) === current) return undefined;
-  }
 }
 
 /** The registry the package manager would use when it set one for this process, else npm's. */
@@ -586,8 +566,8 @@ function refreshSkills(projectDir: string, manager: PackageManager, out: (text: 
   const dirs = skillCopies(projectDir);
   if (dirs.length === 0) return;
   const installed = installedPackage(projectDir, RUNNER);
-  const skillDir = installed === undefined ? undefined : path.join(installed.dir, 'skills', SKILL_NAME);
-  const bundled = skillDir === undefined || !existsSync(path.join(skillDir, 'SKILL.md')) ? [] : readSkillFiles(skillDir);
+  const skillDir = installed === undefined ? undefined : packagedSkillDirectory(installed.dir);
+  const bundled = skillDir === undefined ? [] : readSkillFiles(skillDir);
   if (bundled.length === 0) {
     out(`The agent skill in ${listSkillDirs(dirs)} may be the old version's; refresh it with ${execCommand(manager, 'e2e init')}`);
     return;

@@ -215,8 +215,8 @@ export interface Engine {
    */
   readonly pointerActions?: readonly PointerActionKind[];
   /**
-   * The surface honors `modifiers` on the `tap`, `doubleTap`, and
-   * `secondaryTap` actions `perform` receives. Without it the harness fails
+   * The surface honors `modifiers` on the `tap`, `doubleTap`, `multiTap`,
+   * and `secondaryTap` actions `perform` receives. Without it the harness fails
    * an action that carries modifiers with `UNSUPPORTED_CAPABILITY` before it
    * reaches the engine.
    */
@@ -227,12 +227,18 @@ export interface Engine {
    * for the target before anything is prepared.
    */
   readonly selectsDevice?: boolean;
+  /**
+   * The engine reads the object form of `app.launchArguments` from
+   * `EngineAppInfo.launchArgumentValues`. Without it the harness refuses an
+   * object at config load.
+   */
+  readonly launchArgumentValues?: boolean;
   /** capability: keyboard - requires observation. Input to whatever holds focus; see `EngineKeyboard`. */
   readonly keyboard?: EngineKeyboard;
   /**
    * Named deterministic surfaces this engine contributes to TestFixtures
    * (a device fixture, a document fixture - anything). Keys become fixture and
-   * capability names; `requires: ['<name>']` gates at selection.
+   * capability names.
    */
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
   /**
@@ -357,9 +363,8 @@ export interface OperationContext {
 
 ### 能力
 
-引擎实现的成员决定其能力。`screen`、`Locator` 或 `app` 调用如果需要某项缺失的能力，会以 `UNSUPPORTED_CAPABILITY` 失败。[测试 API](#test-apis) 列出了各项功能所需的成员。以下三种缺失情况的处理方式不同：
+引擎实现的成员决定其能力。`screen`、`Locator` 或 `app` 调用如果需要某项缺失的能力，会以 `UNSUPPORTED_CAPABILITY` 失败。[测试 API](#test-apis) 列出了各项功能所需的成员。以下两种缺失情况的处理方式不同：
 
-- 如果测试通过 `requires` 声明了引擎没有的测试夹具，该测试会被跳过（`capability-unavailable`）。
 - 如果选中的测试使用 `test.setup` 会话，而引擎没有 `state`，则会在初始化运行前产生收集错误。
 - 如果引擎不支持视频录制，设置 `video` 模式会输出提示，且不会录制视频。
 
@@ -369,7 +374,7 @@ export interface OperationContext {
 | `readStyle` | `computed-style` | `observe` | 供只读项目工具使用的允许列表中的渲染属性。 |
 | `perform` + `actions` | `actions` | `observe` | 已声明种类的节点操作，带有平台可操作性检查。 |
 | `locate` | `location` | `observe` | `screen`、`Locator`、`expect(locator)`。 |
-| `tapModifiers: true` | - | `perform` | `tap`、`doubleTap` 和 `secondaryTap` 的 `modifiers`。 |
+| `tapModifiers: true` | - | `perform` | `tap`、`doubleTap`、`multiTap` 和 `secondaryTap` 的 `modifiers`。 |
 | `selectsDevice: true` | - | `prepare` | `e2e run --device`，由 `prepare` 绑定指定的设备。 |
 | `performAt` + `pointerActions` | `pointer` | `observe` | 在视口坐标点上执行一次指针操作，无需对应节点。 |
 | `keyboard.{type,press,dismiss?}` | `keyboard` | `observe` | 向当前焦点所在位置输入。 |
@@ -451,7 +456,6 @@ export type ComputedStyleValues = Readonly<Partial<Record<ComputedStyleProperty,
 | `app.back()` | `session.back` |
 | `app.restart()` | `session.restart` |
 | `app.clearState()` | `session.reset` |
-| `requires: ['<name>']` | `fixtures.<name>` |
 
 #### `engine.capabilities`
 
@@ -461,8 +465,6 @@ export type ComputedStyleValues = Readonly<Partial<Record<ComputedStyleProperty,
 const engine = kiosk({ host: 'kiosk.local' });
 engine.capabilities.has('location'); // true: the engine implements locate
 ```
-
-测试选择还会根据测试目标声明的应用种类，而非其引擎，对测试目标分类。带有 `app.url` 的测试目标具有 `browser`，带有 `app.bundleId` 或 `app.appPath` 的测试目标具有 `native-app`，因此测试可以声明 `requires: ['native-app']`。
 
 ```ts
 /**
@@ -1124,6 +1126,12 @@ export type LocatorAction =
       readonly modifiers?: readonly KeyModifier[];
     }
   | {
+      /** `count` taps in a row (3 or more; 2 is `doubleTap`): one multi-click in a browser, presses at the device's cadence on a device. */
+      readonly kind: 'multiTap';
+      readonly count: number;
+      readonly modifiers?: readonly KeyModifier[];
+    }
+  | {
       readonly kind:
         | 'check'
         | 'uncheck'
@@ -1174,7 +1182,7 @@ export const LOCATOR_ACTION_KINDS = [
 ] as const satisfies readonly LocatorActionKind[];
 
 /** Every action kind understood by this version of core. */
-export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads'] as const satisfies readonly LocatorActionKind[];
+export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap'] as const satisfies readonly LocatorActionKind[];
 ```
 
 #### 指针操作
@@ -1340,6 +1348,18 @@ export interface EngineAppCheckInfo {
 
 /** A permission's state when the app launches: held, refused, or not asked for yet, so the OS asks again. */
 export type AppPermissionState = 'grant' | 'deny' | 'reset';
+
+/** One value in the object form of `launchArguments`; the engine spells it for its platform. */
+export type LaunchArgumentValue = string | number | boolean | readonly string[];
+
+/** A target's launch arguments: the strings the launch command takes, or an object of argument name to value. */
+export type LaunchArguments = readonly string[] | Readonly<Record<string, LaunchArgumentValue | undefined>>;
+
+/** The object form after the shape check: the `undefined` entries are gone. */
+export type LaunchArgumentValues = Readonly<Record<string, LaunchArgumentValue>>;
+
+/** Launch arguments after the shape check: a list of strings, or an object. */
+export type ResolvedLaunchArguments = readonly string[] | LaunchArgumentValues;
 ```
 
 #### `EngineAppInfo`
@@ -1375,8 +1395,14 @@ export interface EngineAppInfo {
   readonly bundleId?: string;
   /** The build to install, as the target declared it; relative to `projectRoot`. */
   readonly appPath?: string;
-  /** Arguments every fresh launch passes the app. */
+  /** Arguments every fresh launch passes the app, when the target declared them as a list of strings. */
   readonly launchArguments?: readonly string[];
+  /**
+   * Arguments every fresh launch passes the app, when the target declared
+   * them as an object; only an engine that declares `launchArgumentValues`
+   * receives one.
+   */
+  readonly launchArgumentValues?: LaunchArgumentValues;
   /** Permissions the app holds, by name; what each state means is the engine's (a device sets them before every fresh launch). */
   readonly permissions?: Readonly<Record<string, AppPermissionState>>;
 }
@@ -1571,6 +1597,8 @@ export class InfrastructureError extends E2EError {
 | [`pollCondition`、`Deadline`](#pollcondition) | `Promise<void>`、`Deadline` |
 | [`validateJsonValue`](#validatejsonvalue) | `void` |
 | [`rejectUnknownKeys`](#rejectunknownkeys) | `void` |
+| [`checkLaunchArguments`](#checklauncharguments) | `ResolvedLaunchArguments \| undefined` |
+| [`appleUserDefaults`](#appleuserdefaults) | `readonly string[]` |
 | [`rejectUnknownOptions`](#rejectunknownoptions) | `void` |
 | [`obj`](#obj) | `WithoutUndefined<T>` |
 | [`raceAbort`、`withTimeout`、`withinCleanupBudget`](#timing-helpers) | `Promise<T>`、`Promise<T>`、`Promise<void>` |
@@ -1729,6 +1757,32 @@ rejectUnknownKeys('web()', options, ['browser', 'viewport']);
 
 - 如果某个已知键看起来可能是拼写错误的正确形式，消息会指出最接近的已知键，否则列出所有已知键。
 - 对于测试传给测试夹具方法的对象，将 `code` 设为 `'INVALID_ARGUMENT'`。
+
+#### `checkLaunchArguments`
+
+```ts
+export function checkLaunchArguments(
+  label: string,
+  declared: unknown,
+  code?: 'INVALID_CONFIG' | 'INVALID_ARGUMENT', // default: 'INVALID_CONFIG'
+): ResolvedLaunchArguments | undefined;
+```
+
+```ts
+const launchArguments = checkLaunchArguments('device.openApp({ launchArguments })', options.launchArguments, 'INVALID_ARGUMENT');
+// device.openApp({ launchArguments }).env must be a string, number, boolean, or array of strings, got null
+```
+
+#### `appleUserDefaults`
+
+```ts
+export function appleUserDefaults(launchArguments: ResolvedLaunchArguments): readonly string[];
+```
+
+```ts
+appleUserDefaults({ AppleLanguages: ['fr', 'en-GB'], e2e: true, offset: -1, mode: '(draft)' });
+// ['-AppleLanguages', '(fr, en-GB)', '-e2e', 'YES', '-offset', '"-1"', '-mode', '"(draft)"']
+```
 
 #### `rejectUnknownOptions`
 
@@ -2042,7 +2096,7 @@ import { test as base } from 'e2e';
 
 const test = base.extend<{ printer: { print(text: string): Promise<void> } }>();
 
-test('prints a receipt', { requires: ['printer'] }, async ({ printer }) => {
+test('prints a receipt', { platforms: ['kiosk'] }, async ({ printer }) => {
   await printer.print('Order 42');
 });
 ```
@@ -2253,12 +2307,27 @@ export interface SemanticNode {
    * select by its `readonly` attribute, an element whose ARIA role takes
    * `aria-readonly` by that attribute, any other editing host `false`), and
    * only where the platform knows, as Android does: absent means the node has
-   * no read-only state to read, not `false`.
+   * no read-only state to read, not `false`. `empty` is whether the node
+   * holds nothing, as Playwright's `toBeEmpty` reads it on the web (an input or
+   * textarea by its raw value, any other element by its trimmed text content),
+   * and on a device a text field by its value, any other node by the text
+   * and values in its subtree. An engine reports it on the nodes `locate`
+   * returns, never in an observation, and never on a secure field: absent
+   * means the engine does not say.
    */
   readonly states?: Readonly<
     Partial<
       Record<
-        'checked' | 'disabled' | 'selected' | 'expanded' | 'pressed' | 'focused' | 'hidden' | 'secure' | 'readonly',
+        | 'checked'
+        | 'disabled'
+        | 'selected'
+        | 'expanded'
+        | 'pressed'
+        | 'focused'
+        | 'hidden'
+        | 'secure'
+        | 'readonly'
+        | 'empty',
         boolean
       >
     >

@@ -212,6 +212,10 @@ export interface EngineManifest {
   readonly tapModifiers?: boolean;
   /** Requires `lifecycle/prepare`: `prepare` binds the device `e2e run --device` names. */
   readonly selectsDevice?: boolean;
+  /** The engine reads the object form of `app.launchArguments` from `EngineAppInfo.launchArgumentValues`. */
+  readonly launchArgumentValues?: boolean;
+  /** The engine opens an app whose `url` is a `file:` URL, read from the disk of the machine the harness runs on. */
+  readonly fileApps?: boolean;
   /** See `Engine.isolation`; left out for `attempt`. */
   readonly isolation?: 'worker';
 }
@@ -227,6 +231,7 @@ params are the member's arguments by name, with every `OperationContext` as
 | --- | --- | --- |
 | `engine/observe` | `{ operation, options? }` | `EngineSnapshot` |
 | `engine/readStyle` | `{ ref, properties, operation }` | `ComputedStyleValues` |
+| `engine/viewportIntersection` | `{ ref, operation }` | `ViewportIntersection`; leave `ratio` out, never `null`, when the platform cannot measure it |
 | `engine/locate` | `{ expression, operation }` | `SemanticNode[]` |
 | `engine/perform` | `{ ref, action, operation }` | `null` |
 | `engine/performAt` | `{ point, action, operation }` | `null` |

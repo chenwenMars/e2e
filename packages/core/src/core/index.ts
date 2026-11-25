@@ -19,6 +19,8 @@ export type {
   JsonPrimitive,
   JsonValue,
   KeyModifier,
+  LaunchArgumentValue,
+  LaunchArguments,
   Locator,
   LongPressOptions,
   Point,
@@ -41,4 +43,5 @@ export type {
   TapOptions,
   TextMatch,
   TextMatchOptions,
+  WebResponse,
 } from '../types.ts';

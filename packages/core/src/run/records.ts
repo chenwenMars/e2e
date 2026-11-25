@@ -48,7 +48,6 @@ export type SkipInfo =
       readonly cause:
         | SelfSkipCause
         | 'platform-unavailable'
-        | 'capability-unavailable'
         | 'setup-failed'
         | 'serial-predecessor-failed'
         | 'hook-failed'
@@ -62,6 +61,12 @@ export type SkipInfo =
 interface SkipDetail {
   readonly reason: string;
   readonly relatedId?: string;
+  /**
+   * Set on an unselected test of a sharded run (`--shard`) that this run's
+   * cut gave another shard, whatever the reason says. This marks the cut of
+   * this invocation. Shards rerunning their own failures may cut different sets.
+   */
+  readonly otherShard?: true;
 }
 
 export type ArtifactProducer = { kind: 'step'; stepId: string } | { kind: 'attempt' };

@@ -43,7 +43,7 @@ For a migration that spans several sessions, the [`migrate-to-e2e` skill](/codin
 | `devices.<name>.device.type` | `mobile({ device: 'iPhone 17' })` |
 | `configurations` | `targets`, one engine per platform |
 | Jest `maxWorkers` | `workers`, one per device |
-| `apps.<name>.launchArgs` | `app.launchArguments` on the target, a list of strings for each platform |
+| `apps.<name>.launchArgs` | `app.launchArguments` on the target. Use an object with the same keys, or a list of strings for each platform. On Android, each key is a separate typed extra on the launch intent. Detox puts all keys as strings in one `launchArgs` bundle extra, so change code that reads `getIntent().getBundleExtra("launchArgs")`. On iOS, each key is a `UserDefaults` argument: `false` becomes `NO`, and a string such as `a b` or `-1` gets quotes. If the app reads `ProcessInfo.processInfo.arguments`, use the list format. Nested objects are not supported |
 | `launchApp({ permissions })` | `app.permissions` on the target: `grant`, `deny`, `reset` for `YES`, `NO`, `unset`. More names are [planned](#planned) |
 
 ```ts title="e2e.config.ts"
@@ -55,12 +55,20 @@ export default {
     {
       name: 'ios',
       engine: mobile({ platform: 'ios' }),
-      app: { bundleId: 'com.example.app', appPath: 'ios/build/MyApp.app' },
+      app: {
+        bundleId: 'com.example.app',
+        appPath: 'ios/build/MyApp.app',
+        launchArguments: ['-mockServer', 'http://localhost:9001'],
+      },
     },
     {
       name: 'android',
       engine: mobile({ platform: 'android' }),
-      app: { bundleId: 'com.example.app', appPath: 'android/app/build/outputs/apk/debug/app-debug.apk' },
+      app: {
+        bundleId: 'com.example.app',
+        appPath: 'android/app/build/outputs/apk/debug/app-debug.apk',
+        launchArguments: ['--es', 'mockServer', 'http://localhost:9001'],
+      },
     },
   ],
   workers: 1,
@@ -108,7 +116,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `by.id('x')`, `by.text('t')`, `by.label('l')` | `screen.getByTestId('x')`, `screen.getByText('t')`, `screen.getByLabel('l')` |
 | `by.id('x').withAncestor(by.id('row'))` | `screen.getByTestId('row').getByTestId('x')` |
 | `.atIndex(n)` | `.nth(n)` |
-| `.tap()`, `.tap({ x, y })`, `.longPress()`, `.multiTap(2)` | `.tap()`, `.tap({ position: { x, y } })`, `.longPress()`, `.doubleTap()` |
+| `.tap()`, `.tap({ x, y })`, `.longPress()`, `.multiTap(2)`, `.multiTap(3)` | `.tap()`, `.tap({ position: { x, y } })`, `.longPress()`, `.doubleTap()`, `.tap({ count: 3 })` |
 | `.typeText(t)` | `.pressSequentially(t)` |
 | `.replaceText(t)`, `.clearText()`, `.tapReturnKey()` | `.fill(t)`, `.clear()`, `.press('Enter')` |
 | `.swipe('up', 'fast')` | `.swipe({ direction: 'down', momentum: 'fast' })`. Detox names the finger's direction, e2e the content's |
@@ -160,17 +168,16 @@ on purpose.
 | `artifacts.plugins.log`, `--record-logs` | `adb logcat` or `xcrun simctl spawn booted log stream` in a CI step |
 | `by.id('x').and(by.text('y'))` | `.filter({ hasText })`, or `device.locator('id=x label="y"')` |
 | `system.element(by.system.label('Allow'))` | `device.alert('accept' \| 'dismiss')`, or `app.permissions` so no prompt shows |
-| `.longPressAndDrag()`, `.swipe()` offset, `.multiTap(3)` | `.dragTo(target)`, `screen.swipe({ from, to })`, repeated `.tap()` |
+| `.longPressAndDrag()`, `.swipe()` offset | `.dragTo(target)`, `screen.swipe({ from, to })` |
 | `.scrollTo('bottom')` | `list.scrollUntilVisible(lastRow)`, or the first row with `{ direction: 'up' }` |
 | `.tapBackspaceKey()` | `.fill(t)` with the shorter text |
 | `.setDatePickerDate()`, `.setColumnToValue()`, `.adjustSliderToPosition()` | An `agent.act` goal, or `screen.swipe({ from, to })` on a slider |
 | `.toHaveValue(v)` outside a form control | `expect(device.locator('id=x value="v"')).toBeVisible()` |
 | `permissions` for `health`, `homekit`, `speech`, `faceid`, `userTracking`; values `always`, `inuse`, `limited` | Tap the prompt's button, or `device.alert('accept')` |
 | `device.sendUserNotification()`, `.pinch()` | `client.apps.push()`, `client.interactions.pinch()` on [`unstable_raw`](/reference/mobile#unstable_raw) |
-| `launchApp({ languageAndLocale })` | On iOS, `app.launchArguments: ['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR']`, see [Run the app in another language](/mobile#run-the-app-in-another-language) |
+| `launchApp({ languageAndLocale })` | On iOS, `app.launchArguments: { AppleLanguages: ['fr'], AppleLocale: 'fr_FR' }`, see [Run the app in another language](/mobile#run-the-app-in-another-language) |
 | Jest `globalSetup`, `globalTeardown` | Start dependencies before the run |
 | `device.reverseTcpPort()` | Run `adb reverse` in a CI step |
-| `launchArgs` as one key-value map | `['-key', 'value']` on iOS, `['--es', 'key', 'value']` on Android |
 | `.getAttributes()` | `.textContent()`, `.inputValue()`, `.isEnabled()`, `.isVisible()`, `.isChecked()`, `.boundingBox()` |
 | `device.setStatusBar()` | `xcrun simctl status_bar`. `toHaveScreenshot` holds the status bar fixed |
 

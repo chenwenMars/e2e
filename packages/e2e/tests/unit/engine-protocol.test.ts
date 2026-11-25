@@ -26,6 +26,7 @@ import {
   type SemanticNode,
 } from '@e2e-dev/core/lib/engine/index';
 import { resolveConfig } from '../../src/config/resolve-run.ts';
+import { engineAppInfo } from '@e2e-dev/core/lib/config/app';
 import { ConfigurationError, TestTimeoutError } from '@e2e-dev/core/lib/internal/errors';
 import { encodeLocatorAction, decodeLocatorAction } from '@e2e-dev/core/lib/engine/protocol/protocol';
 import { protocolEngine } from '@e2e-dev/core/lib/engine/protocol/client';
@@ -131,6 +132,17 @@ describe('engine protocol', () => {
     await remote.dispose!(cleanup);
     const legacy = overLoopback(toy({ actions: LOCATOR_ACTION_KINDS, perform }));
     expect(legacy.remote.actions).not.toContain('setInputFilePayloads');
+  });
+
+  it('advertises multiTap and carries its count and modifiers over JSON-RPC unchanged', async () => {
+    const perform = vi.fn<NonNullable<Engine['perform']>>(async () => undefined);
+    const { remote } = overLoopback(toy({ actions: ['tap', 'multiTap'], perform }));
+    expect(remote.actions).toContain('multiTap');
+    await remote.init!(initInfo());
+    const action = { kind: 'multiTap', count: 3, modifiers: ['Shift'] } as const;
+    await remote.perform!({ id: 'root', revision: '1' }, action, operation());
+    expect(perform).toHaveBeenCalledWith(expect.anything(), action, expect.anything());
+    await remote.dispose!(cleanup);
   });
 
   it('carries a snapshot with its pixels byte for byte', async () => {
@@ -572,6 +584,8 @@ describe('engine protocol', () => {
       { ...base, methods: ['engine/observe', 'engine/teleport'] },
       { ...base, methods: ['engine/readStyle'] },
       { ...base, methods: ['engine/observe'], actions: ['tap'] },
+      { ...base, methods: ['engine/observe'], actions: ['blur'] },
+      { ...base, methods: ['engine/viewportIntersection'] },
       { ...base, methods: ['engine/observe'], tapModifiers: true },
       { ...base, methods: ['engine/observe'], selectsDevice: true },
       // The client serves prepare for finish alone, which would drop the device it never forwards.
@@ -585,6 +599,103 @@ describe('engine protocol', () => {
       expect(validate(refused), JSON.stringify(refused)).toBe(false);
       expect(() => connectEngine({ manifest: refused as never, transport: loopbackTransport(local) }), JSON.stringify(refused)).toThrow(ConfigurationError);
     }
+    // Only a worker-isolated engine names its isolation; `attempt` is the default, left out.
+    expect(validate({ ...base, methods: ['engine/observe'], isolation: 'attempt' })).toBe(false);
+  });
+
+  describe('launch arguments', () => {
+    const resolveTarget = (engine: EngineHandle, launchArguments: unknown) =>
+      resolveConfig(
+        { targets: [{ name: 'phone', platform: 'toy', engine, app: { bundleId: 'dev.shop.app', launchArguments: launchArguments as never } }] },
+        { projectRoot: process.cwd(), env: {} as NodeJS.ProcessEnv },
+      ).targets[0]!;
+
+    const prepare = (target: ReturnType<typeof resolveTarget>) =>
+      target.engine!.prepare!({ runId: 'run', targetName: target.name, projectRoot: process.cwd(), app: engineAppInfo(target.app), slots: 1, env: {}, headed: false, signal: new AbortController().signal, log: () => {} });
+
+    it('hands an engine that predates the object form a list it can spread, and refuses an object at config load', async () => {
+      const spread: string[][] = [];
+      const legacy = defineEngine(
+        toy({
+          validateApp(app) {
+            spread.push([...(app.launchArguments ?? [])]);
+          },
+          async prepare(info) {
+            spread.push([...(info.app.launchArguments ?? [])]);
+          },
+        }),
+      );
+      await prepare(resolveTarget(legacy, ['-AppleLocale', 'fr_FR']));
+      expect(spread).toEqual([
+        ['-AppleLocale', 'fr_FR'],
+        ['-AppleLocale', 'fr_FR'],
+      ]);
+
+      expect(() => resolveTarget(legacy, { AppleLocale: 'fr_FR', AppleLanguages: ['fr'] })).toThrowError(
+        expect.objectContaining({
+          code: 'INVALID_CONFIG',
+          message:
+            'target "phone" app.launchArguments is an object, and engine "toy" takes only a list of strings: write the arguments as a list, or use an engine version that supports the object syntax',
+        }),
+      );
+      expect(spread).toHaveLength(2);
+    });
+
+    it('carries fileApps in the manifest, so a served engine opens a file app and one that does not declare it is refused', () => {
+      const { local, remote } = overLoopback(toy({ fileApps: true }));
+      expect(describeEngine(local).fileApps).toBe(true);
+      expect(remote.fileApps).toBe(true);
+      const plain = overLoopback(toy({}));
+      expect(describeEngine(plain.local).fileApps).toBeUndefined();
+      expect(plain.remote.fileApps).not.toBe(true);
+    });
+
+    it('refuses a server that does not declare the fileApps its manifest promised', async () => {
+      const local = defineEngine(toy({}));
+      const remote = connectEngine({ manifest: { ...describeEngine(local), fileApps: true }, transport: loopbackTransport(local) });
+      await expect(remote.init!(initInfo())).rejects.toThrow(/fileApps is false, declared true/);
+    });
+
+    it('refuses a fileApps flag that is not a boolean', () => {
+      expect(() => defineEngine(toy({ fileApps: 'yes' as never }))).toThrow(/fileApps must be a boolean/);
+    });
+
+    it('carries the object form to an engine that declares launchArgumentValues', async () => {
+      const seen: unknown[] = [];
+      const { local, remote } = overLoopback(
+        toy({
+          launchArgumentValues: true,
+          async prepare(info) {
+            seen.push(info.app);
+          },
+        }),
+        {
+          validateApp(app) {
+            seen.push(app);
+          },
+        },
+      );
+      expect(describeEngine(local).launchArgumentValues).toBe(true);
+      expect(remote.launchArgumentValues).toBe(true);
+
+      const launchArgumentValues = { AppleLocale: 'fr_FR', AppleLanguages: ['fr'], e2e: true, retries: 3 };
+      await prepare(resolveTarget(remote, { ...launchArgumentValues, token: undefined }));
+      expect(seen).toEqual([
+        { bundleId: 'dev.shop.app', launchArgumentValues },
+        { bundleId: 'dev.shop.app', launchArgumentValues },
+      ]);
+
+      seen.length = 0;
+      await prepare(resolveTarget(remote, ['-e2e', 'YES']));
+      expect(seen).toEqual([
+        { bundleId: 'dev.shop.app', launchArguments: ['-e2e', 'YES'] },
+        { bundleId: 'dev.shop.app', launchArguments: ['-e2e', 'YES'] },
+      ]);
+    });
+
+    it('refuses a launchArgumentValues flag that is not a boolean', () => {
+      expect(() => defineEngine(toy({ launchArgumentValues: 'yes' as never }))).toThrow(/launchArgumentValues must be a boolean/);
+    });
   });
 
   it('serves every in-process target through one protocol client and leaves a connected engine as declared', () => {
@@ -609,6 +720,10 @@ describe('engine protocol', () => {
     expect(() => connectEngine({ manifest: { name: 'x', version: '1', spiVersion: 1, methods: ['engine/perform'] }, transport })).toThrow(/perform without observe/);
     expect(() => connectEngine({ manifest: { name: 'x', version: '1', spiVersion: 1, methods: ['engine/observe', 'engine/perform'] }, transport })).toThrow(/perform without actions/);
     expect(() => connectEngine({ manifest: { name: 'x', version: '1', spiVersion: 1, methods: ['engine/observe', 'engine/observe'] }, transport })).toThrow(/twice/);
+    // The schema cannot require engine/locate beside it: resolveLocators builds locate on the client.
+    const measuring = { name: 'x', version: '1', spiVersion: 1 as const, methods: ['engine/observe', 'engine/viewportIntersection'] as const };
+    expect(() => connectEngine({ manifest: measuring, transport })).toThrow(/viewportIntersection without locate/);
+    expect(connectEngine({ manifest: measuring, transport, resolveLocators: true }).capabilities.has('viewport-intersection')).toBe(true);
   });
 });
 

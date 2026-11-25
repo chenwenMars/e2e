@@ -119,7 +119,7 @@ por idioma:
   engine: mobile({ platform: 'ios' }),
   app: {
     bundleId: 'com.example.app',
-    launchArguments: ['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR'],
+    launchArguments: { AppleLanguages: ['fr'], AppleLocale: 'fr_FR' },
   },
 }
 ```
@@ -494,6 +494,13 @@ desligado: no iOS, um iPhone antes de um iPad antes de uma Apple TV; no
 Android, um celular ou tablet antes de uma TV; depois o sistema operacional
 mais recente; depois a ordem dos nomes. Dois workers nunca controlam o mesmo
 dispositivo.
+
+Para rodar um alvo em outro dispositivo em uma única execução, passe o nome do
+dispositivo, o UDID de um simulador ou o serial de um emulador com
+`--device`, e o alvo com `--target` quando vários alvos selecionados podem
+receber um dispositivo:
+`e2e run --target iphone --device 'iPad Pro 13-inch (M5)'`.
+A execução controla esse único dispositivo, no lugar do `device` do alvo.
 
 ## Ferramentas do agente
 

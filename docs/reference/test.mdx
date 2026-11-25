@@ -628,7 +628,6 @@ blocked event loop hangs it.
 | [`fail`](#fail) | `boolean \| string` | - |
 | [`only`](#only) | `boolean` | - |
 | [`platforms`](#platforms) | `readonly string[]` | - |
-| [`requires`](#requires) | `readonly Capability[]` | - |
 | [`session`](#session) | `string` | - |
 | [`agentContext`](#agentcontext) | `string` | - |
 | [`agent`](#agent) | `string \| readonly string[]` | the run's agents |
@@ -716,27 +715,6 @@ Platforms the test runs on. Other targets skip it. Innermost wins.
 ```ts
 test('uses Face ID', { platforms: ['ios'] }, async ({ app }) => {});
 ```
-
-#### `requires`
-
-Capabilities the target must have. A target that lacks one skips the test at
-selection. Innermost wins.
-
-```ts
-test('onboarding asks for the camera', { requires: ['native-app'] }, async ({ app, agent }) => {
-  await app.open();
-  await agent.assert('The app asks for camera access');
-});
-```
-
-Accepted values:
-
-- The harness capabilities of the target's engine: `observation`, `actions`,
-  `location`, `pointer`, `keyboard`, `computed-style`, `state`, `artifacts`.
-- One per built-in fixture an engine contributes: `browser`, `device`. See
-  [the engine contract](/reference/engine#engine).
-- The kind of app the target declares: `browser` for an `app.url`,
-  `native-app` for an `app.bundleId` or `app.appPath`.
 
 #### `session`
 
@@ -835,7 +813,7 @@ describe('checkout', { serial: true }, () => {
 
 | Throws | When |
 | --- | --- |
-| `COLLECTION_ERROR` | A member sets `retries`, `trace`, `video`, `session`, `platforms`, `requires`, `skip`, `only`, or a nested `serial`. |
+| `COLLECTION_ERROR` | A member sets `retries`, `trace`, `video`, `session`, `platforms`, `skip`, `only`, or a nested `serial`. |
 | `COLLECTION_ERROR` | A member registers through `test.skip(title, fn)`, `test.skipIf`, `test.runIf`, or `test.fixme(title, fn)`. |
 
 #### `sessions`
@@ -851,7 +829,7 @@ A static, non-empty array of unique names. Each name matches
 
 ### Fixtures
 
-Built-in fixtures are the fixtures a `test` has without `test.extend`: five
+Built-in fixtures are the fixtures a `test` has without `test.extend`: six
 on every engine, and the ones the target's engine contributes. Each has a
 scope on each engine.
 
@@ -861,6 +839,7 @@ scope on each engine.
 | [`app`](/reference/app) | `App` | test | worker |
 | [`screen`](/reference/screen) | `Screen` | test | worker |
 | `platform` | `string` | worker | worker |
+| [`request`](/reference/request) | `APIRequest` | test | test |
 | [`session`](#test-setup) | `SetupSession` | test | test |
 | [`browser`](/reference/web) | `Browser` | test | - |
 | [`device`](/reference/mobile#device) | `Device` | - | worker |
@@ -888,7 +867,7 @@ reads the names from the function's source. A [`test.each`](#test-each) or
 
 | Throws | When |
 | --- | --- |
-| `COLLECTION_ERROR` | A test that runs on a target, or one of its hooks, names a fixture the target does not have. No test runs. Declare `requires: ['browser']`, `platforms`, or `test.skipIf` to skip such tests on that target instead. |
+| `COLLECTION_ERROR` | A test that runs on a target, or one of its hooks, names a fixture the target does not have. No test runs. Declare `platforms` or `test.skipIf` to skip such tests on that target instead. |
 | `COLLECTION_ERROR` | A test body, a hook, or a fixture function takes the whole object (`async (fixtures) => {}`), a rest property (`{ app, ...rest }`), or a computed property, or is a bound function (`fn.bind()`), whose parameters cannot be read. |
 
 <Note>
@@ -1276,8 +1255,6 @@ export interface TestOptions {
   only?: boolean;
   /** Platforms the test runs on; other targets skip it. Innermost wins. */
   platforms?: readonly string[];
-  /** Capabilities the target must have; otherwise the test is skipped at selection. Innermost wins. */
-  requires?: readonly Capability[];
   /** Session a setup test saved, restored before the body runs. */
   session?: string;
   /** Extra context for agent steps; layers are concatenated outermost first. */
@@ -1331,6 +1308,8 @@ export interface TestFixtures {
   readonly screen: Screen;
   /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
   readonly platform: string;
+  /** HTTP calls, each one a step; a path resolves against the app URL. */
+  readonly request: APIRequest;
 }
 
 export interface SetupFixtures extends TestFixtures {
