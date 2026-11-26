@@ -73,6 +73,8 @@ function makeTarget(name: string, index: number, engine?: EngineHandle): Resolve
     declaredApp: EMPTY_DECLARED,
     trace: { mode: 'off', source: 'default' },
     video: { mode: 'off', source: 'default' },
+    fullyParallel: false,
+    fixtureScopes: new Map(),
   };
 }
 
@@ -99,8 +101,10 @@ function makeTest(file: string, title: string, overrides: Partial<CollectedTest>
     file,
     id: `${file}::${title}`,
     serialRoot: undefined,
+    parallel: { declared: false, ordered: undefined, suiteHooks: false },
     serialId: undefined,
     selected: true,
+    focused: false,
     ...overrides,
   };
 }
@@ -461,7 +465,7 @@ async function run(
     ...(overrides.maxFailures === undefined ? {} : { maxFailures: overrides.maxFailures }),
     ...(overrides.timeLimit === undefined ? {} : { timeLimit: overrides.timeLimit }),
     ...(overrides.subscribeTargetFailures === undefined ? {} : { subscribeTargetFailures: overrides.subscribeTargetFailures }),
-    plans: buildWorkPlans(selection, collection, '/project').map((plan): TargetWorkPlan => {
+    plans: buildWorkPlans(selection, collection, '/project', overrides.workers ?? 2).map((plan): TargetWorkPlan => {
       const workers = overrides.preparedWorkers?.[plan.target.name];
       return workers === undefined ? plan : { ...plan, workers };
     }),

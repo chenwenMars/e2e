@@ -7,8 +7,8 @@ description: Every configuration key, its default, its valid range, and the envi
 
 `e2e.config.ts` configures the runner: the targets tests run on, the app each
 one tests, the agents, and the replay cache. Export an object with
-`satisfies E2EConfig`, which checks its shape and keeps its inferred types.
-The runner validates the config again at load, including ranges and rules
+`satisfies E2EConfig` to check its shape and keep its inferred types, or
+pass it to [`defineConfig`](#defineconfig). The runner validates the config again at load, including ranges and rules
 TypeScript cannot check.
 For the options most projects change, see [Configure the project](/quickstart#configure-the-project).
 
@@ -29,6 +29,32 @@ export default {
 
 ## Reference
 
+### `defineConfig`
+
+Returns the config it's given. Use it in place of `satisfies E2EConfig`.
+
+```ts title="e2e.config.ts"
+import { defineConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default defineConfig({
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+});
+```
+
+- As with `satisfies E2EConfig`, the editor completes every key, and an
+  unknown top-level key is a type error.
+- The config keeps its inferred type, so `typeof config` still works as a
+  type argument of [`test.extend`](/reference/test#test-extend).
+- Every rule below is enforced when the runner resolves the config, not when
+  `defineConfig` is called.
+
+```ts
+export function defineConfig<const Config extends E2EConfig>(
+  config: Config & { readonly [Key in Exclude<keyof Config, keyof E2EConfig>]: never },
+): Config;
+```
+
 ### Top level
 
 | Option | Type | Default |
@@ -46,6 +72,7 @@ export default {
 | [`failOnSkippedFailure`](#failonskippedfailure) | `boolean` | `false` |
 | [`maxDuration`](#maxduration) | `number` | - |
 | [`workers`](#workers) | `number` | half the cores, `1` in CI |
+| [`fullyParallel`](#fullyparallel) | `boolean` | `false` |
 | [`reporters`](#reporters) | `(BuiltinReporter \| Reporter)[]` | `['list']` |
 | [`output`](#output) | `string` | `'.e2e'` |
 | [`artifacts`](#artifacts) | `ArtifactsConfig` | local only |
@@ -262,6 +289,24 @@ workers: 4, // default: 1 in CI, else half the cores
   before that, as
   [Start the likeliest first](/filters#start-the-likeliest-first) says.
 
+#### `fullyParallel`
+
+Runs the tests of one file at the same time on separate workers, in every
+file.
+
+```ts
+fullyParallel: true, // default: false
+```
+
+- By default, files run in parallel and a file's tests run in order on one
+  worker.
+- It works as [`parallel: true`](/reference/test#parallel) on every file.
+  That entry has the rules for hooks, serial groups, and `parallel: false`.
+- A target's `fullyParallel` wins over it. `--fully-parallel` wins over
+  both.
+- With one worker, the default in CI, tests still run one at a time. Set
+  [`workers`](#workers) above 1.
+
 #### `reporters`
 
 The reporters of the run: built-in ids, and reporter objects such as the
@@ -306,6 +351,7 @@ targets: [
 | [`app`](#the-app-under-test) | `TargetApp` | - |
 | [`trace`](#trace) | `RecordingMode` | the config's `trace` |
 | [`video`](#video) | `RecordingMode` | the config's `video` |
+| [`fullyParallel`](#fullyparallel) | `boolean` | the config's |
 
 - `{ engine: web(), app: { url } }` is a complete target.
 - A test whose `platforms` leaves out the target's platform is skipped for
@@ -389,7 +435,7 @@ targets: [
 | [`identity`](#identity) | `string` | derived from the app |
 | [`environment`](#environment) | `'test' \| 'staging' \| 'production'` | `'test'` or `'production'` |
 | [`launchArguments`](#launcharguments) | `string[] \| Record<string, LaunchArgumentValue>` | - |
-| [`permissions`](#permissions) | `Record<string, AppPermissionState>` | - |
+| [`permissions`](#permissions) | `Record<string, AppPermissionState> \| 'all'` | - |
 | [`command`](#command) | `CommandConfig` | - |
 | [`readyUrl`](#readyurl) | `string` | `url` |
 
@@ -560,13 +606,15 @@ Permissions the app holds, by name.
 permissions: { camera: 'grant' },
 ```
 
-Each is `'grant'`, `'deny'`, or `'reset'`.
+Each is `'grant'`, `'deny'`, or `'reset'`. `permissions: 'all'` grants
+every permission the target's engine can grant.
 
 - A `mobile()` target sets each one before every fresh launch. See
   [permissions](/reference/mobile#engine).
 - A `web()` target takes `'grant'` only and grants it to every page of the
   attempt, on any origin. Headless Chromium refuses a permission left out. See
-  [Granting browser permissions](/web#granting-browser-permissions).
+  [Granting browser permissions](/web#granting-browser-permissions). `'all'`
+  grants each name in the table below for its browser.
 
 | Browser | Names |
 | --- | --- |
@@ -1527,7 +1575,7 @@ CI mode is on unless `CI` is unset, blank, `0`, or `false`.
 | `retries` | `0` | `1` |
 | `workers` | `max(1, floor(availableParallelism() / 2))` | `1` |
 | `cache` | `read-write` | `read-only` when unset |
-| `test.only` | allowed | `ONLY_IN_CI`, exit code 2 |
+| `test.only`, `describe.only` | allowed | `ONLY_IN_CI`, exit code 2 |
 | `command.reuseExisting` | honored | ignored, with a notice |
 
 ## Loading
@@ -1690,6 +1738,8 @@ export interface E2EConfig {
   maxDuration?: number;
   /** Parallel workers, 1 through 1024; default 1 in CI, else half the cores. An engine may cap it lower. */
   workers?: number;
+  /** Runs the tests of one file at the same time on separate workers; default false. */
+  fullyParallel?: boolean;
   /** `{ store }` hands every artifact to a host store as it is produced. */
   artifacts?: ArtifactsConfig;
   /** Which tests keep a trace page; default `retain-on-failure`. */
@@ -1733,6 +1783,8 @@ export interface Target {
   trace?: RecordingMode;
   /** Which attempts on this target record a video, in place of the config's `video`. */
   video?: RecordingMode;
+  /** Whether this target runs the tests of one file in parallel, in place of the config's `fullyParallel`. */
+  fullyParallel?: boolean;
 }
 ```
 

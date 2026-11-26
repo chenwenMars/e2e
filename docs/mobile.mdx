@@ -90,6 +90,12 @@ app: {
   `app.clearState()` resets them with the data, then sets them again.
 - `deny` on iOS tells the app no without a prompt. On Android it revokes
   the permission, so the OS asks again.
+- `permissions: 'all'` grants every permission the platform can set: each
+  runtime permission the app declares on Android, and each privacy service
+  the runtime can set on an iOS simulator, with location `always`. Android
+  skips permissions it grants at install, such as `INTERNET`. The simulator
+  refuses to set notifications, so accept that prompt with
+  `device.alert('accept')`.
 - The warm-up before the run passes neither, so start each test with
   `app.open()`.
 - Arguments that select a build mode change what the app is. Give each mode
@@ -678,6 +684,8 @@ an interrupt `signal`, and a `log` that reaches the reporter.
 - A target with nothing to run leases nothing.
 - Set `installedApp` only when the request has an `appPath`. Otherwise the
   run fails.
+- To install the request's `appPath` through the lease's daemon, return
+  `installLeasedApp(request, lease)` from `@e2e-dev/mobile/lease`.
 
 **`release`** runs after the last worker exits, within `cleanupTimeout`, on
 every exit path: a failure, an interrupt, or a `prepare` that threw. It gets

@@ -17,6 +17,7 @@ import {
   type EngineAppCheckInfo,
   type EngineAppDeclaration,
   type EngineHandle,
+  type EngineIsolation,
 } from '@e2e-dev/core/engine';
 import { createRequire } from 'node:module';
 import type { WebFixtures } from './fixtures.ts';
@@ -60,9 +61,10 @@ export function surfaceOf(engine: EngineHandle): PlaywrightLiveSurface | undefin
  * names this package: a project sees `@e2e-dev/core` only through its
  * dependencies, and TypeScript cannot write that path in a declaration.
  */
-export interface WebEngine extends EngineHandle<WebFixtures> {}
+export interface WebEngine<Platform extends string = string, Isolation extends EngineIsolation = EngineIsolation>
+  extends EngineHandle<WebFixtures, Platform, Isolation> {}
 
-export function web(options: WebOptions = {}): WebEngine {
+export function web(options: WebOptions = {}): WebEngine<'web', 'attempt'> {
   if ('allowedOrigins' in options) {
     throw new ConfigurationError(
       'INVALID_CONFIG',
@@ -116,7 +118,7 @@ export function web(options: WebOptions = {}): WebEngine {
     );
   }
   const surface = new PlaywrightSurface(options);
-  const handle = defineEngine<WebFixtures>({
+  const handle = defineEngine<WebFixtures, 'web', 'attempt'>({
     name: 'web',
     version: ownVersion(),
     spiVersion: 1,
@@ -146,6 +148,8 @@ export function web(options: WebOptions = {}): WebEngine {
       type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
       press: (key, operation) => surface.pressKey(key, operation),
     },
+    // `app.permissions: 'all'` grants every name the browser takes; see grantPermissions.
+    grantsAllPermissions: true,
     // A provider or a CDP attach speaks CDP, so it takes Chromium's names.
     validateApp: (app, info) => validateApp(app, info, options),
     ...(isSecret(options.basicAuth?.password) ? { secrets: [options.basicAuth.password] } : {}),

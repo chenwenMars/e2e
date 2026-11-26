@@ -8,7 +8,7 @@ import { isEngineHandle } from '../engine/index.ts';
 import { protocolEngine, type EngineClientHandle } from '../engine/protocol/client.ts';
 import { ConfigurationError } from '../internal/errors.ts';
 import type { ResolvedRecording } from '../internal/recording-modes.ts';
-import type { Target } from '../types.ts';
+import type { FixtureScope, Target } from '../types.ts';
 import { checkTargetApp, digestTargetApp, resolveTargetApp, TARGET_KEYS, unknownTargetKey, type ResolvedApp, type TargetAppDeclaration } from './app.ts';
 import { isRecord } from './command.ts';
 import { describeValue } from './validate.ts';
@@ -34,21 +34,29 @@ export interface ResolvedTarget {
   readonly trace: ResolvedRecording;
   /** Which attempts on the target record a video: `--video`, else the target's `video`, else the config's, else `off`. A test's own `video` wins over it. */
   readonly video: ResolvedRecording;
+  /** Whether the target runs the tests of one file in parallel: `--fully-parallel`, else the target's `fullyParallel`, else the config's, else false. */
+  readonly fullyParallel: boolean;
+  /**
+   * Engine fixture scopes shared by all targets in the config. On a target
+   * without the fixture, the scope is `worker` if `isolation: 'worker'` is
+   * set on every engine with the fixture, and `test` otherwise.
+   */
+  readonly fixtureScopes: ReadonlyMap<string, FixtureScope>;
 }
 
 /** A safe artifact path segment: the filename alphabet, and never `.` or `..`, which would name a directory's self or parent. */
 export const TARGET_NAME_PATTERN = /^(?!\.+$)[A-Za-z0-9_.-]+$/;
 
 /**
- * Resolves `targets`: each target's name, platform, engine, recordings, and
- * app, without the run's ports. An engine in this process is served over
+ * Resolves `targets`: each target's name, platform, engine, recordings,
+ * `fullyParallel`, and app, without the run's ports. An engine in this process is served over
  * the engine protocol, so each call crosses the wire format a remote engine
  * would receive.
  */
 export function resolveTargets(
   declared: unknown,
   projectRoot: string,
-  recordings: (target: Target, where: string) => Pick<ResolvedTarget, 'trace' | 'video'>,
+  settings: (target: Target, where: string) => Pick<ResolvedTarget, 'trace' | 'video' | 'fullyParallel'>,
 ): readonly ResolvedTarget[] {
   if (declared === undefined) {
     throw new ConfigurationError(
@@ -61,7 +69,8 @@ export function resolveTargets(
   }
   const seen = new Set<string>();
   const defaulted = new Set<string>();
-  return (declared as readonly unknown[]).map((entry, index): ResolvedTarget => {
+  const fixtureScopes = new Map<string, FixtureScope>();
+  const targets = (declared as readonly unknown[]).map((entry, index): ResolvedTarget => {
     if (!isRecord(entry)) throw new ConfigurationError('INVALID_CONFIG', `targets[${index}] must be an object, got ${describeValue(entry)}`);
     const target = entry as Target;
     // Errors raised before the name settles point at the entry itself.
@@ -103,9 +112,18 @@ export function resolveTargets(
       engine,
       app: resolveTargetApp(name, declaredApp, projectRoot),
       declaredApp,
-      ...recordings(target, where),
+      ...settings(target, where),
+      fixtureScopes,
     };
   });
+
+  for (const { engine } of targets) {
+    for (const fixture of Object.keys(engine?.fixtures ?? {})) {
+      if (fixtureScopes.get(fixture) !== 'test') fixtureScopes.set(fixture, engine?.isolation === 'worker' ? 'worker' : 'test');
+    }
+  }
+
+  return targets;
 }
 
 /**

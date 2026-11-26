@@ -97,7 +97,7 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 
 | Code | Usual cause | Fix |
 | --- | --- | --- |
-| `CONFIG_LOAD_FAILED` | The config throws while loading (a refused engine option is `INVALID_CONFIG` instead) or imports a missing package, subpath, or removed export such as `defineConfig` | Install the dependency, or fix the import or line quoted |
+| `CONFIG_LOAD_FAILED` | The config throws while loading (a refused engine option is `INVALID_CONFIG` instead) or imports a missing package, subpath, or removed export such as `createAgent` from `e2e/agent` | Install the dependency, or fix the import or line quoted |
 | `INVALID_CONFIG`, `INVALID_GLOB` | Unknown or foreign key (`app`, `webServer`, `use`, `projects`, `baseURL`), two of `list`, `dot`, and `line` together; a `tests` glob with braces, classes, an absolute path, or no wildcard | The message names the key or glob to write; the app is declared in the target's `app` |
 | `CONFIG_NOT_FOUND` | Wrong `--config` path, or an MCP `open_session` in a directory with no config | Fix the path; in a directory with no config, pass `engine` to `open_session` (topic `mcp`) |
 | `CONFIG_AMBIGUOUS` | Both `.ts` and `.mts` present | Keep one |
@@ -121,7 +121,7 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 | `MODEL_OUTPUT_INVALID` | An `extract` or `assert` answer failed the schema after one repair round | Simplify the schema or question; pick a stronger model |
 | `ACTION_FAILED` | Element not actionable (covered, disabled, detached), or an operation timed out | `waitFor` the condition right before the action that failed; close overlays; check `actionTimeout` |
 | `TEST_TIMEOUT` | The attempt exceeded `timeout` (120 s) | Split the test, or raise `timeout` |
-| `STEP_NOT_AWAITED` | The body returned while a step, `expect.poll`, or `toPass` still ran, or an `afterEach` hook or fixture teardown returned while an `expect.poll` or `toPass` still ran: a call without `await` | `await` the call the code frame names (every `app`, `agent`, `screen`, `expect`, `expect.poll`, `toPass` call) |
+| `STEP_NOT_AWAITED` | The body returned while a step, `expect.poll`, `toPass`, `launch()`, or `host.newSession()` still ran, or an `afterEach` hook or fixture teardown returned while an `expect.poll` or `toPass` still ran: a call without `await` | `await` the call the code frame names (every `app`, `agent`, `screen`, `expect`, `expect.poll`, `toPass`, `launch`, `newSession` call) |
 | `MODEL_UNAVAILABLE` | `agents.<name>.model` holds no AI SDK instance: reported once under `run.errors` at the first `agent` fixture; the run stops. A model-less custom executor fails only `waitFor` and `extract` this way. Also GitHub Copilot refusing the configured model to the account (`model_not_supported`, a plan or settings limit the listing cannot show): reported once at the first call, the run stops | Construct one, e.g. `gateway('openai/gpt-6-luna-fast')` from `ai`, and export its key (`AI_GATEWAY_API_KEY`); for Copilot, pick an id the plan serves |
 | `MODEL_PROVIDER_FAILED` | Network, 5xx, rate limit, no credits, or no response in 120 s, after the transport retries. Also no key configured (`AI_GATEWAY_API_KEY is not set` in the message): only steps that call the model fail, recorded `agent.act` steps and tests with no agent call still pass | Set the variable the message names, or say that no key is available; never rewrite tests to get around it. Otherwise check the credential (the key; for keyless `gateway()` the Vercel CLI login and `.vercel/project.json`) and quota; retry (exit 3) |
 | `MODEL_REFUSED` | The model refused the prompt (finish reason `content-filter`). Exit 1 | Rephrase the prompt or instruction, or switch to a different model |
@@ -132,10 +132,15 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 | `POLICY_DENIED` | A URL whose scheme is not `http:` or `https:` (`file:`, `view-source:`, `data:`), or on a target whose `app.url` is a file, a file outside that file's directory or a directory; a password `Secret` into a non-password sink; reading a secure field, `toHaveValue`, `toHaveText`, `toContainText`, `toHaveAttribute` included; `vision: 'only'` with pixels withheld | http(s) or `about:blank` only; passwords into password inputs only; assert the outcome, not the value |
 | `UNSUPPORTED_CAPABILITY` | A fixture the engine lacks (`browser` on a device), `schema` or `vision` on `act`, an action the surface lacks | Declare `platforms: ['web']`; drop the option or action |
 | `SESSION_UNAVAILABLE`, `SESSION_CONTRACT` | `session: 'x'` with no setup saving `x`; a setup that skipped a declared name. `SESSION_MISMATCH`, `SESSION_EXPIRED`, `SESSION_INVALID`: the stored session is another run's or app's, expired, or corrupt | Add or fix the `test.setup`; rerun it |
-| `ONLY_IN_CI` | `test.only` reached CI | Remove it |
+| `ONLY_IN_CI` | `test.only` or `describe.only` reached CI | Remove it |
 | `PAUSE_UNAVAILABLE` | `screen.pause()` reached CI | Remove it before you commit, or ask the user to run the test with `e2e run` in a terminal |
 | `AUTH_CREDENTIAL_UNAVAILABLE`, `AUTH_CREDENTIAL_INVALID` | `credentials.user('x')` for an undeclared name; the app rejected a configured credential | Add it to `config.credentials`; fix the stored value |
 | `SECRET_UNAVAILABLE` | `secrets.get('x')` for an undeclared name | Add it to `config.secrets`; `E2E_SECRET_X` only overrides a declared one |
+
+A `TypeError` from `browser` or `device` (`Cannot read properties of undefined`)
+means the test was run on a target without that fixture, where it's
+`undefined`. Scope the test with `platforms`, such as `platforms: ['web']` for
+`browser`, or check `platform` first.
 
 ## Tools
 

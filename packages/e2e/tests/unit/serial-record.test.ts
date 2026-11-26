@@ -80,6 +80,8 @@ function makeTarget(name: string, index: number): ResolvedTarget {
     },
     trace: { mode: 'off', source: 'default' },
     video: { mode: 'off', source: 'default' },
+    fullyParallel: false,
+    fixtureScopes: new Map(),
   };
 }
 
@@ -104,8 +106,10 @@ function serialPairs(target: ResolvedTarget): TestTargetPair[] {
       file,
       id: `${file}::${title}`,
       serialRoot: undefined,
+      parallel: { declared: false, ordered: undefined, suiteHooks: false },
       serialId: `${file}::wizard`,
       selected: true,
+      focused: false,
     };
     return { test, target, agent: 'default', repeat: 0, options: OPTIONS, disposition: 'run', skip: undefined };
   });

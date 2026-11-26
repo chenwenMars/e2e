@@ -90,9 +90,6 @@ describe('registration', () => {
     await expect(register(() => test.describe('group', { searial: true } as never, () => {}))).rejects.toThrow(
       'describe options has unknown key "searial"; did you mean "serial"?',
     );
-    await expect(register(() => test.describe('group', { only: true } as never, () => {}))).rejects.toThrow(
-      /describe options has unknown key "only"; expected one of timeout, retries/,
-    );
     await expect(register(() => test.setup('login', { sessions: ['admin'], tag: ['auth'] } as never, noop))).rejects.toThrow(
       'setup options has unknown key "tag"; did you mean "tags"?',
     );
@@ -153,13 +150,13 @@ describe('registration', () => {
     ).rejects.toThrow(/synchronously/);
   });
 
-  it('records skip and only modes', async () => {
+  it('records skip modes, and test.only as the only option', async () => {
     const registration = await collectModule(async () => {
       test.skip('skipped', noop);
       test.only('focused', noop);
       test('opt-skip', { skip: 'flaky upstream' }, noop);
     });
-    expect(registration.tests.map((item) => item.mode)).toEqual(['skip', 'only', 'skip']);
+    expect(registration.tests.map((item) => [item.mode, item.options.only])).toEqual([['skip', undefined], ['normal', true], ['skip', undefined]]);
     expect(registration.tests[2]!.options.skip).toBe('flaky upstream');
   });
 
@@ -226,7 +223,7 @@ describe('registration', () => {
       ['skip', { skip: 'no inotify on macOS' }, []],
       ['skip', { skip: '' }, []],
       ['skip', { skip: true }, []],
-      ['only', { only: true, skip: true }, []],
+      ['skip', { only: true, skip: true }, []],
       ['normal', { tags: ['@fs'] }, ['@fs']],
       ['skip', { skip: 'tracked in #42' }, []],
       ['skip', { skip: 'tracked in #42' }, []],
@@ -373,7 +370,7 @@ describe('registration', () => {
     ).toEqual([
       ['skipped 1', 'skip', { skip: 'not yet', tags: ['@each'] }, ['@each'], []],
       ['skipped 2', 'skip', { skip: 'not yet', tags: ['@each'] }, ['@each'], []],
-      ['focused 1', 'only', { only: true }, [], []],
+      ['focused 1', 'normal', { only: true }, [], []],
       ['extended 1', 'normal', {}, [], ['workspace']],
     ]);
   });
@@ -463,6 +460,26 @@ describe('registration', () => {
     expect(() => test.fixme('outside', noop)).toThrow(/^test\.fixme\(\) can only be called while a test module is being collected/);
   });
 
+  it('registers test.todo(title) as a todo skip and rejects a body or serial registration', async () => {
+    const registration = await collectModule(async () => {
+      test.todo('not yet');
+    });
+    expect(registration.tests.map((item) => [item.title, item.mode, item.options])).toEqual([
+      ['not yet', 'todo', { skip: 'todo' }],
+    ]);
+    await expect(
+      collectModule(async () => {
+        test.describe('unit', { serial: true }, () => test.todo('member'));
+      }),
+    ).rejects.toThrow('test.todo() cannot be used inside a serial group');
+    await expect(
+      collectModule(async () => {
+        Reflect.apply(test.todo, test, ['has a body', noop]);
+      }),
+    ).rejects.toThrow('test.todo() takes a title only; register a test with a body through test.skip(title, fn) or test.fixme(title, fn)');
+    expect(() => test.todo('outside')).toThrow(/^test\.todo\(\) can only be called while a test module is being collected/);
+  });
+
   it('rejects test.skip(title, fn) in a serial group, naming test.skip()', async () => {
     await expect(
       collectModule(async () => {
@@ -522,6 +539,46 @@ describe('registration', () => {
         "describe.fail() takes no fail option; give a reason with describe(title, { fail: 'reason' }, fn)",
       );
     }
+  });
+
+  it('marks a group focused by describe.only(title, fn) or the only option, and checks both', async () => {
+    const registration = await collectModule(async () => {
+      test.describe.only('shortcut', () => test('a', noop));
+      test.describe.only('shortcut with options', { tags: ['smoke'] }, () => test('b', noop));
+      test.describe('by option', { only: true }, () => test('c', noop));
+      registry.describe.only('top-level import', () => test('d', noop));
+    });
+    expect(registration.tests.map((item) => [item.title, item.group?.options.only, item.mode])).toEqual([
+      ['a', true, 'normal'],
+      ['b', true, 'normal'],
+      ['c', true, 'normal'],
+      ['d', true, 'normal'],
+    ]);
+    expect(registration.tests[1]!.tags).toEqual(['smoke']);
+    await expect(collectModule(async () => test.describe('group', { only: 'yes' } as never, () => {}))).rejects.toThrow(
+      'describe options: only must be true or false, got "yes"',
+    );
+    await expect(collectModule(async () => test('x', { only: 'yes' } as never, noop))).rejects.toThrow(
+      'test options: only must be true or false, got "yes"',
+    );
+    // describe.only rejects what describe() rejects, including keys a spread would drop.
+    const hidden = Object.defineProperty({}, 'bogus', { value: 1, enumerable: false });
+    await expect(collectModule(async () => test.describe.only('group', hidden as never, () => {}))).rejects.toThrow('unknown key "bogus"');
+    for (const only of [true, false]) {
+      await expect(collectModule(async () => test.describe.only('group', { only } as never, () => {}))).rejects.toThrow(
+        'describe.only() takes no only option; it focuses the group already',
+      );
+    }
+  });
+
+  it('refuses only inside a serial group', async () => {
+    const insideRule = 'describe option "only" cannot be set inside a serial group, which runs as one unit; focus the serial group instead';
+    await expect(
+      collectModule(async () => test.describe('unit', { serial: true }, () => test.describe.only('inner', () => {}))),
+    ).rejects.toThrow(insideRule);
+    await expect(
+      collectModule(async () => test.describe('unit', { serial: true }, () => test.describe('inner', { only: true }, () => {}))),
+    ).rejects.toThrow(insideRule);
   });
 
   it('refuses fail on, inside, or around a serial group', async () => {
@@ -827,8 +884,8 @@ describe('test.extend', () => {
     expect(() => test.extend({ a: needs('a') } as never)).not.toThrow();
     const withPage = test.extend<{ page: string }>({ page: [fixture, { scope: 'test' }] });
     expect(() => withPage.extend({ cache: [needs('page'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "cache" names "page", a test fixture/);
-    // A plain function may extend an engine's worker fixture of its name, so its scope waits for the target.
-    expect(() => test.extend({ page: fixture }).extend({ cache: [needs('page'), { scope: 'worker' }] } as never)).not.toThrow();
+    // A plain function is a test fixture, even if it extends an engine's worker fixture of its name.
+    expect(() => test.extend({ page: fixture }).extend({ cache: [needs('page'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "cache" names "page", a test fixture/);
     expect(() => test.extend({ cache: [needs('session'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "cache" names "session", a test fixture/);
     // A name the chain lacks may be an engine's: left for the target to decide.
     expect(() => test.extend({ cache: [needs('device'), { scope: 'worker' }] } as never)).not.toThrow();
@@ -876,17 +933,14 @@ describe('test.extend', () => {
       extended('extends', noop);
     });
     expect(registration.tests[0]!.fixtures.map(({ name, layer }) => [name, layer])).toEqual([['app', 0], ['platform', 0], ['app', 1]]);
-    // `app` follows the engine, extended or not: a worker fixture that names it waits for the target.
-    expect(() => extended.extend({ seeded: [needs('app'), { scope: 'worker' }] } as never)).not.toThrow();
-    // A core fixture whose scope is the same on every engine keeps it.
-    expect(() => test.extend({ agent: [needs('agent'), { scope: 'worker' }] } as never)).toThrow(
-      /fixture "agent" is declared with scope 'worker', but it extends the built-in "agent", a test fixture: a fixture that extends another keeps its scope/,
-    );
-    expect(() => test.extend({ platform: [needs('platform'), { scope: 'test' }] } as never)).toThrow(/extends the built-in "platform", a worker fixture/);
+    // An override without a scope is a test fixture, so a worker fixture can't name it.
+    expect(() => extended.extend({ seeded: [needs('app'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "seeded" names "app", a test fixture/);
+    // A worker-scoped override can't name a built-in that is a test fixture on every engine, itself included.
+    expect(() => test.extend({ agent: [needs('agent'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "agent" names "agent", a test fixture/);
+    // A test-scoped override of a worker fixture is fine: a test fixture sees worker fixtures.
+    expect(() => test.extend({ platform: [needs('platform'), { scope: 'test' }] } as never)).not.toThrow();
     const withWorkspace = test.extend({ workspace: [fixture, { scope: 'worker' }] } as never);
-    expect(() => withWorkspace.extend({ workspace: [needs('workspace'), { scope: 'test' }] } as never)).toThrow(
-      /extends the fixture "workspace" of an earlier test\.extend\(\), a worker fixture/,
-    );
+    expect(() => withWorkspace.extend({ workspace: [needs('workspace'), { scope: 'test' }] } as never)).not.toThrow();
   });
 });
 

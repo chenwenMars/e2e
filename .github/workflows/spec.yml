@@ -42,30 +42,44 @@ jobs:
       - uses: ./.github/actions/workspace-install
         with:
           agent-device-version: ${{ inputs.agent-device-version }}
+      # One arm or the other, never both: a compatibility dispatch runs the whole
+      # gate in one step, and a push or pull request runs the same checks as
+      # separate steps, so CI names the one that failed.
       - name: Full nightly check
         if: ${{ inputs.agent-device-version != '' }}
         run: pnpm check
       - name: Lint
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm lint
       - name: Dead code (fallow)
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:dead-code
       - name: Typecheck packages
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm typecheck
       - name: Error code reference
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm docs:check-errors
       - name: Peer ranges on the runner
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:peer-ranges
       - name: Changeset bumps on 0.x packages
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:changeset-bumps
       - name: Examples registry (examples/examples.json)
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:examples
       - name: Benchmark scenario coverage
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:benchmark-coverage
       - name: No install scripts in published dependency trees
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm check:install-scripts
       - name: Plugin package matches its sources
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm plugins:check
       - name: MCP Registry entry matches the runner
+        if: ${{ inputs.agent-device-version == '' }}
         run: pnpm mcp-server:check
       # The registry rejects an invalid entry only at publish, from a release
       # tag that can no longer change.
@@ -97,12 +111,17 @@ jobs:
 
   test:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    # The suite takes about 14 minutes on a slow runner, so 15 cancelled jobs
+    # whose tests all passed.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         # The newest release of each line, and the floors in engines.node.
         node: [22, 24, 26, 22.22.3, 24.8.0]
+        # `pnpm test` in two halves of about seven minutes each: one job for
+        # all of it ran within a minute of the timeout on every Node.js.
+        suite: [runner, packages]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
@@ -121,7 +140,7 @@ jobs:
         with:
           only-shell: false
       - name: Unit and integration tests
-        run: pnpm test
+        run: pnpm run build && pnpm run test:${{ matrix.suite }}
 
   # The built CLI on Bun with no Node.js on its PATH
   # (packages/e2e/tests/integration/bun-runtime.test.ts): the floor

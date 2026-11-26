@@ -40,8 +40,14 @@ export type DevicePermission = (typeof DEVICE_PERMISSIONS)[number];
 /** A permission's state: held, refused, or not asked for yet, so the OS asks again. */
 export type PermissionState = 'grant' | 'deny' | 'reset';
 
-/** Permissions an app holds when it launches, by name. */
-export type LaunchPermissions = Readonly<Partial<Record<DevicePermission, PermissionState>>>;
+/**
+ * Permissions an app holds when it launches, by name, or `'all'` to grant
+ * every one the platform can. On Android that is each runtime permission the
+ * app declares; the rest are skipped. On an iOS simulator it is each privacy
+ * service the runtime can set, location `always` included. The simulator
+ * refuses to set notifications.
+ */
+export type LaunchPermissions = Readonly<Partial<Record<DevicePermission, PermissionState>>> | 'all';
 
 /**
  * Options of the device engine: which devices it drives and how. The app
@@ -50,9 +56,9 @@ export type LaunchPermissions = Readonly<Partial<Record<DevicePermission, Permis
  * `undefined`, so values read straight from `process.env` need no
  * conditional spread.
  */
-export interface MobileOptions {
+export interface MobileOptions<Platform extends MobilePlatform = MobilePlatform> {
   /** Platform the target's device runs. */
-  readonly platform: MobilePlatform;
+  readonly platform: Platform;
   /**
    * Device to use: a simulator or emulator by name, simulator UDID, or
    * emulator serial (`emulator-5554`), or a connected phone by name. A list

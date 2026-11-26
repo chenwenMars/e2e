@@ -32,6 +32,7 @@ describe('checkout', { tags: ['billing'] }, () => {
 | --- | --- |
 | [`test`](#test) | `TestCase` |
 | [`test.skip`](#test-skip) | `TestCase \| void` |
+| [`test.todo`](#test-todo) | `TestCase` |
 | [`test.fixme`](#test-fixme) | `TestCase \| void` |
 | [`test.skipIf`](#test-skipif) | `TestRegistrar` |
 | [`test.runIf`](#test-runif) | `TestRegistrar` |
@@ -45,6 +46,8 @@ describe('checkout', { tags: ['billing'] }, () => {
 | [`test.extend`](#test-extend) | `TestAPI` |
 | [`describe`](#describe) | `void` |
 | [`describe.fail`](#describe-fail) | `void` |
+| [`describe.configure`](#describe-configure) | `void` |
+| [`describe.only`](#describe-only) | `void` |
 | [Hooks](#hooks) | `void` |
 
 `describe` and the four hooks are also top-level exports, the same functions
@@ -133,6 +136,25 @@ test('switches organizations', { session: 'admin' }, async ({ app, agent }) => {
 | `INVALID_ARGUMENT` | Called in a setup test with a true condition, or none. A setup test cannot skip because other tests depend on its sessions. |
 | `COLLECTION_ERROR` | The conditional form, outside a test body. |
 | `COLLECTION_ERROR` | The registration form, inside a serial group. Set [`skip`](#skip) on the serial `describe` instead. |
+
+#### `test.todo`
+
+Registers an unfinished test without a body:
+
+```ts
+test.todo('add checkout coverage');
+```
+
+- The test never runs and has no attempts. It is reported `skipped`, with
+  `skip.cause` and `skip.reason` both `todo`.
+- A selection of only TODO tests fails with `NO_TESTS`, like any selection
+  with nothing to run, unless `--pass-with-no-tests` is set.
+- It takes no test options and returns a `TestCase`.
+
+| Throws | When |
+| --- | --- |
+| `COLLECTION_ERROR` | Called with a body or any argument after the title. Use [`test.skip`](#test-skip) or [`test.fixme`](#test-fixme) for a test with a body. |
+| `COLLECTION_ERROR` | Called inside a serial group. Set [`skip`](#skip) on the serial `describe` instead. |
 
 #### `test.fixme`
 
@@ -379,7 +401,8 @@ test.only('pays', async ({ app }) => {
 ```
 
 Other tests are reported as `filtered`. A CI run with a focused test fails
-with `ONLY_IN_CI`.
+with `ONLY_IN_CI`. To focus every test in a group, use
+[`describe.only`](#describe-only).
 
 #### `test.setup`
 
@@ -432,9 +455,13 @@ export const test = base.extend<{ device: Device }>(); // types only
   or web surface without a global `declare module` augmentation.
 - With definitions, it adds fixtures of your own. See
   [Your own fixtures](#your-own-fixtures).
-- The first type argument types test fixtures. The second types
-  [worker fixtures](#worker-fixtures), which `beforeAll` and `afterAll` see
-  too. `@e2e-dev/mobile` types `device`, `app`, and `screen` there.
+- The type arguments, in order:
+  1. Test fixtures.
+  2. [Worker fixtures](#worker-fixtures), which are available in `beforeAll`
+     and `afterAll`. `device`, `app`, and `screen` from `@e2e-dev/mobile` are
+     typed here.
+  3. The config's type (`typeof config`), for the fixtures of every target.
+     See [Engine fixtures across targets](#engine-fixtures-across-targets).
 
 #### `describe`
 
@@ -449,8 +476,8 @@ describe('checkout', { tags: ['smoke'], serial: true }, () => {
 });
 ```
 
-- A group takes the [options](#options) a test takes, except `only`, plus
-  [`serial`](#serial).
+- A group takes the [options](#options) a test takes, plus
+  [`serial`](#serial) and [`parallel`](#parallel).
 - The body is synchronous.
 
 | Throws | When |
@@ -480,6 +507,62 @@ describe('legacy checkout', { fail: 'old payment form' }, () => {}); // with a r
 | --- | --- |
 | `COLLECTION_ERROR` | The group is serial or inside a serial group, or a serial group is inside it. |
 | `COLLECTION_ERROR` | A `fail` option on `describe.fail`. It is also a type error. |
+
+#### `describe.configure`
+
+Sets [`parallel`](#parallel) on the scope it is called in: the enclosing
+`describe`, or the whole file at the top level.
+
+```ts
+import { describe, test } from 'e2e';
+
+describe.configure({ parallel: true }); // every test of this file
+
+test('lists orders', async ({ screen }) => {});
+test('lists invoices', async ({ screen }) => {});
+```
+
+- The call can come before or after the tests of its scope.
+- `{ parallel: false }` at the top level keeps the file in order under
+  [`fullyParallel`](/reference/config#fullyparallel).
+
+| Throws | When |
+| --- | --- |
+| `COLLECTION_ERROR` | `parallel` is already set for the scope, by the `describe` option or an earlier call. |
+| `COLLECTION_ERROR` | A key other than `parallel`. |
+| `COLLECTION_ERROR` | Any case [`parallel`](#parallel) lists. |
+
+#### `describe.only`
+
+Declares a focused group, the same as `only: true` on `describe`. Every
+test in it, nested groups included, is focused the way
+[`test.only`](#test-only) focuses one.
+
+```ts
+describe.only('checkout', () => {
+  test('pays by card', async ({ screen }) => {}); // runs
+  describe('refunds', () => {
+    test('refunds a card', async ({ screen }) => {}); // runs
+  });
+});
+test('signs in', async ({ app }) => {}); // filtered
+describe('checkout', { only: true }, () => {}); // the same, by option
+```
+
+- Focused groups and `test.only` combine: every focused test runs, and the
+  rest are reported as `filtered`.
+- A `test.only` or `describe.only` inside a focused group narrows that
+  group, as in Playwright: of its tests, only the inner focused ones run.
+- A skipped test in a focused group stays focused and is reported with its
+  own skip cause, `explicit`, `fixme`, or `todo`.
+- A CI run with a focused group fails with `ONLY_IN_CI`.
+- A serial group can be focused whole. `only` inside a serial group is
+  refused, since the group runs as one unit.
+
+| Throws | When |
+| --- | --- |
+| `COLLECTION_ERROR` | The group is inside a serial group. |
+| `COLLECTION_ERROR` | An `only` option on `describe.only`. It is also a type error. |
 
 ### Hooks
 
@@ -539,7 +622,8 @@ test.beforeAll(async ({ database, device }) => {
 ```
 
 The module is re-imported for every retry, serial group, and setup test, so
-`beforeAll` runs again in each.
+`beforeAll` runs again in each, and in each batch of a
+[parallel](#parallel) scope.
 
 It receives [worker fixtures](#worker-fixtures) only:
 
@@ -634,10 +718,11 @@ blocked event loop hangs it.
 | [`trace`](#trace) | `RecordingMode` | the run's |
 | [`video`](#video) | `RecordingMode` | the run's |
 | [`serial`](#serial) | `boolean` | - |
+| [`parallel`](#parallel) | `boolean` | - |
 | [`sessions`](#sessions) | `readonly string[]` | required |
 
-`test` takes every option but `serial` and `sessions`. `describe` takes
-every option but `only` and `sessions`. `test.setup` requires
+`test` takes every option but `serial`, `parallel`, and `sessions`. `describe` takes
+every option but `sessions`. `test.setup` requires
 `sessions` and takes no `session`, `only`, `skip`, or `fail`.
 
 Resolution order: test, nearest group, outer groups, config, built-in
@@ -702,10 +787,12 @@ describe('legacy checkout', { fail: 'old payment form' }, () => {});
 
 #### `only`
 
-Focuses the test locally. CI rejects it with `ONLY_IN_CI`.
+Focuses the test locally, or every test in a group; see
+[`describe.only`](#describe-only). CI rejects it with `ONLY_IN_CI`.
 
 ```ts
 test('pays', { only: true }, async ({ app }) => {});
+describe('checkout', { only: true }, () => {});
 ```
 
 #### `platforms`
@@ -814,7 +901,52 @@ describe('checkout', { serial: true }, () => {
 | Throws | When |
 | --- | --- |
 | `COLLECTION_ERROR` | A member sets `retries`, `trace`, `video`, `session`, `platforms`, `skip`, `only`, or a nested `serial`. |
-| `COLLECTION_ERROR` | A member registers through `test.skip(title, fn)`, `test.skipIf`, `test.runIf`, or `test.fixme(title, fn)`. |
+| `COLLECTION_ERROR` | A member registers through `test.skip(title, fn)`, `test.todo(title)`, `test.skipIf`, `test.runIf`, or `test.fixme(title, fn)`. |
+
+#### `parallel`
+
+`describe` only. `true` runs the group's tests at the same time on separate
+workers. By default, a file's tests run in order on one worker.
+
+```ts
+describe('reports', { parallel: true }, () => {
+  test('exports a CSV', async ({ screen }) => {});
+  test('exports a PDF', async ({ screen }) => {});
+});
+```
+
+- For a whole file, call [`describe.configure`](#describe-configure) at the
+  top level. For every file, set
+  [`fullyParallel`](/reference/config#fullyparallel).
+- Tests that run apart on the same worker share the state in the test
+  file: the worker imports the file one time for them. Tests on different
+  workers do not, so keep no state in the file that one test leaves for
+  another. A `beforeAll` and its `afterAll` can run several times on that
+  state, so create in `beforeAll` what `afterAll` closes.
+- Declare shared tests and hooks in ES modules of your project. A CommonJS
+  module, a package from `node_modules`, and every imported
+  module on Bun stays one instance, so the tests and hooks it declares
+  are missing from a retry, from the tests after a failed one, and from a
+  second file that imports it.
+- A [serial](#serial) group inside a parallel scope still runs as one unit
+  on one worker.
+- `false` keeps a group inside a parallel scope in order on one worker.
+- Tests with a `beforeAll` or `afterAll` hook around them run in batches,
+  at most as many as the target has workers, for each agent. Each batch
+  runs in order on one worker and runs the hooks one time, and again after
+  a failed test. A serial group or a `parallel: false` group runs the hooks
+  around it one time more.
+- The repeats of a test (`--repeat-each`) run one after another on one
+  worker, so the first records the replay cache and the rest replay it.
+- With one worker the tests run one at a time, and not always in
+  declaration order.
+- The report lists the tests in declaration order.
+
+| Throws | When |
+| --- | --- |
+| `COLLECTION_ERROR` | `true` inside a serial group, or inside a group or file with `parallel: false`. |
+| `COLLECTION_ERROR` | `parallel` on a group with `serial: true`. |
+| `COLLECTION_ERROR` | A value that is not a boolean. |
 
 #### `sessions`
 
@@ -860,6 +992,9 @@ with [`isolation`](/reference/engine#fixture-isolation).
 describes each core one. Every other fixture is one of
 [your own](#your-own-fixtures).
 
+An engine fixture is `undefined` on a target whose engine doesn't have it.
+See [Engine fixtures across targets](#engine-fixtures-across-targets).
+
 A test body, a hook, and a fixture function name the fixtures they use by
 destructuring their first parameter: `async ({ app, screen }) => {}`. e2e
 reads the names from the function's source. A [`test.each`](#test-each) or
@@ -867,7 +1002,7 @@ reads the names from the function's source. A [`test.each`](#test-each) or
 
 | Throws | When |
 | --- | --- |
-| `COLLECTION_ERROR` | A test that runs on a target, or one of its hooks, names a fixture the target does not have. No test runs. Declare `platforms` or `test.skipIf` to skip such tests on that target instead. |
+| `COLLECTION_ERROR` | A test that runs on a target, or one of its hooks, names a fixture that isn't on any target in the config. No test runs. |
 | `COLLECTION_ERROR` | A test body, a hook, or a fixture function takes the whole object (`async (fixtures) => {}`), a rest property (`{ app, ...rest }`), or a computed property, or is a bound function (`fn.bind()`), whose parameters cannot be read. |
 
 <Note>
@@ -941,7 +1076,7 @@ checked against that target's fixtures.
 | A value that is not a plain object of functions or `[fn, { scope, auto }]` pairs, a scope other than `'test'` or `'worker'`, an `auto` that is not a boolean, an option other than `scope` and `auto`, or an empty name | At import, `COLLECTION_ERROR` naming the fixture |
 | A function that does not destructure its first parameter, takes a rest or computed property there, or is a bound function | At import, `COLLECTION_ERROR` naming the fixture |
 | Fixtures that name each other in a cycle | At import, `COLLECTION_ERROR` naming the cycle |
-| A name the target has no fixture for, in a test that runs there, its hooks, or a fixture they need | At collection, `COLLECTION_ERROR` |
+| A name that isn't a fixture on any target in the config, in a test that runs, its hooks, or a fixture they need | At collection, `COLLECTION_ERROR` |
 | A `scope` or an `auto` that differs from that of the [fixture it extends](#extending-a-fixture) | At import when it is the same on every engine, else at collection, `COLLECTION_ERROR` naming both |
 | A fixture that names one a later `extend` declares | At collection, `COLLECTION_ERROR` |
 | A definition that returns without calling `use` | The attempt, in `beforeEach`, `TEST_SETUP_FAILED` |
@@ -955,7 +1090,8 @@ teardown starts while it may still be running. A setup abandoned this way
 that reaches `use` later gets an immediate resolve. Its teardown runs
 detached from the run, so what it allocated is still released. Later
 fixtures, hooks, and the test body do not start after an abandoned setup or
-hook finishes.
+hook finishes. An app or device call it makes after its phase ended fails with
+`CANCELLED`. Its other code, such as a Node `fetch`, still runs.
 </Note>
 
 #### Worker fixtures
@@ -990,12 +1126,56 @@ export const test = base.extend<{}, { database: Database }>({
   hook that is running when it calls them. Its teardown can still drive the
   device: it runs in a short engine attempt when the fixture names one of
   them, and without one when it names none.
-- A worker keeps one instance per definition. A test file is imported again
-  after a failed test and for each serial group and setup test, so a worker
-  fixture the file declares gets a new instance each time, and the old one
-  stays set up until the worker ends.
-  Declare worker fixtures in a module the file imports.
+- A worker keeps one instance of a worker fixture, also when the module
+  that declares it is evaluated again: a test file after a failed test, or
+  a module that declares tests or hooks. Only the fixture's value is kept,
+  not the module's variables, so hand tests what they need through the
+  value. On Bun, a worker fixture the test file
+  declares gets a new instance each time the file is imported again, and
+  the old one stays set up until the worker ends: declare it in a module
+  the file imports.
 - `extend({ ... })` without type arguments infers test fixtures only.
+
+#### Engine fixtures across targets
+
+On web, `device` is `undefined`, so a test with `device` can be run there too.
+On web, the scope of `device` is:
+
+- `worker` if `isolation: 'worker'` is set on every engine with the fixture.
+- `test` otherwise.
+
+The fixtures of every target are typed by the third type argument of
+[`test.extend`](#test-extend):
+
+```ts
+import { test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+export const test = base.extend<{}, {}, typeof config>();
+
+test('signs out', async ({ app, platform, device }) => {
+  if (platform === 'ios') {
+    await device.clearKeychain();
+  }
+
+  await app.clearState();
+});
+```
+
+- The fixtures are typed as a union with one member per target, told apart
+  by `platform`. Each member has the fixtures of the target's engine. A
+  fixture that only other targets have is typed as `undefined`.
+- A target's engine fixtures, `app`, and `screen` are worker fixtures if
+  `isolation: 'worker'` is set on its engine, and test fixtures otherwise.
+- If a target's platform type is `string`, as on a target without an
+  engine when `as const` isn't used on the config object, fixtures aren't
+  narrowed by a `platform` check. Check the fixture instead
+  (`device !== undefined`).
+- With `platforms` on a test, its fixtures are typed for the targets that
+  run it. With `platforms: ['ios']`, `device` is typed as `Device`. On a
+  `describe`, `platforms` doesn't change the types.
+- With a type annotation such as `const config: E2EConfig`, the engine types
+  are lost. To keep them, use `as const satisfies E2EConfig` or `defineConfig` instead.
 
 #### Extending a fixture
 
@@ -1016,18 +1196,17 @@ export const test = base.extend({
   replaces the fixture.
 - Tests, hooks, and other fixtures that name the fixture get the value passed
   to `use`. What the runner does with a built-in fixture does not change.
-- It is set up when the fixture it extends would be: on demand, for code that
-  names the fixture, or for every test when it extends an `auto` fixture. An
-  `auto` in the options must be the `auto` of the fixture it extends.
-- It keeps the scope of the fixture it extends on the target, as the
-  [built-in fixtures](#fixtures) table gives it. `device` is a worker fixture,
-  so its override runs one time per worker and `beforeAll` gets it. A `scope`
-  in the options must be that scope.
+- Its scope and `auto` come from its options, like any other fixture. Without
+  options, it's a test fixture that's set up for code that names it, even if
+  the fixture it extends is a worker fixture or `auto`.
+- To run a `device` override one time per worker and use it in `beforeAll`,
+  pass `{ scope: 'worker' }`. Like any worker fixture, it can't use test
+  fixtures, so it fails on a target where the fixture it extends is a test
+  fixture, such as `app` on web.
 - It keeps the type. Define it with no type argument: the type arguments of
   `extend` are for new fixtures.
-- On a target that has no fixture of that name, nothing fails until code that
-  runs there names it. Then the run fails at collection: the target has no
-  such fixture.
+- If only some targets have the fixture, the function is still called on the
+  other targets, with `undefined` under the fixture's name.
 
 ## Types
 
@@ -1045,14 +1224,25 @@ export interface DescribeRegistrar<Options = DescribeOptions> {
 export interface DescribeAPI extends DescribeRegistrar {
   /** Declares a group whose tests are expected to fail, as if it had `fail: true`; a reason goes in the `fail` option of `describe`. */
   fail: DescribeRegistrar<Omit<DescribeOptions, 'fail'>>;
+  /** Configures the scope it is called in: the enclosing `describe`, or the whole file at the top level. */
+  configure(options: DescribeConfigureOptions): void;
+  /** Declares a focused group, as if it had `only: true`: its tests are focused the way `test.only` focuses one. CI rejects it with `ONLY_IN_CI`. */
+  only: DescribeRegistrar<Omit<DescribeOptions, 'only'>>;
 }
 
 /** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
 export interface TestRegistrar<Fixtures = TestFixtures & WorkerFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
-  /** Registers one configured test synchronously during module evaluation. */
-  (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
+  /**
+   * Registers one configured test synchronously during module evaluation.
+   * Its fixtures are typed for the targets its `platforms` option keeps.
+   */
+  <const Platform extends string = string>(
+    title: string,
+    options: TestOptions & { readonly platforms?: readonly Platform[] },
+    fn: TestFn<SelectedFixtures<Fixtures, Platform>>,
+  ): TestCase;
 }
 
 /**
@@ -1080,6 +1270,8 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    */
   skip(condition: boolean, reason?: string): void;
   skip(reason?: string): void;
+  /** Registers an unfinished test, reported as skipped with cause and reason `todo`. */
+  todo(title: string): TestCase;
   /** Registers one skipped test marked fixme, reported with the skip cause and reason `fixme`. */
   fixme(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
   /**
@@ -1159,13 +1351,16 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *
    *   export const test = base.extend<{ device: Device }>();
    */
-  extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
+  extend<Extra = {}, ExtraWorker = {}, Config = unknown>(): TestAPI<
+    ConfigBase<Fixtures, Config> & Extra & ConfigFixtures<Config, 'test'>,
+    ConfigBase<Worker, Config> & ExtraWorker & ConfigFixtures<Config, 'worker'>
+  >;
   /**
    * Returns a new `test` whose registrations extend fixtures it already
    * has, built-in ones included. Inside the function the fixture's own name
    * is the fixture it extends; the value it hands to `use` is what tests,
-   * hooks, and other fixtures receive under that name. It keeps the type and
-   * the scope of the fixture it extends:
+   * hooks, and other fixtures receive under that name. It keeps the type of
+   * the fixture it extends. Its scope is the one it declares, else `test`:
    *
    *   export const test = base.extend({
    *     app: async ({ app }, use) => {
@@ -1174,7 +1369,9 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *     },
    *   });
    */
-  extend(overrides: FixtureOverrides<Fixtures & Worker, Worker>): TestAPI<Fixtures, Worker>;
+  extend<const Overrides extends FixtureOverrides<Fixtures & Worker, Worker>>(
+    overrides: Overrides,
+  ): TestAPI<Fixtures & PickEach<Worker, TestOverrides<Overrides>>, OmitEach<Worker, TestOverrides<Overrides>>>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets up the
@@ -1209,10 +1406,18 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    * (`[fn, { scope: 'worker', auto: true }]`). A suite hook sets up the auto
    * worker fixtures of its chain, never a test fixture.
    */
-  extend<Extra = {}, ExtraWorker = {}>(
-    fixtures: FixtureDefinitions<Fixtures & Worker, Extra, Worker, ExtraWorker>,
-  ): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
-  /** Declares a group synchronously; `describe.fail` declares one whose tests are expected to fail. */
+  extend<Extra = {}, ExtraWorker = {}, Config = unknown>(
+    fixtures: FixtureDefinitions<
+      ConfigBase<Fixtures, Config> & ConfigBase<Worker, Config> & ConfigFixtures<Config, 'test'> & ConfigFixtures<Config, 'worker'>,
+      Extra,
+      ConfigBase<Worker, Config> & ConfigFixtures<Config, 'worker'>,
+      ExtraWorker
+    >,
+  ): TestAPI<
+    ConfigBase<Fixtures, Config> & Extra & ConfigFixtures<Config, 'test'>,
+    ConfigBase<Worker, Config> & ExtraWorker & ConfigFixtures<Config, 'worker'>
+  >;
+  /** Declares a group synchronously; `describe.fail` declares one whose tests are expected to fail, `describe.only` a focused one. */
   describe: DescribeAPI;
   /** Registers a test-attempt setup hook: it runs after the test's fixtures are set up. */
   beforeEach(fn: TestHookFn<Fixtures & Worker>): void;
@@ -1251,7 +1456,12 @@ export interface TestOptions {
    * around a serial group.
    */
   fail?: boolean | string;
-  /** Focuses the test locally. CI rejects it with `ONLY_IN_CI`. */
+  /**
+   * Focuses the test locally; on a group, focuses every test in it, skipped
+   * ones included, unless a test or group inside it is focused too, which
+   * narrows the focus to that one. CI rejects it with `ONLY_IN_CI`. Not
+   * allowed inside a serial group; a serial group itself can be focused.
+   */
   only?: boolean;
   /** Platforms the test runs on; other targets skip it. Innermost wins. */
   platforms?: readonly string[];
@@ -1283,9 +1493,17 @@ export interface TestOptions {
   video?: RecordingMode;
 }
 
-export interface DescribeOptions extends Omit<TestOptions, 'only'> {
+export interface DescribeOptions extends TestOptions {
   /** Runs the group as one ordered retry unit with shared app state. Nesting one serial group in another is a `COLLECTION_ERROR`. */
   serial?: boolean;
+  /** `true` runs the group's tests at the same time on separate workers; `false` keeps a group inside a parallel scope in order on one worker. */
+  parallel?: boolean;
+}
+
+/** What `test.describe.configure()` sets on the scope it is called in. */
+export interface DescribeConfigureOptions {
+  /** The scope's `parallel`; at the top of a file it applies to the whole file. */
+  parallel?: boolean;
 }
 
 export interface SetupOptions extends Omit<TestOptions, 'session' | 'only' | 'skip' | 'fail' | 'agent'> {
@@ -1385,9 +1603,10 @@ export type WorkerFixtureDefinition<Worker, Value> = readonly [
  *
  * A name the base already has is not a new fixture, so declaring it in
  * `Extra` or `ExtraWorker` is a type error. Defined beside them, it extends
- * that fixture, a built-in one included (`FixtureOverrides`): inside its
- * function its own name is the fixture it extends, and it keeps that
- * fixture's type and scope:
+ * that fixture, a built-in one included: inside its function its own name is
+ * the fixture it extends, and it keeps that fixture's type. The override of
+ * a worker fixture is declared with `scope: 'worker'` here, since the
+ * fixtures this call returns keep it a worker fixture:
  *
  *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
  */
@@ -1402,23 +1621,40 @@ export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
     ? never
     : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
-} & FixtureOverrides<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>, Base, Worker>;
+} & {
+  readonly [K in Extract<keyof Base, PropertyKey>]?: K extends keyof Worker
+    ? WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, Base[K]>
+    : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Base[K]>;
+};
 /**
  * Fixtures that extend ones the base already has, each optional. `Sees` and
  * `WorkerSees` are what an override's function receives: the base's
  * fixtures, and the ones declared beside it.
  */
 export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
-  readonly [K in keyof Base]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
+  readonly [K in Extract<keyof Base, PropertyKey>]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
 };
 /**
  * A fixture that extends `K`, one the base already has: it hands over the
- * same type and keeps the scope, so the override of a worker fixture
- * receives worker fixtures (`WorkerSees`) only.
+ * same type. Its scope is the one it declares, else `test`, and only the
+ * override of a worker fixture can be a worker fixture.
+ *
+ * The override of a worker fixture with options receives worker fixtures
+ * (`WorkerSees`) only, whatever its scope: TypeScript can't type the
+ * function of a tuple by the `scope` beside it. A function without options
+ * is a test fixture, so it receives every fixture (`Sees`).
  */
 export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
-  ? FixtureFn<WorkerSees, Base[K]> | WorkerFixtureDefinition<WorkerSees, Base[K]>
+  ? FixtureFn<Sees, Base[K]> | readonly [FixtureFn<WorkerSees, Base[K]>, { readonly scope?: FixtureScope; readonly auto?: boolean }]
   : TestFixtureDefinition<Sees, Base[K]>;
+/** The names in `Overrides` that are test fixtures: every override not declared with `scope: 'worker'`. */
+export type TestOverrides<Overrides> = {
+  [K in keyof Overrides]-?: Overrides[K] extends readonly [unknown, { readonly scope: 'worker' }] ? never : K;
+}[keyof Overrides];
+/** `Worker` without the fixtures in `Names`, one target at a time. */
+export type OmitEach<Worker, Names extends PropertyKey> = Worker extends unknown ? Omit<Worker, Names> : never;
+/** The fixtures in `Names` that `Worker` has, and `platform`, one target at a time. */
+export type PickEach<Worker, Names extends PropertyKey> = Worker extends unknown ? Pick<Worker, Extract<Names | 'platform', keyof Worker>> : never;
 ```
 
 ### Function types

@@ -86,7 +86,7 @@ await expect(screen.getByTestId('cart-empty'), 'the cart is empty').toBeVisible(
 | [`toBeEmpty`](#tobeempty) | Waits for an empty field or a node with no text |
 | [`toHaveText`](#tohavetext-and-tocontaintext) | Waits for exact normalized text |
 | [`toContainText`](#tohavetext-and-tocontaintext) | Waits for contained normalized text |
-| [`toHaveValue`](#tohavevalue) | Waits for a form control's value |
+| [`toHaveValue`](#tohavevalue) | Waits for a control's value |
 | [`toHaveAttribute`](#tohaveattribute) | Waits for an attribute |
 | [`toHaveCount`](#tohavecount) | Waits for an exact match count |
 | [`toHaveAccessibleName`](#tohaveaccessiblename) | Waits for an accessible name |
@@ -272,7 +272,7 @@ exists, so `not.toContainText(['Deleted'])` fails while any match contains
 
 #### `toHaveValue`
 
-Waits for a form control's value, compared as it is.
+Waits for a control's value, compared as it is.
 
 ```ts
 await expect(screen.getByLabel('Email')).toHaveValue('ada@example.test');
@@ -285,8 +285,19 @@ await expect(screen.getByLabel('Search')).toHaveValue('');
   An empty editor reads as `''`.
 - A control the platform reports without a value, such as a cleared field on
   a device, reads as `''`.
-- A node whose role carries no value, such as a heading or a link, never
-  satisfies `toHaveValue`, negated or not. The message reads
+- On the web, a `slider`, `spinbutton`, `progressbar`, `meter`, or `scrollbar`
+  that is not a native form control or an editor reads its `aria-valuetext`,
+  else its `aria-valuenow`, skipping a blank one. Without either, a native
+  `<progress>` or `<meter>` with a `value` attribute reads the browser's
+  built-in `.value`, clamped to its range, even when a customized built-in
+  (`<progress is="...">`) overrides that getter. A `slider` or `spinbutton`
+  with none reads as `''`, and any other widget with none, such as an
+  indeterminate `<progress>`, has no value and is refused.
+- On a device, a node reads the accessibility value the platform reports.
+  Android drops the value of a non-editable node when it repeats the node's
+  label.
+- Any other node with no value, such as a heading or a link, never satisfies
+  `toHaveValue`, negated or not. The message reads
   `no value (not a form control)`.
 
 #### `toHaveAttribute`
@@ -464,6 +475,7 @@ still change, use [Polling a value](#polling-a-value).
 | [`toBeGreaterThan` and others](#numeric-comparisons) | Numeric bound holds |
 | [`toBeCloseTo`](#tobecloseto) | Within `10 ** -digits / 2` |
 | [`toMatchSchema`](#matching-a-schema) | Standard Schema validation |
+| [`toBeOK`](#tobeok) | Response status is 2xx |
 
 A matcher that cannot evaluate its value fails as `ASSERTION_FAILED`, like a
 mismatch. Examples are `toContain` on a number, or `toHaveLength` on a value
@@ -623,6 +635,34 @@ expect(users.map((user) => user.name)).toContain('Ada');
 - A matcher returns before anything could await it, so a schema that
   validates asynchronously (an async refinement) is `INVALID_ARGUMENT`.
 - Negated, it passes when the value does not match and returns nothing.
+
+#### `toBeOK`
+
+Requires a [`WebResponse`](/reference/request#webresponse) whose status is
+2xx, from 200 to 299. It takes what `request`, `browser.waitForResponse`, and
+`route.fetch()` return.
+
+```ts
+const created = await request.post('/api/orders', { json: { sku: 'A1' } });
+expect(created).toBeOK();
+// ASSERTION_FAILED: expected a 2xx status, got 404 from https://shop.test/api/orders
+```
+
+- The failure names the status and the origin and path of `response.url`,
+  the URL of the response being checked. For `request` that is the URL after
+  redirects. Path segments show; the credentials, query, and fragment do not.
+  A relative URL, one that does not parse, or one that is not `http` or
+  `https` is left out. The body is never read.
+- A status number and other types that are not `WebResponse` fail to
+  compile, and so does `WebResponse | undefined` under `strictNullChecks`. A
+  value typed `any` compiles. In a generic helper, type the parameter as
+  `WebResponse`: `R extends WebResponse` does not compile.
+- At run time, an object with a numeric `status` and a string `url` is
+  checked as a response. A value with either field missing or of another
+  type fails as `ASSERTION_FAILED`, negated too. A `status` or `url` getter
+  that throws raises its own error.
+- To wait for a 2xx status, poll the call:
+  `await expect.poll(() => request.get('/api/jobs/7')).toBeOK()`.
 
 #### Failure messages
 
@@ -1061,7 +1101,7 @@ export interface AsyncExpectation {
   /** Waits for contained normalized text; a list waits for each entry to be contained by a distinct match, in order, extra matches allowed. */
   toContainText(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
   toContainText(expected: readonly TextMatch[], options?: TextMatcherOptions): Promise<void>;
-  /** Waits for a form control's value, compared as it is. */
+  /** Waits for a control's value, compared as it is. */
   toHaveValue(expected: TextMatch, options?: { timeout?: number }): Promise<void>;
   /** Waits for the attribute to be present; with `value`, for it to match. */
   toHaveAttribute(name: string, options?: { timeout?: number }): Promise<void>;
@@ -1175,6 +1215,12 @@ export interface ValueExpectation<T> {
    * A schema that validates asynchronously is `INVALID_ARGUMENT`.
    */
   toMatchSchema<Schema extends StandardSchemaV1>(schema: Schema): StandardSchemaV1.InferOutput<Schema>;
+  /**
+   * Requires a `WebResponse` whose status is 2xx (200 to 299), as `request`,
+   * `waitForResponse`, and `route.fetch()` return it. The failure names the
+   * status and the URL's origin and path; the body is never read.
+   */
+  toBeOK(...valueIsNotAResponse: [T] extends [WebResponse] ? [] : [never]): void;
 }
 
 /** `expect(value).not`: every value matcher inverted, none returning a value; `Back` is what `.not` returns to. */

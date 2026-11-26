@@ -6,24 +6,28 @@ import { compileGlob, compileGlobList, discoverFiles, GLOB_SYNTAX, literalPrefix
 import { CollectionError, isE2EError } from '@e2e-dev/core/lib/internal/errors';
 import { setupTestId, testId } from '@e2e-dev/core/lib/internal/ids';
 import { explainModuleError } from '../config/diagnose.ts';
-import { importModule } from '../config/load.ts';
+import { collectFile } from './collect-file.ts';
+import { realPath } from './real-path.ts';
 import type { ResolvedConfig } from '@e2e-dev/core/lib/config/resolve';
 import { staticSecretLedger } from '@e2e-dev/core/lib/run/secrecy';
 import { declarationSite } from './fixture-errors.ts';
 import {
-  collectModule,
+  groupChain,
   groupTitles,
   outermostSerialGroup,
   type GroupNode,
   type ModuleRegistration,
   type RegisteredTest,
 } from './registry.ts';
+import { parallelPlacements, type ParallelPlacement } from './parallel.ts';
 import type { SourceLocation } from '@e2e-dev/core/lib/internal/source';
 import type { TestIdentity } from '@e2e-dev/core/lib/run/records';
 
 export interface CollectedTest extends RegisteredTest, TestIdentity {
   /** Outermost serial group, when the test is a serial-group member. */
   readonly serialRoot: GroupNode | undefined;
+  /** Where the test sits among its file's parallel scopes; the planner reads it and no record carries it. */
+  readonly parallel: ParallelPlacement;
   /**
    * Whether the positionals selected this test (always, with none): its
    * file, and its declaration line when the file was named as `file:line`.
@@ -32,6 +36,8 @@ export interface CollectedTest extends RegisteredTest, TestIdentity {
    * is why the file was collected at all.
    */
   readonly selected: boolean;
+  /** Whether `.only` focuses this test (`focusedTests`); a focused test in the run filters every unfocused one. */
+  readonly focused: boolean;
 }
 
 /** Narrows a collected test to its reportable, serializable identity. */
@@ -159,15 +165,7 @@ function serialSourceId(file: string, group: GroupNode): string {
  */
 function declaredIn(absolutePath: string, source: SourceLocation | undefined): boolean {
   if (source === undefined) return false;
-  return source.file === absolutePath || realPathOf(source.file) === realPathOf(absolutePath);
-}
-
-function realPathOf(file: string): string {
-  try {
-    return realpathSync.native(file);
-  } catch {
-    return file;
-  }
+  return source.file === absolutePath || realPath(source.file) === realPath(absolutePath);
 }
 
 function toCollectedTests(
@@ -178,7 +176,14 @@ function toCollectedTests(
   lines: readonly number[] | undefined,
 ): CollectedTest[] {
   const seenTitlePaths = new Set<string>();
-  return registration.tests.map((registered) => {
+  const placementOf = parallelPlacements(registration);
+  const isSelected = registration.tests.map(
+    (registered) =>
+      selected &&
+      (lines === undefined || (declaredIn(absolutePath, registered.source) && lines.includes(registered.source!.line))),
+  );
+  const focused = focusedTests(registration.tests, isSelected);
+  return registration.tests.map((registered, index) => {
     const encoded = testId(file, registered.titlePath);
     if (seenTitlePaths.has(encoded)) {
       throw new CollectionError(
@@ -192,11 +197,33 @@ function toCollectedTests(
       file,
       id: registered.kind === 'setup' ? setupTestId(file, registered.titlePath) : encoded,
       serialRoot,
+      parallel: placementOf(groupChain(registered.group)),
       serialId: serialRoot === undefined ? undefined : serialSourceId(file, serialRoot),
-      selected:
-        selected &&
-        (lines === undefined || (declaredIn(absolutePath, registered.source) && lines.includes(registered.source!.line))),
+      selected: isSelected[index]!,
+      focused: focused[index]!,
     };
+  });
+}
+
+/**
+ * Which of a file's tests `.only` focuses, by Playwright's rule: a test
+ * marked `only` is focused, and so is a test inside a focused group unless
+ * something inside that group (its innermost focused one) is marked `only`
+ * too, which narrows the focus to it. A skipped test stays focused, so it
+ * reports its own skip and CI still rejects the `.only`. Like Playwright,
+ * focus is decided after line selection: a test the lines left out neither
+ * is focused nor narrows a group around it.
+ */
+function focusedTests(tests: readonly RegisteredTest[], isSelected: readonly boolean[]): boolean[] {
+  const markers = tests.map((test, index) => isSelected[index] ? [
+    ...groupChain(test.group).filter((group) => group.options.only === true),
+    ...(test.options.only === true ? [test] : []),
+  ] : []);
+  // A focused group with a marker below it on some test's path keeps only that marker's tests.
+  const narrowed = new Set(markers.flatMap((onPath) => onPath.slice(0, -1)));
+  return tests.map((test, index) => {
+    const innermost = markers[index]!.at(-1);
+    return innermost === test || (innermost !== undefined && !narrowed.has(innermost));
   });
 }
 
@@ -503,7 +530,7 @@ async function collectFiles(
     const skippable = narrowed && !isSelected(file);
     let registration: ModuleRegistration;
     try {
-      registration = await collectModule(() => importModule(absolutePath, 'collect', graph), absolutePath, redact);
+      registration = await collectFile(absolutePath, 'collect', redact, graph);
     } catch (cause) {
       if (skippable) {
         uncollected.push({ file, reason: isCollectionError(cause) ? cause.message : explainModuleError(cause, absolutePath) });

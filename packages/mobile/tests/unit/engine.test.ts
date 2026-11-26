@@ -179,9 +179,14 @@ describe('manifest', () => {
       expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "ios" app.permissions.camera must be one of grant, deny, reset, got "granted"' }),
     );
     expect(() => validateApp!(app(new Map([['camera', 'grant']])), info)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "ios" app.permissions must be a plain object of permission names to grant, deny, reset' }),
+      expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "ios" app.permissions must be \'all\' or a plain object of permission names to grant, deny, reset' }),
+    );
+    expect(() => validateApp!(app('every'), info)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CONFIG', message: 'target "ios" app.permissions must be \'all\' or a plain object of permission names to grant, deny, reset' }),
     );
     expect(() => validateApp!(app({ camera: 'grant', 'media-library': 'deny', photos: undefined }), info)).not.toThrow();
+    // Config load hands an engine 'all' as allPermissions, never as the string.
+    expect(() => validateApp!({ bundleId: 'com.example.app', allPermissions: true }, info)).not.toThrow();
   });
 });
 
@@ -309,6 +314,7 @@ describe('lifecycle', () => {
     for (const configured of [['iPhone 16e', 'iPad Pro 11-inch'], undefined]) {
       const h = harness(configured === undefined ? {} : { device: configured });
       expect(h.engine.selectsDevice).toBe(true);
+      expect(h.engine.grantsAllPermissions).toBe(true);
       const result = await h.prepare(info('iPhone 17 Pro'));
       // One named device is one worker, whatever the run planned.
       expect(result?.workers).toBe(1);
@@ -3544,6 +3550,32 @@ describe('device fixture', () => {
     ]);
   });
 
+  it('grants every permission before each fresh launch with \'all\', in one agent-device all on either platform, and for one openApp', async () => {
+    for (const platform of ['ios', 'android'] as const) {
+      const h = harness({ platform, bundleId: 'com.example.app', allPermissions: true });
+      h.fake.respond('apps.open', () => ({ session: 's', appName: 'Example', appBundleId: 'com.example.app', identifiers: {} }));
+      await boot(h, platform);
+      await h.engine.startAttempt!({ attemptId: 'a1', artifactsDir, signal: new AbortController().signal, resolveSecret: noSecrets, ...ignoreTrace });
+      const device = fixture(h);
+      const before = h.fake.calls.length;
+      await h.engine.session!.restart!(operation());
+      await h.engine.session!.reset!(operation());
+      await device.openApp('com.other', { relaunch: true, permissions: 'all' });
+      // agent-device expands `all` itself: the app's declared permissions on Android, each privacy service on iOS.
+      const all = (app: string): [string, unknown][] => [['settings.update', { setting: 'permission', permission: 'all', state: 'grant', platform, app }]];
+      const fresh: [string, unknown] = ['apps.open', { platform, app: 'com.example.app', relaunch: true }];
+      expect(h.fake.calls.slice(before).map((call) => [call.method, call.args]), platform).toEqual([
+        ...all('com.example.app'),
+        fresh,
+        ['settings.update', { platform, setting: 'clear-app-state', state: 'clear', app: 'com.example.app' }],
+        ...all('com.example.app'),
+        fresh,
+        ...all('com.other'),
+        ['apps.open', { platform, app: 'com.other', relaunch: true }],
+      ]);
+    }
+  });
+
   it('spells a launch-argument object for the platform on every fresh launch of the pinned app, and sends nothing for an empty object', async () => {
     const launchArguments = { AppleLanguages: ['fr', 'en-GB'], AppleLocale: 'fr_FR', e2e: true, retries: 3 };
     const ios = harness({ bundleId: 'com.example.app', launchArgumentValues: launchArguments });
@@ -4877,6 +4909,38 @@ describe('deterministic actions', () => {
     // The swipe shape a locator-scoped scrollUntilVisible sends (momentum: 'slow').
     await expect(h.engine.perform!(scroller.ref, { kind: 'swipe', direction: 'down', momentum: 'slow' }, test())).rejects.toMatchObject(refused);
     expect(h.fake.methods()).not.toContain('interactions.swipe');
+  });
+
+  it('fails a point swipe agent-device refuses as off its viewport as NOT_ACTIONABLE, naming duration only when the keyboard cut an untimed swipe', async () => {
+    const h = harness({ settle: false, transition: 0 });
+    await openAttempt(h);
+    const refuse = (viewport: { width: number; height: number }, point: { x: number; y: number }) => (): never => {
+      throw new AppError('INVALID_ARGS', `Gesture point (${point.x}, ${point.y}) is outside the usable area of the ${viewport.width}x${viewport.height} viewport`, {
+        reason: 'GESTURE_TRAJECTORY_OUT_OF_BOUNDS',
+        viewport: { x: 0, y: 0, ...viewport },
+        sample: { offsetMs: 100, point },
+        hint: 'Use the coordinate units snapshot reports: points on Apple platforms, not screenshot pixels.',
+      });
+    };
+    const swipe = (durationMs?: number) =>
+      h.engine.performAt!({ x: 201, y: 261 }, { kind: 'swipeTo', target: { x: 201, y: 610 }, ...(durationMs === undefined ? {} : { durationMs }) }, test());
+    const refusedWith = async (respond: () => never, durationMs: number | undefined, hint: RegExp) => {
+      h.fake.respond('interactions.swipe', respond);
+      h.fake.respond('interactions.pan', respond);
+      const failure = swipe(durationMs);
+      await expect(failure).rejects.toMatchObject({ code: 'NOT_ACTIONABLE', retryable: false });
+      await expect(failure).rejects.toThrow(hint);
+    };
+    const keyboardHint = /Hint: Nothing was sent\. The open soft keyboard cuts the 844-point screen .*pass duration to send the path as given, across the keyboard\.$/;
+    const ownHint = /viewport Hint: Use the coordinate units/;
+
+    // No observation before the swipe: the screen is read when the refusal needs it.
+    await refusedWith(refuse({ width: 390, height: 500 }, { x: 201, y: 610 }), undefined, keyboardHint);
+    await refusedWith(refuse({ width: 390, height: 500 }, { x: 201, y: 610 }), 100, ownHint);
+    await refusedWith(refuse({ width: 390, height: 500 }, { x: 0, y: 400 }), undefined, ownHint);
+    await refusedWith(refuse({ width: 390, height: 500 }, { x: 603, y: 1800 }), undefined, ownHint);
+    await refusedWith(refuse({ width: 390, height: 844 }, { x: 201, y: 5000 }), undefined, ownHint);
+    await refusedWith(refuse({ width: 844, height: 390 }, { x: 201, y: 610 }), undefined, ownHint);
   });
 
   it('refuses the agent node swipe on a capture without the window origin', async () => {

@@ -143,6 +143,7 @@ run only in a browser, so a test that uses it declares
 | `expect(locator, 'message')`, `expect(page, 'message').toHaveScreenshot()`, `expect(value, 'message')` | the same, `expect(screen, 'message')` for the page; the message opens the failure, see [locator matchers](/reference/expect#locator-matchers) |
 | `expect.any()`, `anything()`, `objectContaining()`, `arrayContaining()`, `stringMatching()`, `stringContaining()`, `expect.poll()`, `expect.soft()` | the same |
 | `expect.poll(read, { intervals })` | the same. See [Polling a value](/reference/expect#polling-a-value) |
+| `expect(response).toBeOK()` | the same, on what `request`, `waitForResponse`, and `route.fetch()` return. See [`toBeOK`](/reference/expect#tobeok) |
 | `expect(fn).toPass(options?)` | the same. See [Retrying a block](/reference/expect#retrying-a-block) |
 
 </Accordion>
@@ -171,9 +172,10 @@ run only in a browser, so a test that uses it declares
 | `page.evaluate(fn, arg)` | `browser.evaluate(fn, arg)`, JSON in and out |
 | `page.webmcp.tools()`, `page.webmcp.callTool(name, input)` | the same on `browser.webmcp`, with `web({ webmcp: true })` in place of the launch argument or preferences; the main frame only, see [WebMCP](/reference/web#webmcp) |
 | `page.addInitScript()`, `page.emulateMedia({ colorScheme, reducedMotion })` | `browser.addInitScript()` or `web({ initScripts })`; `browser.emulateMedia()` |
-| `context.addCookies()`, `cookies()`, `clearCookies()` | `browser.setCookies()`, `browser.cookies()`, `browser.clearCookies()` |
+| `context.addCookies()`, `cookies(urls)`, `clearCookies()` | `browser.setCookies()`, `browser.cookies(urls)`, `browser.clearCookies()` |
+| `context.setOffline(true)` | [`browser.setNetwork('offline')`](/reference/web#setnetwork), `'online'` to go back |
 | The `request` fixture: `get()`, `post()`, `put()`, `patch()`, `delete()`, `head()`, `fetch()` | the same on [`request`](/reference/request): `{ json }` for `data` (it refuses an `undefined` value or a `Date`), the query in the URL for `params`, `{ redirect: 'manual' }` for `maxRedirects: 0`, `status` and `headers` as properties. It keeps no cookies between calls: pass a token or session cookie in `headers` |
-| `page.request`, which shares the page's cookies | `request` with a `cookie` header from `browser.cookies()`, see [Signed-in requests](/api-testing#signed-in-requests) |
+| `page.request`, which shares the page's cookies | `request` with a `cookie` header from `browser.cookies(url)`, see [Signed-in requests](/api-testing#signed-in-requests) |
 
 </Accordion>
 <Accordion title="Test structure">
@@ -187,7 +189,11 @@ run only in a browser, so a test that uses it declares
 | `test.slow()`, `test.slow(condition, description)` | the same inside a test body or `beforeEach`: triples the test's timeout in force; in `beforeAll`, that hook's own timeout. Once per attempt, as in Playwright. At describe level (any form) it is a `COLLECTION_ERROR`: call it in a `beforeEach` |
 | `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | the same, with no title; `beforeAll` and `afterAll` get worker fixtures, not `browser`, `app`, or `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
+| `fullyParallel` in the config or a project, `--fully-parallel` | the same, in the config or on a target |
+| `describe.configure({ mode: 'parallel' })`, `test.describe.parallel` | `describe.configure({ parallel: true })`, or `{ parallel: true }` on a `describe`, see [`parallel`](/reference/test#parallel) |
+| `describe.configure({ mode: 'default' })` | `describe.configure({ parallel: false })`, or `{ parallel: false }` on a `describe` |
 | `test.fail()` on a describe | `test.describe.fail(title, fn)`, or `{ fail: 'reason' }` on the group; for a condition, `test.fail(condition, 'reason')` in a `beforeEach` |
+| `test.describe.only()` | the same, or `{ only: true }` on the group; CI rejects it with `ONLY_IN_CI`, as it does `test.only` |
 | `{ tag: '@smoke' }` | `{ tags: ['smoke'] }` on a test or group |
 | `test.extend({ fixture })` | the same shape, set up on demand: a test, a hook, or a fixture gets the fixtures it names in its first parameter |
 | `[fn, { scope: 'worker' }]` fixtures | the same, typed with the second type argument of `extend` |
@@ -262,7 +268,7 @@ purpose. Use the workaround, or keep the test in Playwright.
 
 | Playwright | Use today |
 | --- | --- |
-| `locator.locator(selector)`, `locator.and()`, `filter({ visible })` | One `browser.locator` selector, such as `'.card >> .close'`, or a `screen` query inside the scope |
+| `locator.and()`, `filter({ visible })` | One `browser.locator` selector, or a `screen` query inside the scope |
 | `locator.evaluate()`, `expect(locator).toHaveClass()`, `toHaveCSS()`, `dispatchEvent()` | `browser.evaluate(fn, selector)`; `expect(browser).toHaveClass(locator, cls)` |
 | `selectOption([...])`, `hover({ position })` | `browser.evaluate` for a multi-select; `browser.mouse` with `boundingBox()` |
 
@@ -289,9 +295,8 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `route.fulfill({ response })`, `route.abort(code)`, `route.fetch(options)`, `request.postDataJSON()` | `status`, `headers`, and `body` from `route.fetch()`; `JSON.parse(route.request.postData)` |
 | `page.addLocatorHandler()` | Dismiss the overlay in `beforeEach`, or set its consent cookie with `browser.setCookies` |
 | `page.on('console')`, `page.on('pageerror')`, `page.clock` | A `browser.addInitScript` that records to a `window` array, or that stubs `Date` |
-| `context.setOffline()`, `setGeolocation()`, `grantPermissions()` | A route that aborts every request; a `browser.addInitScript` stub; `app.permissions` on the target |
+| `setGeolocation()`, `grantPermissions()` | A `browser.addInitScript` stub; `app.permissions` on the target |
 | `ignoreHTTPSErrors`, `proxy`, `channel`, `launchOptions` | Serve the app over `http`; start the browser yourself and attach with `web({ connect })` |
-| `expect(response).toBeOK()` | `expect(response.status).toBeGreaterThanOrEqual(200)` and `expect(response.status).toBeLessThan(300)` |
 
 </Accordion>
 <Accordion title="Test structure, reports, and CLI">
@@ -300,12 +305,11 @@ purpose. Use the workaround, or keep the test in Playwright.
 | --- | --- |
 | `test.step()`, `testInfo.attach()` | Each call is already a named step in the report; `app.screenshot(label)` attaches a screenshot |
 | `test.info()`, `testInfo` in hooks and fixtures, `annotations` | Your own fixture or module state; an issue id in the title or a tag |
-| `fullyParallel`, `describe.configure({ mode: 'parallel' })` | Split the file. Files run in parallel, a file's tests in order |
 | `mergeTests()` | One chain of `extend` calls |
 | `globalSetup`, `globalTeardown`, a `webServer` array | A script around the run, or one `app.command` that starts every process |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | `platforms` or tags on the tests, or one run for each target |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`; `npx e2e report` (opens `<output>/report.html` written by `htmlReporter()`) |
-| `test.describe.only()`, `test.describe.fixme()`, `test.fixme(title, details, body)` | `{ timeout }` or `{ skip: 'fixme' }` on the test or group, with any `tags` from the details beside it, reported with skip cause `explicit`, not `fixme`; `test.only` on each test |
+| `test.describe.fixme()`, `test.fixme(title, details, body)` | `{ timeout }` or `{ skip: 'fixme' }` on the test or group, with any `tags` from the details beside it, reported with skip cause `explicit`, not `fixme` |
 | `test.skip(callback, description)`, `test.fixme(callback, description)` | `test.skip(condition, reason)` or `test.fixme(condition, reason)` inside the body, or `platforms` on the test |
 | `failOnFlakyTests`, `use.navigationTimeout`, `--timeout`, `--quiet` | `run.summary.flaky` in `report.json`; `browser.goto(url, { timeout })`; `timeout` in the config |
 | The `blob` reporter and `merge-reports` | One report for each shard |
@@ -322,7 +326,7 @@ purpose. Use the workaround, or keep the test in Playwright.
 | Playwright | Use today |
 | --- | --- |
 | `projects[].retries`, `projects[].timeout` | Options on a group |
-| `--debug`, the VS Code extension | `--step --headed` holds each step until a key; `screen.debug()` prints the tree |
+| `--debug`, the VS Code extension | `--step --headed` runs the first step, then holds each later step until a key; `screen.debug()` prints the tree |
 | Option fixtures, overriding `page` or `context` in `extend` | `process.env` in the fixture; a new fixture under its own name |
 | `const response = await page.goto()` | Start `browser.waitForResponse` before the navigation |
 | A Playwright `Reporter` class, third-party reporters | A [custom reporter](/reference/reporters#custom-reporters) with `onEvent` and `onRunFinished`; `junit.xml` for a dashboard |
@@ -345,6 +349,7 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `page.goto('data:...')`, `'file://...'` | `route.fulfill({ body, contentType: 'text/html' })` on an app URL. Only `http` and `https` open |
 | `getByRole(role, { includeHidden })` | `browser.locator('role=button[include-hidden=true]')`. A role query follows the accessibility tree |
 | `--grep @smoke` for a tag, a regex positional, `file:line:column` | `--tag smoke`; a glob or a bare name; `file:line` |
+| `locator.locator(selector)` | A `screen` query inside the scope, such as `card.getByRole('button', { name: 'Close' })`, or one `browser.locator` selector, such as `'.card >> .close'` |
 | `getByTitle()` | `browser.locator('[title="Close"]')`. A title is a DOM attribute, so it has no `screen` query |
 | `page.waitForLoadState()` | An assertion on what the next page shows. A navigation waits for `load`, and each action and assertion waits for its node |
 | `npx playwright codegen`, the Inspector | [`npx e2e mcp`](/mcp-server) lets a coding agent drive the app while it writes the test; `screen.debug()` prints the tree |

@@ -49,7 +49,7 @@ import {
   ConfigurationError,
   TestError,
 } from '@e2e-dev/core/engine';
-import { isAppNotRunning, isSnapshotPresentationFailure, isUnreadableCapture, ORIGIN_UNKNOWN_BOUNDS, ORIGIN_WARNING, runCommand, staleOr } from './errors.ts';
+import { isAppNotRunning, isSnapshotPresentationFailure, isUnreadableCapture, ORIGIN_UNKNOWN_BOUNDS, ORIGIN_WARNING, refusedSwipePath, runCommand, staleOr } from './errors.ts';
 import { pointerInteraction, DEFAULT_LONG_PRESS_MS, MAX_TAP_COUNT } from './actions.ts';
 import { resolveExpression } from './locate.ts';
 import { launchArgumentList, launchArgumentsForOpen } from './launch-arguments.ts';
@@ -67,12 +67,12 @@ import {
   type ProjectedSnapshot,
 } from './nodes.ts';
 import { keyboardDragStart, keyboardShownIn, type KeyboardUnknown } from './keyboard.ts';
-import { DEVICE_PERMISSIONS, type AgentDeviceClient, type ClientFactory, type DevicePermission, type LaunchPermissions, type MobileOptions, type PermissionState } from './options.ts';
+import { DEVICE_PERMISSIONS, type AgentDeviceClient, type ClientFactory, type DevicePermission, type LaunchPermissions, type MobileOptions, type MobilePlatform, type PermissionState } from './options.ts';
 import { maskPng } from './png.ts';
 import { mobileDoctor } from './doctor.ts';
-import { deviceLabel, pinnedApp, type SlotBinding } from './bindings.ts';
+import { deviceLabel, deviceSelection, pinnedApp, type DeviceSelection, type SlotBinding } from './bindings.ts';
 import { assertAppId } from './links.ts';
-import { bootRequest, DevicePool, deviceSelection, type DeviceSelection } from './pool.ts';
+import { bootRequest, DevicePool } from './pool.ts';
 import { recordLease, travelledLease, type DeviceLease, type RecordingDeviceProvider } from './provider.ts';
 import {
   installedIdentity,
@@ -127,8 +127,8 @@ export interface OpenAppOptions {
   readonly launchArguments?: LaunchArguments;
   /**
    * Permissions the app holds before this launch, each granted, denied, or
-   * reset. Replaces the target's `app.permissions` for a relaunch of the
-   * pinned app.
+   * reset, or `'all'` to grant every one the platform can. Replaces the
+   * target's `app.permissions` for a relaunch of the pinned app.
    */
   readonly permissions?: LaunchPermissions;
 }
@@ -386,19 +386,25 @@ const SNAPSHOT_MODES: readonly string[] = Object.keys({ full: true, interactive:
 /** Every state a permission takes, kept equal to `PermissionState` by the compiler. */
 const PERMISSION_STATES: readonly string[] = Object.keys({ grant: true, deny: true, reset: true } satisfies Record<PermissionState, true>);
 
+/** The target's `app.permissions` as a launch takes them: `'all'` arrives from the harness as `allPermissions`. */
+function configuredPermissions(app: EngineAppInfo): LaunchPermissions | undefined {
+  return app.allPermissions === true ? 'all' : app.permissions;
+}
+
 /**
- * Refuses a permissions map before any device command: anything but a plain
- * object, a name agent-device
+ * Refuses a permissions map before any device command: anything but `'all'`
+ * or a plain object, a name agent-device
  * does not set, naming the nearest, or a state other than grant, deny, or
  * reset. `INVALID_CONFIG` for a target's `app.permissions`, `INVALID_ARGUMENT`
  * for a test's `device.openApp`. An `undefined` state is skipped, as the preset
  * skips it.
  */
 export function assertPermissions(label: string, permissions: unknown, code: 'INVALID_CONFIG' | 'INVALID_ARGUMENT'): void {
+  if (permissions === 'all') return;
   // A Map or class instance carries no own keys to check, and the preset would apply none of it.
   const prototype: unknown = typeof permissions === 'object' && permissions !== null ? Object.getPrototypeOf(permissions) : undefined;
   if (prototype !== Object.prototype && prototype !== null) {
-    permissionError(code, `${label} must be a plain object of permission names to ${PERMISSION_STATES.join(', ')}`);
+    permissionError(code, `${label} must be 'all' or a plain object of permission names to ${PERMISSION_STATES.join(', ')}`);
   }
   rejectUnknownKeys(label, permissions as object, DEVICE_PERMISSIONS, code);
   for (const [name, state] of Object.entries(permissions as Record<string, unknown>)) {
@@ -495,7 +501,7 @@ export interface BoundDevice {
   readonly deviceName: string;
 }
 
-export class AgentDeviceSurface {
+export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform> {
   private client: AgentDeviceClient | undefined;
   private attempt: Attempt | undefined;
   /** Retained across attempt cleanup until a stop or native session reset is confirmed. */
@@ -558,7 +564,7 @@ export class AgentDeviceSurface {
   private knownViewport: ViewportSize | undefined;
 
   constructor(
-    readonly options: MobileOptions,
+    readonly options: MobileOptions<Platform>,
     private readonly createClient: ClientFactory,
   ) {
     rejectUnknownKeys('mobile()', options, MOBILE_OPTION_KEYS);
@@ -901,7 +907,7 @@ export class AgentDeviceSurface {
     // permission change there would terminate the app it means to keep.
     const configured = relaunch && app === this.pinnedApp;
     const launchArguments = launchArgumentsForOpen(this.options.platform, options.launchArguments) ?? (configured ? (this.app.launchArgumentValues ?? this.app.launchArguments) : undefined);
-    const permissions = options.permissions ?? (configured ? this.app.permissions : undefined);
+    const permissions = options.permissions ?? (configured ? configuredPermissions(this.app) : undefined);
     if (permissions !== undefined) await this.presetPermissions(app, permissions, signal);
     await this.open(app, relaunch, launchArguments, signal);
   }
@@ -927,9 +933,14 @@ export class AgentDeviceSurface {
    * Puts an app's permissions in place before it launches, never after: iOS
    * terminates a running app whose permission changed, and Android one whose
    * permission was revoked, so a change after the launch would leave the
-   * test on no screen.
+   * test on no screen. `'all'` is one agent-device `all` grant on either
+   * platform; `LaunchPermissions` says what it grants on each.
    */
   private async presetPermissions(app: string, permissions: LaunchPermissions, signal: AbortSignal): Promise<void> {
+    if (permissions === 'all') {
+      await this.permission('all', 'grant', app, signal);
+      return;
+    }
     const entries = Object.entries(permissions).filter(
       (entry): entry is [DevicePermission, PermissionState] => entry[1] !== undefined,
     );
@@ -947,7 +958,7 @@ export class AgentDeviceSurface {
   }
 
   /** One permission change on `app`, which needs no running app and no open in the session. */
-  private async permission(permission: DevicePermission, state: PermissionState, app: string | undefined, signal: AbortSignal): Promise<void> {
+  private async permission(permission: DevicePermission | 'all', state: PermissionState, app: string | undefined, signal: AbortSignal): Promise<void> {
     await this.command(
       `permission ${permission} ${state}`,
       (client) => client.settings.update({ setting: 'permission', permission, state, ...this.selection(), ...(app === undefined ? {} : { app }) }),
@@ -1051,7 +1062,7 @@ export class AgentDeviceSurface {
           : client.apps.install({ ...selection, ...(app === undefined ? {} : { app }), appPath: resolved }),
       signal,
     );
-    const installed: InstalledApp = installedIdentity(result, app, resolved);
+    const installed: InstalledApp = installedIdentity(result, app, resolved, "the target's `app.bundleId` or installApp's `app` option");
     // The engine's own build, installed: without `app`, this is what `app.open()` launches from here on.
     if (engineBuild) this.installedApp = installed.app;
     return installed;
@@ -1716,7 +1727,11 @@ export class AgentDeviceSurface {
   async performAt(point: ViewportPoint, action: PointerAction, operation: OperationContext, input: InputBudget): Promise<void> {
     const settle = operation.origin === 'test' ? {} : this.settleOptions;
     const before = this.latestScreen;
-    await this.command(`${action.kind} at point`, (client) => pointerInteraction(client, point, action, settle, gestureStabilization(operation), input), operation.signal);
+    const label = `${action.kind} at point`;
+    await this.command(label, (client) => pointerInteraction(client, point, action, settle, gestureStabilization(operation), input).catch(async (cause: unknown) => {
+      if (action.kind !== 'swipeTo') throw cause;
+      throw await refusedSwipePath(cause, label, action.durationMs !== undefined, () => this.viewport(operation, input));
+    }), operation.signal);
     if (action.kind === 'swipeTo') this.noteGesture(operation);
     this.markAction(before);
   }

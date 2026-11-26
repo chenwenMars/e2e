@@ -14,6 +14,7 @@ import { resultId, timestamp, uuidv7 } from '@e2e-dev/core/lib/internal/ids';
 import { abortError, cancelledError, Deadline, withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
 import { createAgentCacheContext, settleStagedTraces } from '@e2e-dev/core/lib/cache/context';
 import { storedRecordingsFor, type StoredRecordings } from '@e2e-dev/core/lib/cache/rekeyed';
+import { inLoadOf } from '../collect/collect-file.ts';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
 import { pairRecordings, type TestTargetPair } from '../collect/select.ts';
 import type { ArtifactStore } from '@e2e-dev/core/lib/types';
@@ -270,12 +271,17 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
   async runFileUnit(
     file: FileRef,
     filePairs: readonly TestTargetPair[],
-    freshRegistration?: ModuleRegistration,
+    freshRegistration: ModuleRegistration | undefined,
+    keepRealm: boolean,
   ): Promise<void> {
     const executedSerialUnits = new Set<string>();
     const ordered = filePairs.toSorted((a, b) => a.test.declarationIndex - b.test.declarationIndex);
     let realm: Realm | null =
       freshRegistration === undefined ? null : this.realms.adopt(freshRegistration, file);
+    // What the file's next unit on this worker may run in: the last realm ordinary tests shared, while nothing failed.
+    let reusable = realm;
+    let failed = false;
+    const runErrorsBefore = this.runErrors.length;
     for (const [index, pair] of ordered.entries()) {
       // One serial unit per agent the group runs as: its members are the
       // group's pairs under that agent, in declaration order. The unit
@@ -299,11 +305,15 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
         // sharing ends here, afterAll included.
         if (realm !== null) await this.realms.leave(realm);
         realm = null;
-        await runSerialUnit(this, members, file);
+        const group = await runSerialUnit(this, members, file);
+        if (group.status !== 'passed') failed = true;
         continue;
       }
       this.pairStarted(pair);
       realm = await this.runOrdinaryPair(pair, file, realm);
+      // A pair leaves no realm when an attempt of it failed.
+      if (realm === null) failed = true;
+      else reusable = realm;
       // A scope's afterAll runs as soon as its last test in this realm is
       // done, so a describe's teardown never lands after a sibling's tests.
       if (realm !== null) {
@@ -319,6 +329,8 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       }
     }
     if (realm !== null) await this.realms.leave(realm);
+    // A suite hook that failed is a run error.
+    if (keepRealm && !failed && reusable !== null && this.runErrors.length === runErrorsBefore) this.realms.keep(reusable);
   }
 
   /** Records a deterministic-registration violation as a run-level error. */
@@ -462,7 +474,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       },
       async () => {
         try {
-          return await this.executeAttempt(pair, registered, realm, attemptIndex, context);
+          return await inLoadOf(realm.registration, () => this.executeAttempt(pair, registered, realm, attemptIndex, context));
         } finally {
           this.options.events?.onAttemptEnd?.();
         }
@@ -668,6 +680,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
     // the phase it landed in, beside a failure already there.
     let cutBody: ((cause: unknown) => void) | undefined;
     let leaveWorkerFixtures: (() => void) | undefined;
+    let endBudget: (() => void) | undefined;
     this.strayFailure = (cause) => {
       if (cutBody !== undefined) {
         attemptAbort.abort();
@@ -715,6 +728,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       const announce = (remainingMs?: number): void =>
         this.options.events?.onAttemptDeadline?.(pair, { index: attemptIndex, id: attemptId, startedAt, timeoutMs: timeout.timeoutMs, ...(remainingMs === undefined ? {} : { remainingMs }) });
       const budget = new AttemptBudget(attemptAbort.signal, new Deadline(pair.options.timeout));
+      endBudget = () => budget.end();
       const timeout = new AttemptTimeout(budget, pair.options.timeout, announce);
       announce();
       const saveSession =
@@ -990,6 +1004,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       this.strayFailure = undefined;
       this.lastAttemptTestId = pair.test.id;
       attemptEnd.abort();
+      endBudget?.();
       this.interruptSignal.removeEventListener('abort', onInterrupt);
       // The verdict is reached before the session closes: nothing after this
       // point changes it, and the close reads it to decide what the attempt's

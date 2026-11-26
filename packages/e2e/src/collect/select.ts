@@ -325,7 +325,7 @@ export function select(
 
   // Focus is decided among the tests positionals selected: a `.only` left in
   // a file the run did not name neither runs nor silences the named files.
-  const focused = collection.tests.filter((test) => test.mode === 'only' && test.selected);
+  const focused = collection.tests.filter((test) => test.focused && test.selected);
   if (focused.length > 0 && config.ci) {
     throw new ConfigurationError(
       'ONLY_IN_CI',
@@ -506,6 +506,9 @@ function describeNoTests(
       case 'fixme':
         count('marked fixme', pair.test);
         break;
+      case 'todo':
+        count('marked todo', pair.test);
+        break;
       case 'platform-unavailable':
         count(`declare platforms other than ${pair.target.platform}`, pair.test);
         break;
@@ -635,7 +638,7 @@ function classifyPair(
         skip: { cause: 'filtered', reason: selectedFiles.has(test.file) ? FILTERED_REASON.line : FILTERED_REASON.file },
       };
     }
-    if (focused.length > 0 && test.mode !== 'only') {
+    if (focused.length > 0 && !test.focused) {
       return {
         ...base,
         disposition: 'filtered',
@@ -695,7 +698,7 @@ function classifyPair(
     return {
       ...base,
       disposition: 'skip',
-      skip: { cause: test.mode === 'fixme' ? 'fixme' : 'explicit', reason: options.skipReason },
+      skip: { cause: test.mode === 'fixme' || test.mode === 'todo' ? test.mode : 'explicit', reason: options.skipReason },
     };
   }
 

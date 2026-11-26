@@ -11,6 +11,7 @@
 
 import { isModelUnreachable } from '@e2e-dev/core/lib/agent/error';
 import { settleStagedTraces, type AgentCacheContext } from '@e2e-dev/core/lib/cache/context';
+import { inLoadOf } from '../collect/collect-file.ts';
 import { collect, type CollectedFile } from '../collect/collect.ts';
 import type { TestIdentity } from '@e2e-dev/core/lib/run/records';
 import { select, type TestTargetPair } from '../collect/select.ts';
@@ -428,7 +429,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       );
     }
     // Parked until teardown: a body that outlived its turn finds every harness call refused.
-    budget.enter(env.signal, 1).abort();
+    budget.end();
     const verdict: { status: StandaloneTestOutcome['status']; error?: SerializedError; skip?: string; secondaryErrors: SerializedError[]; expectedFailure?: ExpectedFailureInfo } = {
       status,
       ...(failure === undefined ? {} : { error: serialize(failure, failurePhase) }),
@@ -457,7 +458,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       begun = true;
       lastTest = test.pair.test.titlePath.join(' › ');
       try {
-        const result = await execute();
+        const result = await inLoadOf(test.file.registration, execute);
         if (result.started !== undefined) liveRuns.push(self);
         return result;
       } finally {
@@ -503,6 +504,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
           await executor.realms.leave(started.realm, env.session).catch((cause: unknown) => errors.push(serialize(cause, 'afterAll')));
         } finally {
           leaveWorkerFixtures?.();
+          budget.end();
           steps.phase = undefined;
           publication.abort();
           strayInTurn = undefined;
