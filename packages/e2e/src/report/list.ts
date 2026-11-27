@@ -63,8 +63,11 @@ import {
 } from './format.ts';
 import { leftOutTests } from './left-out.ts';
 import { ExploreView } from './list-explore.ts';
-import { isShownEvent, type ConfiguredModel, type FileGroup, type PausedTest, type ReplayNotice, type RunningTest, type TestLine } from './list-model.ts';
-import { pauseLinePrinter, replayLine, replayNotices, stepLine, stepPromptRows } from './list-steps.ts';
+import {
+  currentStep, isShownEvent, listStep, listsUnderTest, printsAtEnd, recordedSteps,
+  type ConfiguredModel, type FileGroup, type ListedStep, type PausedTest, type ReplayNotice, type RunningTest, type StepCall, type TestLine,
+} from './list-model.ts';
+import { fitLabel, pauseLinePrinter, replayLine, replayNotices, stepLine, stepPromptRows } from './list-steps.ts';
 import { LiveWindow } from './live-window.ts';
 import type { TerminalProgress } from './progress.ts';
 import { repeatGroups, repeatLine, repeatSummary, type RepeatRun } from './repeats.ts';
@@ -500,6 +503,9 @@ export class ListReporter {
         break;
       case 'run-error':
         this.errors.push(event.error);
+        // A setup step that fails ends as a run error, with no `finished`.
+        this.inFlight = undefined;
+        this.window.redraw();
         break;
       case 'run-interrupted':
         this.runInterrupted(event);
@@ -778,7 +784,8 @@ export class ListReporter {
       title,
       startedMs: Date.now(),
       executing: true,
-      current: undefined,
+      open: new Map(),
+      attemptIndex: undefined,
       steps: this.pairs.get(key)?.steps ?? [],
       ran: this.stepping ? (this.pairs.get(key)?.ran ?? []) : undefined,
     });
@@ -787,25 +794,40 @@ export class ListReporter {
 
   /**
    * Tracks step progress of a running pair. With a live window the pair's
-   * finished agent steps accumulate under its row there and print once, nested
-   * under its line, when the file block prints - so every name appears exactly
-   * once in the scrollback. Without a window (CI logs) nothing is transient, so
-   * each finished agent step prints at once, prefixed with its test. Deterministic
-   * steps are fast and many, so they only ever show in the live window.
+   * agent steps and `test.step` calls accumulate under its row there and print
+   * once, nested under its line, when the file block prints - so every name
+   * appears exactly once in the scrollback. Without a window (CI logs) nothing
+   * is transient, so each prints at once as it ends, prefixed with its test.
+   * Other deterministic steps are fast and many, so they only ever show in the
+   * live window.
    */
   private step(event: RunEventOf<'step'>): void {
     const running = this.pairs.get(pairKey(event.testId, event.agent, event.target, event.repeat));
     if (running === undefined) return;
     const { progress } = event;
+    // A stream without identity has one step open at a time, as before identity existed.
+    const stepId = progress.identity?.stepId ?? '';
+    const current = running.open.get(stepId);
     switch (progress.phase) {
       case 'start': {
         const { api, label, kind } = progress;
-        running.current = { api, label, kind, actor: progress.identity?.actor, events: [], replaying: false, activity: undefined };
+        const attemptIndex = progress.identity?.attemptIndex;
+        if (attemptIndex !== undefined && running.attemptIndex !== undefined && attemptIndex < running.attemptIndex) break;
+        running.attemptIndex = attemptIndex;
+        running.open.delete(stepId);
+        const parent = running.open.get(progress.identity?.parentStepId ?? '');
+        const index = progress.identity?.stepIndex;
+        const call: StepCall = {
+          api, label, kind, actor: progress.identity?.actor,
+          path: index === undefined ? undefined : [...(parent?.path ?? [attemptIndex ?? 0]), index],
+          groups: parent === undefined ? [] : [...parent.groups, parent.label],
+        };
+        running.open.set(stepId, { ...call, events: [], replaying: false, activity: undefined });
+        if (kind === 'step') this.list(running, { ...call, outcome: undefined });
         this.window.redraw();
         break;
       }
       case 'event': {
-        const { current } = running;
         this.explore?.action(progress.event);
         if (current === undefined) break;
         // The event ends whatever was announced; until the next announcement
@@ -818,40 +840,48 @@ export class ListReporter {
         break;
       }
       case 'activity': {
-        const { current } = running;
         if (current === undefined) break;
         current.activity = progress.activity;
         this.window.redraw();
         break;
       }
       case 'replay': {
-        const { current } = running;
         if (current === undefined) break;
         current.replaying = progress.active;
         this.window.redraw();
         break;
       }
       case 'end': {
-        running.current = undefined;
-        const { api, label, status, durationMs, modelCalls } = progress;
-        const step = { api, label, status, durationMs, modelCalls, actor: progress.identity?.actor };
-        running.ran?.push(step);
-        if (progress.kind !== 'agent') {
+        running.open.delete(stepId);
+        const { api, label, kind, status, durationMs, modelCalls } = progress;
+        // A step whose start was not shown (a timed-out attempt began it after the retry did) is listed by its own indexes, outside any `test.step`.
+        const identity = progress.identity;
+        const call: StepCall = current ?? {
+          api, label, kind, actor: identity?.actor, groups: [],
+          path: identity === undefined ? undefined : [identity.attemptIndex, identity.stepIndex],
+        };
+        const step: ListedStep = { ...call, outcome: { status, durationMs, modelCalls } };
+        this.list(running, step);
+        if (this.live || !printsAtEnd(kind)) {
           this.window.redraw();
-          break;
-        }
-        // An exploration's planner and charter steps show as the exploration's own rows.
-        if (this.explore !== undefined) break;
-        if (this.live) {
-          running.steps.push(step);
-          this.window.redraw();
-        } else if (this.progress === undefined) {
-          const context = `${this.pc.dim(running.title)}${this.separator}`;
+        } else if (this.explore === undefined && this.progress === undefined) {
+          // Printed as it ends, away from the `test.step` calls around it, so the line names them.
+          const context = [running.title, ...step.groups.map((title) => fitLabel(title)), ''].map((name) => this.pc.dim(name)).join(this.separator);
           this.print(`${TEST_INDENT}${stepLine(this.pc, step, { context })}`);
         }
         break;
       }
     }
+  }
+
+  /**
+   * Lists a step under its running test: every step in a stepped run's
+   * `ran`, and in the live window the kinds the scrollback keeps. An
+   * exploration's planner and charter steps show as the exploration's own rows.
+   */
+  private list(running: RunningTest, step: ListedStep): void {
+    if (running.ran !== undefined) listStep(running.ran, step);
+    if (this.live && this.explore === undefined && listsUnderTest(step.kind)) listStep(running.steps, step);
   }
 
   /** Holds a serial group until each of its members' results has read its details. */
@@ -882,7 +912,7 @@ export class ListReporter {
     if (!result.selected) return;
     const key = pairKey(result.test.id, result.agent, result.target.name, result.repeat);
     this.flushOutput(key);
-    const steps = this.pairs.get(key)?.steps ?? [];
+    const steps = recordedSteps(this.pairs.get(key)?.steps ?? []);
     this.pairs.delete(key);
     const group = this.group(result.test.file, result.target.name);
     // Read before `detailsOf` releases the result's serial group.
@@ -963,9 +993,9 @@ export class ListReporter {
   /**
    * Prints one file's block: the file line with its counts, then - when the
    * file failed, had a flaky pass, or is the run's only file - one line per
-   * test with its finished agent steps nested, as vitest lists tests for a
-   * failed module. With a live window the block is also the only permanent
-   * record of a file's agent steps, so a file that has any lists its tests
+   * test with the steps it keeps (`recordedSteps`) nested, as vitest lists
+   * tests for a failed module. With a live window the block is also the only
+   * permanent record of those steps, so a file that has any lists its tests
    * too. Without one each test already printed as it finished, so the block
    * is the file line alone.
    */
@@ -1019,7 +1049,7 @@ export class ListReporter {
   /** Prints a test's row, prefixed with `context`, then its finished agent steps and replay notices. */
   private printTestRows(line: TestLine, context = ''): void {
     for (const rendered of this.testLine(line, context)) this.print(rendered);
-    for (const step of line.steps) this.print(`${STEP_INDENT}${stepLine(this.pc, step)}`);
+    for (const step of line.steps) this.print(`${STEP_INDENT}${stepLine(this.pc, step, { depth: step.groups.length })}`);
     for (const replay of line.replays) this.print(`${STEP_INDENT}${replayLine(this.pc, replay)}`);
   }
 
@@ -1184,7 +1214,8 @@ export class ListReporter {
     if (this.progress !== undefined) return this.progress.rows?.() ?? [];
     const running = [...this.pairs.values()].filter((test) => test.executing);
     if (this.explore !== undefined) {
-      return this.explore.liveRows(this.exploreBadge(), running[0]?.current?.events, this.summaryRows(false), Date.now(), room);
+      const events = running[0] === undefined ? undefined : currentStep(running[0])?.events;
+      return this.explore.liveRows(this.exploreBadge(), events, this.summaryRows(false), Date.now(), room);
     }
     const footer = this.waiting === undefined ? [] : stepPromptRows(this.pc, this.waiting).slice(0, terminalRows() - 1);
 

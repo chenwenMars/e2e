@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { TargetSession } from '@e2e-dev/core/lib/engine/surface';
 import { isCiMode, type ResolvedConfig } from '@e2e-dev/core/lib/config/resolve';
 import { classifyError, ConfigurationError, E2EError, serializeError, sanitizeRecordedText, truncateUtf8, TestError, TestTimeoutError, withHint, type SerializedError } from '@e2e-dev/core/lib/internal/errors';
-import { isRuntimeSkip, runtimeSkipCause, type CaughtRuntimeSkip } from '../internal/skip.ts';
+import { attemptStep, isRuntimeSkip, runtimeSkipCause, type CaughtRuntimeSkip } from '../internal/skip.ts';
 import { lateExpectedFailureError } from '@e2e-dev/core/lib/internal/expected-failure';
 import { settleExpectedFailure } from './expected-failure.ts';
 import type { ExecutorAttempt } from '@e2e-dev/core/lib/agent/executor';
@@ -187,7 +187,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
     this.models = new WorkerModels((error) => {
       options.events?.onRunAbort?.({ error: serializeError(error) });
     });
-    this.workerFixtures = new WorkerFixturePool(options.target);
+    this.workerFixtures = new WorkerFixturePool(options.target, this.services);
     this.suiteAttempts = { host: this, config: options.config, models: this.models, runErrors: this.runErrors };
     this.realms = new RealmManager({
       targetName: options.target.name,
@@ -768,16 +768,18 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
         debug: this.debug,
         models: this.models,
         test: { file: pair.test.file, titlePath: pair.test.titlePath, writtenScreenshots: this.writtenScreenshots },
+        services: this.services,
       });
       if (hold !== undefined) {
-        const tools = new HeldTestTools(
-          agentRuntime,
-          this.options.runId,
-          this.target,
-          this.options.headed,
-          video !== undefined,
-          this.options.events?.onNotice,
-        );
+        const tools = new HeldTestTools({
+          runtime: agentRuntime,
+          runId: this.options.runId,
+          target: this.target,
+          headed: this.options.headed,
+          runRecordsVideo: video !== undefined,
+          notice: this.options.events?.onNotice,
+          services: this.services,
+        });
         heldTools = tools;
         const screens = {
           ledger: sessionLedger(session, this.config.allSecrets),
@@ -816,6 +818,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
           attemptId,
           guests: guests.offer,
           owner: 'suite',
+          step: attemptStep(steps, budget),
           testKind: pair.test.kind,
           assertionTimeout: this.config.assertionTimeout,
           toPass: this.config.toPass,

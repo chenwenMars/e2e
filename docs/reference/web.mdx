@@ -74,7 +74,7 @@ web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
 
 | Throws | When |
 | --- | --- |
-| `INVALID_CONFIG` | An option `web()` does not take (`url` or any other app key included), or an unknown key inside `connect` or `basicAuth`. The message names the nearest known key for a likely typo (`viewprt` is `viewport`), else every key. |
+| `INVALID_CONFIG` | An option `web()` does not take (`url` or any other app key included), or an unknown key inside `connect` or `basicAuth`. The message names the nearest known key for a likely typo (`viewprt` is `viewport`), or lists every key. |
 | `INVALID_CONFIG` | A browser provider, `connect`, `headers`, or `basicAuth` on a target whose [`app.url` is a file](/reference/config#a-file-as-the-app). |
 | `INVALID_CONFIG` | `headers`, `basicAuth`, `userAgent`, `locale`, `timezoneId`, or `deviceScaleFactor` on a [persistent context](#recovering-a-cdp-transport) (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`). |
 
@@ -247,7 +247,7 @@ How recovery runs:
 
 | Throws | When |
 | --- | --- |
-| `ENGINE_FAILURE` | A document loaded without the closed shadow DOM hook while disconnected. |
+| `ENGINE_FAILURE` | A document loaded without the closed shadow DOM hook while disconnected, or the attempt used [`browser.clock`](#clock), which recovery cannot carry. |
 | `OPERATION_TIMEOUT` | Endpoint resolution, attachment, setup, and dispatch exhausted their shared timeout. |
 | `CANCELLED` | The caller or the attempt cancelled. |
 
@@ -270,7 +270,7 @@ What survives:
 
 A `browser` provider with `scope: 'attempt'` rides the same persistent
 context, with the same limits. The lease's `cdpEndpoint` provisions the
-attempt's browser, and its `reconnectEndpoint` (else `cdpEndpoint` again)
+attempt's browser, and its `reconnectEndpoint` (or `cdpEndpoint` again)
 reconnects to it. A lease is fresh by the provider's contract, so the engine
 does not compare its context with earlier attempts'. A hosted service may
 restore browsers from one snapshot, which gives new browsers the same
@@ -481,11 +481,12 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 
 - What reads or acts on a page acts on the active tab: `goto`, `reload`,
   `back`, `forward`, `url`, `title`, `waitForURL`, `locator`, `frameLocator`,
-  `evaluate`, `waitForResponse`, `waitForDownload`, `keyboard`, `mouse`, the
-  `expect(browser)` matchers, and every `screen` query.
+  `evaluate`, `waitForResponse`, `waitForRequest`, `waitForDownload`,
+  `keyboard`, `mouse`, the `expect(browser)` matchers, and every `screen`
+  query.
 - What belongs to the browser covers every tab: `cookies`, `setCookies`,
-  `clearCookies`, `route`, `unroute`, `unrouteAll`, `onDialog`, and
-  `addInitScript`.
+  `clearCookies`, `route`, `unroute`, `unrouteAll`, `onDialog`,
+  `addInitScript`, and [`clock`](#clock).
 - `setViewport` sizes the active tab and every tab opened after it.
 - [`emulateMedia`](#media-emulation) changes media on all open and future tabs.
 - [`setNetwork`](#setnetwork) takes every tab and service worker offline.
@@ -505,6 +506,8 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 
 | Member | Returns |
 | --- | --- |
+| [`name`](#name-version) | `BrowserName` |
+| [`version`](#name-version) | `string` |
 | [`goto`](#goto) | `Promise<void>` |
 | [`reload`](#reload-back-forward) | `Promise<void>` |
 | [`back`](#reload-back-forward) | `Promise<void>` |
@@ -519,7 +522,8 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`route`](#route) | `Promise<void>` |
 | [`unroute`](#unroute) | `Promise<void>` |
 | [`unrouteAll`](#unrouteall) | `Promise<void>` |
-| [`waitForResponse`](#waitforresponse) | `Promise<WebResponse>` |
+| [`waitForResponse`](#waitforresponse) | `Promise<PageResponse>` |
+| [`waitForRequest`](#waitforrequest) | `Promise<WebRequest>` |
 | [`cookies`](#cookies) | `Promise<Cookie[]>` |
 | [`setCookies`](#setcookies) | `Promise<void>` |
 | [`clearCookies`](#clearcookies) | `Promise<void>` |
@@ -535,6 +539,7 @@ export type WebInitScript = string | { readonly path: string } | (() => unknown)
 | [`keyboard`](#keyboard) | `{ press, down, up, type }` |
 | [`mouse`](#mouse) | `{ move, wheel, down, up }` |
 | [`webmcp`](#webmcp) | `{ tools, callTool }` |
+| [`clock`](#clock) | `BrowserClock` |
 
 The [config](/reference/config) sets each member's budget:
 
@@ -542,13 +547,42 @@ The [config](/reference/config) sets each member's budget:
   the same budget `app.open()` uses.
 - `waitForURL`: [`assertionTimeout`](/reference/config#assertiontimeout).
 - Every other member: [`actionTimeout`](/reference/config#actiontimeout).
-  `locator` and `frameLocator` touch no page and take none.
+  `name`, `version`, `locator`, and `frameLocator` touch no page and take none.
 
 A `{ timeout }` option overrides the budget on `goto`, `reload`, `back`,
-`forward`, `waitForResponse`, `waitForPopup`, `waitForDownload`, and `waitForDownloads`, capped
+`forward`, `waitForResponse`, `waitForRequest`, `waitForPopup`, `waitForDownload`, and `waitForDownloads`, capped
 by the test deadline (`cleanupTimeout` in `afterEach`); `0` waits until it. `url`, `title`, `evaluate`, `addInitScript`, `route`,
 `unroute`, `unrouteAll`, `cookies`, `setCookies`, `clearCookies`, `setViewport`,
-`emulateMedia`, `setNetwork`, `onDialog`, `newTab`, the `BrowserTab` methods, `keyboard.*`, `mouse.*`, and `webmcp.*` take no override.
+`emulateMedia`, `setNetwork`, `onDialog`, `newTab`, the `BrowserTab` methods, `keyboard.*`, `mouse.*`, `webmcp.*`, and `clock.*` take no override.
+
+#### `name`, `version`
+
+The browser the test runs in, and the version that browser reports.
+
+```ts
+test('exports a PDF', async ({ app, browser }) => {
+  test.skip(browser.name !== 'chromium', 'PDF export is Chromium only');
+  console.log(browser.version); // 159.0.8154.6
+  await app.open('/invoice');
+});
+```
+
+- `name` is `'chromium'`, `'firefox'`, or `'webkit'`, the value of the
+  [`browser`](#browser) option.
+- A browser attached with [`connect`](#connect) or leased from a provider is
+  always `'chromium'`, because the engine drives it over CDP. That holds for
+  Chrome and Edge, and for a CDP server that isn't Chromium, such as
+  [Lightpanda](/integrations/lightpanda).
+- `version` is read from the running browser. For an attached or hosted one
+  it is what its CDP endpoint reports. The [`userAgent`](#useragent) option
+  doesn't change it.
+- Both are properties, not steps, and can be read before the first
+  navigation.
+- For the operating system, use `process.platform` when the browser runs on
+  the runner's machine. For a hosted browser, read `navigator.platform`
+  with [`evaluate`](#evaluate).
+- To tell Chrome from Edge, read `navigator.userAgentData.brands` with
+  [`evaluate`](#evaluate). Chromium exposes it only in a secure context: an HTTPS, loopback, or `file:` page.
 
 #### `goto`
 
@@ -610,8 +644,8 @@ await browser.waitForURL(/\/orders\/\d+$/, { timeout: 15_000 });
   spaces in a glob's path and query match the URL as the browser encodes it. The empty string
   matches any URL.
 - `expect(browser).toHaveURL` reads `*` and `{` as themselves, as Playwright's
-  does; [`route`](#route), `unroute`, and `waitForResponse` read the same
-  globs as this wait.
+  does; [`route`](#route), `unroute`, `waitForResponse`, and `waitForRequest`
+  read the same globs as this wait.
 - A `RegExp` tests the full URL.
 
 | Throws | When |
@@ -696,7 +730,7 @@ const title = await browser.evaluate<string>('document.title');
   not close over anything outside its own body. Helpers declared inside the
   body work. Pass outside values through `arg`.
 - A string is evaluated as a single expression, not as statements. If it
-  evaluates to a function, that function is called with `arg`. Else its
+  evaluates to a function, that function is called with `arg`; otherwise its
   value is the result.
 - A promise, from either, is awaited.
 
@@ -729,10 +763,10 @@ It does not follow redirects, which could take it past the navigation rule.
 - The pattern is a string or a `RegExp`, read as [`waitForURL`](#waitforurl)
   reads one: a string is a glob in Playwright's grammar (`?` literal, `{a,b}`
   either) resolved against the base URL, so one with no wildcard is an exact
-  URL. `unroute` and `waitForResponse` take the same patterns.
+  URL. `unroute`, `waitForResponse`, and `waitForRequest` take the same patterns.
 - `{ method, url }` narrows the pattern to one HTTP method too. `method` is
   case-insensitive, `url` keeps the string or `RegExp` grammar above, and
-  `unroute` and `waitForResponse` take the same form.
+  `unroute`, `waitForResponse`, and `waitForRequest` take the same form.
 - A route whose method does not match steps aside for the routes registered
   before it, then the network, as if its URL had not matched.
 - A method pattern matches that method exactly: a `GET` route does not answer
@@ -799,20 +833,31 @@ export interface RouteMatcher {
   readonly method: string;
   /**
    * The URL pattern: a string using the same grammar as a plain `route`
-   * pattern, or a `RegExp`. `route` and `waitForResponse` match requests
-   * against it; `unroute` compares it structurally.
+   * pattern, or a `RegExp`. `route`, `waitForResponse`, and `waitForRequest`
+   * match requests against it; `unroute` compares it structurally.
    */
   readonly url: string | RegExp;
 }
 
+/** A request the page made: what a route handler reads as `route.request` and `waitForRequest` returns. */
+export interface WebRequest {
+  /** Request URL. */
+  readonly url: string;
+  /** HTTP method, as the page sent it. */
+  readonly method: string;
+  /**
+   * Request headers, lower-cased names. The cookie headers the browser adds
+   * on its own are there only when a route intercepts the request, so always
+   * in `route.request`.
+   */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Request body as text; absent when the request has none. */
+  readonly postData?: string;
+}
+
 export interface WebRoute {
   /** The intercepted request. */
-  readonly request: {
-    readonly url: string;
-    readonly method: string;
-    readonly headers: Readonly<Record<string, string>>;
-    readonly postData?: string;
-  };
+  readonly request: WebRequest;
   /** Reads upstream without deciding the route or following redirects. */
   fetch(): Promise<WebResponse>;
   /** Fulfills the intercepted request once. */
@@ -853,35 +898,62 @@ await browser.unrouteAll();
 
 #### `waitForResponse`
 
-Waits for a response that matches a pattern, in the [`route`](#route) pattern
-syntax.
+Waits for a response on the active tab matching a [`route`](#route) pattern or
+a predicate.
 
 ```ts
-const response = await browser.waitForResponse('**/api/orders');
-expect(response.status).toBe(201);
+const [created] = await Promise.all([
+  browser.waitForResponse({ method: 'POST', url: '**/api/orders' }),
+  screen.getByRole('button', 'Place order').tap(),
+]);
+expect(created.status).toBe(201);
+
+const [ready] = await Promise.all([
+  browser.waitForResponse(
+    async (response) =>
+      response.url.endsWith('/api/jobs/42') &&
+      response.status === 200 &&
+      (await response.json<{ state: string }>()).state === 'done',
+    { timeout: 15_000 }, // default: actionTimeout
+  ),
+  screen.getByRole('button', 'Run job').tap(),
+]);
+expect(ready.request.method).toBe('GET');
 ```
 
-```ts
-const created = browser.waitForResponse({ method: 'POST', url: '**/api/orders' });
-await screen.getByRole('button', 'Place order').tap();
-expect((await created).status).toBe(201);
-```
-
-- A `{ method, url }` pattern matches only a response to that method;
-  responses to another method pass it by.
-- The deadline bounds the match: the response resolves as soon as its headers
-  arrive.
-- `body()`, `text()`, and `json()` wait for the body on a budget of their own,
-  `config.actionTimeout` capped by the test deadline.
-- `url`, `status`, and `headers` are always readable.
-- A genuinely empty body reads as an empty `Buffer` from `body()` and `''`
-  from `text()`; `json()` rejects it.
+- Start the wait before the action that triggers the request, usually in
+  `Promise.all`. It also works before the first `browser.goto` or `app.open`.
+- Pass a URL glob string, a `RegExp`, `{ method, url }`, or a predicate
+  function. Patterns use the same rules as [`route`](#route).
+- A predicate runs once per response with a `PageResponse` and returns
+  `boolean | Promise<boolean>`. At runtime, any truthy value matches. Async
+  predicates can run at the same time on several responses, and the first to
+  match wins, as in Playwright.
+- If a predicate throws or rejects, the step fails with that error unchanged.
+  An e2e error keeps its code, so a failed `expect` throws `ASSERTION_FAILED`
+  and an unreadable body throws `ACTION_FAILED`. Any other throw fails with
+  `ERROR`.
+- With a pattern, or a predicate that does not read the body, the wait resolves
+  as soon as response headers arrive.
+- Inside a predicate, `body()`, `text()`, and `json()` share the wait's
+  timeout. A body the page never finishes reading, such as a stream or an
+  unclosed response, can hold the predicate until the timeout, as in
+  Playwright. When the wait settles, e2e cancels body reads still pending on
+  passed-over responses.
+- On the returned `PageResponse`, `body()`, `text()`, and `json()` each use
+  `config.actionTimeout`, capped by the test deadline.
+- `url`, `status`, `headers`, and `request` are properties, not methods, and
+  are always readable without waiting for the body. Only `body()`, `text()`,
+  and `json()` are methods.
+- On an empty body, `body()` returns an empty `Buffer`, `text()` returns `''`,
+  and `json()` rejects.
+- Traces label the step with the pattern, or `predicate` for a function.
 
 | Throws | When |
 | --- | --- |
-| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, or `{ method, url }`; a glob that nests a `{` or leaves a `{` or `}` unmatched; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`. |
+| `INVALID_ARGUMENT` | A pattern that is not a string, `RegExp`, `{ method, url }`, or function; a glob that nests a `{` or leaves a `{` or `}` unmatched; a `{ method, url }` pattern with a missing or extra key, a method that is not an HTTP method, or a `url` that is not a string or `RegExp`; an option other than `timeout`, such as Playwright's `signal`. |
 | `APP_URL_REQUIRED` | A relative pattern on a target with no `app.url`. |
-| `ACTION_FAILED` | Nothing matches inside the deadline. From `body()`, `text()`, and `json()`: a body still streaming when their budget runs out, or a body the browser could not read (a connection reset short of the declared `Content-Length`, a request the page aborted, or a redirect, whose body the browser never keeps), instead of an empty string. |
+| `ACTION_FAILED` | No response matches before the timeout. From `body()`, `text()`, or `json()`: a body that does not finish within their budget, or a body the browser cannot read, such as a connection cut short of `Content-Length`, an aborted request, or a redirect whose body the browser never keeps, instead of returning an empty string. |
 
 ```ts
 /**
@@ -902,7 +974,52 @@ export interface WebResponse {
   /** Waits for the body and reads it as text; rejects with `ACTION_FAILED` when the body could not be read. */
   text(): Promise<string>;
 }
+
+/** What `waitForResponse` returns and its predicate reads: a `WebResponse` and the request it answers. */
+export interface PageResponse extends WebResponse {
+  /** The request this response answers. */
+  readonly request: WebRequest;
+}
 ```
+
+#### `waitForRequest`
+
+Waits for a request on the active tab matching a [`route`](#route) pattern or
+a predicate. It resolves when the page sends the request, before any response
+arrives.
+
+```ts
+const [order] = await Promise.all([
+  browser.waitForRequest({ method: 'POST', url: '**/api/orders' }),
+  screen.getByRole('button', 'Place order').tap(),
+]);
+expect(JSON.parse(order.postData ?? '{}')).toEqual({ sku: 'A-1', quantity: 2 });
+
+const [search] = await Promise.all([
+  browser.waitForRequest(
+    (request) => new URL(request.url).searchParams.get('q') === 'shoes',
+    { timeout: 10_000 }, // default: actionTimeout
+  ),
+  screen.getByRole('searchbox').fill('shoes'),
+]);
+expect(search.method).toBe('GET');
+```
+
+- Start the wait before the action that triggers the request, usually in
+  `Promise.all`. It also works before the first `browser.goto` or `app.open`.
+- Returns a [`WebRequest`](#route), the same type as `route.request`: `url`,
+  `method`, `headers`, and optional `postData`. Every field is a property.
+  `headers` has lower-cased names. The cookie headers the browser adds on its
+  own are there only when a [`route`](#route) intercepts the request.
+- A predicate runs once per request with a `WebRequest`. Truthy matching,
+  concurrent async predicates, thrown errors, and the `predicate` trace label
+  work the same way as in [`waitForResponse`](#waitforresponse).
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | Any pattern shape or option [`waitForResponse`](#waitforresponse) refuses, including any option other than `timeout`. |
+| `APP_URL_REQUIRED` | A relative pattern on a target with no `app.url`. |
+| `ACTION_FAILED` | No request matches before the timeout. |
 
 #### `cookies`
 
@@ -1281,6 +1398,78 @@ export interface WebMcpTool {
 | `INVALID_ARGUMENT` | `callTool`: `name` is not a non-empty string, or `input` is not a JSON object. |
 | `INVALID_CONFIG` | `web({ webmcp: true })` with `connect`, a browser provider, or WebKit. |
 
+#### `clock`
+
+`browser.clock` controls time in the attempt's pages: `Date`, `performance`,
+timers, `requestAnimationFrame`, and `requestIdleCallback`. It is
+Playwright's `page.clock`, with the same methods and arguments.
+
+```ts
+await browser.clock.install({ time: new Date('2024-02-02T08:00:00Z') });
+await browser.clock.pauseAt(new Date('2024-02-02T09:00:00Z'));
+await app.open('/offer');
+await browser.clock.runFor(3000); // fires every timer due in 3 seconds
+await browser.clock.fastForward('30:00'); // jumps 30 minutes, firing each due timer once
+```
+
+| Method | What it does |
+| --- | --- |
+| `install({ time? })` | Fakes the time functions, starting at `time` (default: now). The clock runs on in real time. |
+| `pauseAt(time)` | Fast-forwards to `time` and stops there. Timers fire only through `runFor` and `fastForward`. |
+| `resume()` | Lets a paused clock run on in real time. |
+| `runFor(ticks)` | Advances the clock, firing every timer due on the way. |
+| `fastForward(ticks)` | Jumps ahead, firing each due timer at most once. |
+| `setFixedTime(time)` | Holds `Date.now()` and `new Date()` at `time`. Timers keep running. |
+| `setSystemTime(time)` | Changes the wall time without firing a timer. |
+
+- A `time` is epoch milliseconds, a string `new Date()` parses in the
+  runner's process, or a `Date`. `ticks` are milliseconds, or `'ss'`,
+  `'mm:ss'`, or `'hh:mm:ss'`.
+- Every other method installs the clock first if it isn't, as Playwright
+  does: it starts at the Unix epoch, 1970-01-01, so call `install({ time })`
+  first unless the next call sets the time. Install before `app.open` so the
+  page loads on it; a page already open gets the clock at once.
+- The clock covers every tab and frame, the ones the app opens included.
+  It holds through navigation, `app.restart()`, and `app.clearState()`, and
+  ends with the attempt.
+- `app.clearState()` and session restore replay the clock's calls on the new
+  context, as a new document does: a call that failed, such as a `runFor`
+  whose timer threw, counts, and a refused `pauseAt` does not. A paused or
+  fixed clock comes back as it was. A running one loses the real time that
+  passed before the clear.
+- Only the page's time moves. The test's timeouts, `expect` polling, and the
+  agent's waits keep real time, so a paused clock never holds a step.
+- A [CDP recovery](#recovering-a-cdp-transport) after the attempt used the clock fails the
+  attempt with `ENGINE_FAILURE`: the open pages keep their clock but the
+  reconnected browser cannot restore it.
+- A timer loop that never finishes, such as a 1 ms interval under
+  `runFor('10:00:00')`, stops the call at `actionTimeout` with
+  `ACTION_FAILED`.
+
+```ts
+/** A point in time: epoch milliseconds, a string `Date` parses, or a `Date`. */
+export type ClockTime = number | string | Date;
+
+/** A span of time: milliseconds, or a `'ss'`, `'mm:ss'`, or `'hh:mm:ss'` string. */
+export type ClockTicks = number | string;
+
+export interface BrowserClock {
+  install(options?: { time?: ClockTime }): Promise<void>;
+  fastForward(ticks: ClockTicks): Promise<void>;
+  runFor(ticks: ClockTicks): Promise<void>;
+  pauseAt(time: ClockTime): Promise<void>;
+  resume(): Promise<void>;
+  setFixedTime(time: ClockTime): Promise<void>;
+  setSystemTime(time: ClockTime): Promise<void>;
+}
+```
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | A time that is not a finite number, a parsable non-empty string, or a valid `Date`; ticks that are negative or outside `'hh:mm:ss'`; an unknown `install` option; `pauseAt` before the clock's current time. |
+| `EVALUATE_FAILED` | A timer the page ran during `runFor`, `fastForward`, or `pauseAt` threw. The message carries the page's error. |
+| `ACTION_FAILED` | The call ran past `actionTimeout`. |
+
 ## Installing browsers
 
 The package pins `playwright-core` to an exact version, so the engine always
@@ -1376,8 +1565,9 @@ The package exports these types for typing config helpers and fixtures:
 `BrowserProviderScope`, `BrowserRequest`, `BrowserLease`,
 `BrowserReleaseContext`, `BrowserProviderDownloads`,
 `BrowserDownloadContext`, `PlaywrightLiveSurface`, `Browser`, `FrameScreen`,
-`BrowserExpectation`, `WebRoute`, `RouteFulfillResponse`,
-`RouteContinueOverrides`, `RouteMatcher`, `WebResponse`, `Cookie`, `CookieFields`,
+`BrowserExpectation`, `BrowserClock`, `ClockTime`, `ClockTicks`, `WebRoute`, `RouteFulfillResponse`,
+`RouteContinueOverrides`, `RouteMatcher`, `WebRequest`, `WebResponse`,
+`PageResponse`, `Cookie`, `CookieFields`,
 `CookieFilter`, `Dialog`, and `DialogHandler`.
 
 The runtime exports are `web`, [`surfaceOf`](#surfaceof), and `test`,
@@ -1495,8 +1685,8 @@ export interface WebOptions {
 ```ts
 /**
  * The browser the attempt drives, showing one active tab. Navigation, reads,
- * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForDownload`,
- * the keyboard and mouse, `expect(browser)`, and `screen` act on the active
+ * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForRequest`,
+ * `waitForDownload`, the keyboard and mouse, `expect(browser)`, and `screen` act on the active
  * tab; cookies, routes, and dialog handlers cover the whole browser, every
  * tab included. A tab the app opens (a `target="_blank"` link,
  * `window.open`) joins `tabs()` but does not become active on its own:
@@ -1505,6 +1695,18 @@ export interface WebOptions {
  * again.
  */
 export interface Browser extends Expectable<BrowserExpectation> {
+  /**
+   * The browser the attempt drives, as the driver names it: the
+   * `web({ browser })` value, and `chromium` for every browser the engine
+   * attaches to over CDP (`connect`, a provider), whatever it is.
+   */
+  readonly name: BrowserName;
+  /**
+   * The version the running browser reports, such as `159.0.8154.6`: for
+   * an attached or hosted one, what its CDP endpoint reports. The target's
+   * `userAgent` does not change it.
+   */
+  readonly version: string;
   /** Navigates to an allowed URL. */
   goto(
     url: string,
@@ -1553,11 +1755,26 @@ export interface Browser extends Expectable<BrowserExpectation> {
   unroute(pattern: string | RegExp | RouteMatcher): Promise<void>;
   /** Removes all routes registered by this browser fixture, preserving the configured headers. */
   unrouteAll(): Promise<void>;
-  /** Waits for a matching response, optionally narrowed to one HTTP method. */
+  /**
+   * Waits for a response on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate. The predicate runs per response
+   * until one returns or resolves to a truthy value; throwing fails the wait
+   * with the predicate's own error.
+   */
   waitForResponse(
-    pattern: string | RegExp | RouteMatcher,
+    pattern: string | RegExp | RouteMatcher | ((response: PageResponse) => boolean | Promise<boolean>),
     options?: { timeout?: number },
-  ): Promise<WebResponse>;
+  ): Promise<PageResponse>;
+  /**
+   * Waits for a request on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate, and resolves when the page sends
+   * it before any response arrives. Predicate matching and errors work the
+   * same way as in `waitForResponse`.
+   */
+  waitForRequest(
+    pattern: string | RegExp | RouteMatcher | ((request: WebRequest) => boolean | Promise<boolean>),
+    options?: { timeout?: number },
+  ): Promise<WebRequest>;
   /**
    * Returns every cookie of the browser, or only those a request to `urls`
    * (one URL or several) would carry. A relative URL resolves against the
@@ -1631,6 +1848,8 @@ export interface Browser extends Expectable<BrowserExpectation> {
     /** Calls one tool and resolves with what its `execute` resolved to. */
     callTool(name: string, input?: { readonly [key: string]: JsonValue } | null): Promise<JsonValue>;
   };
+  /** Controls time in the attempt's pages. See [clock](#clock). */
+  readonly clock: BrowserClock;
 }
 ```
 

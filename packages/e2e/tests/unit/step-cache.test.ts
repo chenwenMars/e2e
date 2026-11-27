@@ -675,6 +675,39 @@ describe('StepTraceSession', () => {
     expect(deleted).toEqual(['a'.repeat(64)]);
   });
 
+  it('evicts when the repair after an end-mismatch is a scroll folded into the replayed one', async () => {
+    const deleted: string[] = [];
+    const context = entryContext({
+      actions: [{ name: 'scroll', summary: 'scroll down', direction: 'down' }],
+      startPath: '/customers',
+      endPath: '/customers',
+      endAnchors: [savedAnchor],
+    });
+    context.store.delete = async (keyHash) => {
+      deleted.push(keyHash);
+    };
+    let session: StepTraceSession | undefined;
+    // The marker shows only once the executor scrolled further than the replay did.
+    let repaired = false;
+    const host: StepCacheHost = {
+      ...makeHost([]),
+      observe: async () => ({ kind: 'semantic', nodes: nodeMap(repaired ? [savedMarker] : []), viewport: { width: 1280, height: 720 }, path: '/customers' }),
+      actions: {
+        scroll: async (direction: 'down') => session?.record({ name: 'scroll', direction }),
+      } as unknown as ExecutorActions,
+    };
+    session = makeSession(context, host);
+    await session.begin();
+    expect(session.replayedPrefix?.stopReason).toBe('end-mismatch');
+    // The executor scrolls on the same way: the recording folds it into the
+    // replayed scroll, so the action count stays flat, but the executor acted.
+    session.record({ name: 'scroll', direction: 'down' });
+    repaired = true;
+    await session.conclude('passed', 'saved after scrolling further');
+    expect(context.staged.filter((entry) => entry.kind !== 'decided')).toHaveLength(0);
+    expect(deleted).toEqual(['a'.repeat(64)]);
+  });
+
   it('evicts a consumed entry when the step then fails, and never when nothing judged the app', async () => {
     for (const [outcome, expected] of [
       ['failed', ['a'.repeat(64)]],
@@ -1367,6 +1400,20 @@ describe('cache.strict and a step whose key changed under its recording', () => 
     await expect(failure).rejects.toThrow(`the store holds it under another cache key (${OLD_KEY}.json)`);
     await expect(failure).rejects.toThrow(/; re-record it$/u);
     expect(session.cacheInfo).toMatchObject({ mode: 'missed', reason: 'no-entry' });
+  });
+
+  it('lists the store again on the next miss after a listing fails', async () => {
+    const context = await rekeyedContext(recordedPayload(exampleStep));
+    const keyHashes = vi
+      .spyOn(FileCacheStore.prototype, 'keyHashes')
+      .mockRejectedValueOnce(Object.assign(new Error('too many open files'), { code: 'EMFILE' }));
+    try {
+      await expect(makeSession(context, makeHost(['/'])).begin()).resolves.toBeUndefined();
+      await expect(makeSession(context, makeHost(['/'])).begin()).rejects.toMatchObject({ code: 'REPLAY_STALE' });
+      expect(keyHashes).toHaveBeenCalledTimes(2);
+    } finally {
+      keyHashes.mockRestore();
+    }
   });
 
   it('runs live against an entry recorded before the occurrence fields were, which could be another call of the instruction', async () => {

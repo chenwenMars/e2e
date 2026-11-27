@@ -5,6 +5,7 @@
 
 import type { EngineHandle, EngineIsolation } from '../engine/index.ts';
 import type { TestFixtures } from '../types.ts';
+import type { ServiceValues } from './services.ts';
 
 /**
  * How long one fixture instance lives. `test`, the default, is one instance
@@ -25,6 +26,13 @@ export type FixtureScope = 'test' | 'worker';
 export interface WorkerFixtures {
   /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
   readonly platform: string;
+  /**
+   * Values yielded by the config's `services`, keyed by name. Each worker, each
+   * `e2e mcp` session, and each `openHost` host receives a copy of the data
+   * (sessions on one host share the same copy). Each function becomes an async
+   * function called in the process that started the services.
+   */
+  readonly services: Readonly<Record<string, unknown>>;
 }
 
 /** @deprecated `beforeAll` and `afterAll` receive the worker fixtures: use `WorkerFixtures`. */
@@ -146,14 +154,16 @@ export type PickEach<Worker, Names extends PropertyKey> = Worker extends unknown
  * The test half has them on every target, so a test still gets `app` and
  * `screen` from a pair of members that a `string` platform keeps.
  * `platform` is in both halves, so an intersection of members with
- * different platforms reduces to `never`.
+ * different platforms reduces to `never`. The `services` fixture lives in the
+ * worker half and gets its type from the config's `services`.
  */
-export type ConfigFixtures<Config, Half extends FixtureScope, Handle = ConfigEngines<Config>> = unknown extends Config
+export type ConfigFixtures<Config, Half extends FixtureScope, Handle = ConfigEngines<Config>> = {} extends Config
   ? {}
   : Handle extends EngineHandle<infer Fixtures, infer Platform, infer Isolation>
-    ? { readonly platform: Platform } & (Half extends ([Isolation] extends ['worker'] ? FixtureScope : 'test')
-      ? Pick<TestFixtures, 'app' | 'screen'> & Fixtures
-      : {}) & { readonly [Name in Exclude<ConfigFixtureNames<ConfigEngines<Config>>, keyof Fixtures>]?: undefined }
+    ? { readonly platform: Platform }
+      & (Half extends 'worker' ? { readonly services: ConfigServices<Config> } : {})
+      & (Half extends ([Isolation] extends ['worker'] ? FixtureScope : 'test') ? Pick<TestFixtures, 'app' | 'screen'> & Fixtures : {})
+      & { readonly [Name in Exclude<ConfigFixtureNames<ConfigEngines<Config>>, keyof Fixtures>]?: undefined }
     : never;
 
 /**
@@ -161,7 +171,38 @@ export type ConfigFixtures<Config, Half extends FixtureScope, Handle = ConfigEng
  * this, a fixture typed on the base `test` (`device: Device`, say) would keep
  * that type on every target, even where it's `undefined`.
  */
-export type ConfigBase<Base, Config> = unknown extends Config ? Base : Omit<Base, ConfigFixtureNames<ConfigEngines<Config>> | 'app' | 'screen'>;
+export type ConfigBase<Base, Config> = {} extends Config ? Base : Omit<Base, ConfigFixtureNames<ConfigEngines<Config>> | 'app' | 'screen' | 'services'>;
+
+/** Mapped service values from `Config`, keyed by name. Empty when the config doesn't declare any services. */
+type ConfigServices<Config> = Config extends { readonly services?: infer Services } ? ServiceValues<NonNullable<Services>> : {};
+
+/**
+ * `Config` with `targets` replaced by an error message when the targets
+ * weren't inferred. It's the constraint for `test.extend`'s third type
+ * argument, so an annotated config fails to compile instead of leaving
+ * fixtures typed wrong.
+ */
+export type InferredConfig<Config> = {
+  readonly [Key in keyof Config]: Key extends 'targets' ? InferredTargets<Config[Key]> : Config[Key];
+};
+
+/** `Targets` when the target types were inferred, or the error message. */
+type InferredTargets<Targets> = Targets extends readonly (infer Each)[]
+  ? [UninferredTarget<Each>] extends [never]
+    ? Targets
+    : "The config's targets don't have inferred types because of a type annotation. Write the config with `as const satisfies E2EConfig` or `defineConfig` instead."
+  : Targets;
+
+/** Targets whose `engine` is optional and can hold an engine, or `never`. */
+type UninferredTarget<Each> = Each extends unknown
+  ? 'engine' extends keyof Each
+    ? undefined extends Each['engine']
+      ? [Exclude<Each['engine'], undefined>] extends [never]
+        ? never
+        : Each
+      : never
+    : never
+  : never;
 
 /**
  * `Fixtures` without the targets that a test's `platforms` option skips: a

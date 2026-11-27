@@ -211,8 +211,9 @@ describe('MCP attachments to held tests', { timeout: 60_000 }, () => {
     const held = await pause(dir);
     const { client } = await mcp(dir);
     const opened = await openSession(client, { attach: held.id });
-    expect(opened.text).toContain('Current screen');
-    expect(opened.text).toContain('button "Submit"');
+    expect(opened.text).toMatch(/\nScreen: revision \S+, path \/checkout, \d+ nodes, not listed\..*$/);
+    expect(opened.text).not.toContain('button "Submit"');
+    expect((await invoke(client, 'call', { tool: 'observe' })).text).toContain('button "Submit"');
 
     const detail = await invoke(client, 'tools', { session: opened.session, tool: 'tap' });
     expect(detail.text).toContain('Arguments (JSON Schema)');
@@ -228,13 +229,20 @@ describe('MCP attachments to held tests', { timeout: 60_000 }, () => {
     const tapped = await invoke(client, 'call', { tool: 'tap', args: { target } });
     expect(tapped.isError, tapped.text).toBe(false);
     expect(tapped.text).toContain('Submitted');
-    expect((await invoke(client, 'call', { tool: 'test_lines' })).text).toContain('.tap()');
+    const linesTool = await invoke(client, 'tools', { session: opened.session, tool: 'test_lines' });
+    expect(linesTool.isError, linesTool.text).toBe(false);
+    expect(linesTool.text).toContain('Use these lines at the pause point of the held test');
+    expect(linesTool.text).not.toMatch(/split the draft into tests/i);
+    const drafted = await invoke(client, 'call', { tool: 'test_lines' });
+    expect(drafted.text).toContain('.tap()');
+    expect(drafted.text).toContain('Put them in the held test at the pause point');
+    expect(drafted.text).not.toMatch(/split these lines into tests/i);
     expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
     expect(await held.exited).toBe(0);
   });
 
-  it('redacts a displayed secret from the opening screen, tool results, and errors', async () => {
-    const dir = project('await screen.pause();');
+  it('redacts a displayed secret from the screen, tool results, and errors', async () => {
+    const dir = project(`await app.open('/reset/${PASSWORD}'); await screen.pause();`);
     const held = await pause(dir);
     const { client } = await mcp(dir);
     const opened = await openSession(client, { attach: held.id });
@@ -246,7 +254,10 @@ describe('MCP attachments to held tests', { timeout: 60_000 }, () => {
     expect(located.isError).toBe(false);
     expect(failed.isError).toBe(true);
     expect(failed.text).toContain('UNKNOWN_TOOL');
-    for (const text of [opened.text, observed.text, located.text, failed.text]) {
+    // The opening names the screen by its path, where the value sits URL-encoded once redacted.
+    expect(opened.text).toContain('path /reset/%3Csecret:password%3E,');
+    expect(opened.text).not.toContain(PASSWORD);
+    for (const text of [observed.text, located.text, failed.text]) {
       expect(text).toContain('<secret:password>');
       expect(text).not.toContain(PASSWORD);
     }
@@ -395,7 +406,8 @@ ${CONFIG.replace('  video: true,', `  video: true,
   },`)}`);
     const held = await pause(dir);
     const { client } = await mcp(dir);
-    const { session, text } = await openSession(client, { attach: held.id });
+    const { session } = await openSession(client, { attach: held.id });
+    const { text } = await invoke(client, 'call', { tool: 'observe' });
     const target = /^[ \t]*#(\S+) button "Submit"/m.exec(text)?.[1];
 
     if (target === undefined) {
@@ -667,6 +679,43 @@ ${CONFIG.replace('  video: true,', `  video: true,
     expect(await held.exited).toBe(0);
   });
 
+  it("reads the config's services in attached run_code and calls their functions in the run's process", async () => {
+    const config = `import { appendFileSync } from 'node:fs';
+${CONFIG.replace('export default {', `const inbox = {
+  async *start() {
+    yield {
+      url: 'http://inbox.test',
+      record: (what: string) => {
+        appendFileSync('events.log', 'record ' + what + '\\n');
+
+        return what.length;
+      },
+    };
+  },
+};
+
+export default {
+  services: { inbox },`)}`;
+
+    const dir = project(`await screen.pause(); ${STEP}`, config);
+    const held = await pause(dir);
+    const { client } = await mcp(dir);
+
+    await openSession(client, { attach: held.id });
+
+    const ran = await invoke(client, 'call', {
+      tool: 'run_code',
+      args: { code: "return { url: services.inbox.url, length: await services.inbox.record('attached') };" },
+    });
+
+    expect(ran.isError, ran.text).toBe(false);
+    expect(ran.text).toContain('{"url":"http://inbox.test","length":8}');
+    expect(readFileSync(path.join(dir, 'events.log'), 'utf8')).toBe('record attached\n');
+
+    expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
+    expect(await held.exited).toBe(0);
+  });
+
   it('fills configured secrets only into authorized fields and redacts their values', async () => {
     const dir = project('await screen.pause();');
     const held = await pause(dir);
@@ -674,10 +723,11 @@ ${CONFIG.replace('  video: true,', `  video: true,
     const opened = await openSession(client, { attach: held.id });
     expect(opened.text).toContain('"buyer" (username "buyer@example.test", password secret "buyer.password")');
     expect(opened.text).toContain('Secrets: "password"');
-    const email = /^[ \t]*#(\S+) textbox "Email"/m.exec(opened.text)?.[1];
+    const screen = await invoke(client, 'call', { tool: 'observe' });
+    const email = /^[ \t]*#(\S+) textbox "Email"/m.exec(screen.text)?.[1];
 
     if (email === undefined) {
-      throw new Error(opened.text);
+      throw new Error(screen.text);
     }
 
     const denied = await invoke(client, 'call', { tool: 'type_secret', args: { target: email, name: 'buyer.password' } });

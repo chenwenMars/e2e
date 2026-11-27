@@ -98,16 +98,6 @@ type EntryRead =
     };
 
 /**
- * What the start capture is for, which decides how far it settles. The path
- * alone reads the screen as it is. A baseline (the end anchors are the delta
- * from it) and a replay start (the first relocation reads it) must be a
- * settled screen. A hit the decision then refuses has paid that settle for
- * nothing in read-only mode, a rarer case than the replay it saves a
- * capture on.
- */
-type StartPurpose = 'path-only' | 'baseline' | 'replay-start';
-
-/**
  * What staging a passed step's recording came to: `staged` for attempt-end
  * settlement, `no-change` when the step changed nothing a replay could check,
  * or `skipped` for any other reason it could not be recorded (no semantic
@@ -186,8 +176,13 @@ export class StepTraceSession {
   private consumedReplay = false;
   /** True once the store returned an entry for this step, whether or not it replayed. */
   private readEntryHit = false;
-  /** Grammar actions recorded so far when an end-mismatch hand-off happened. */
-  private actionsAtEndMismatch: number | undefined;
+  /**
+   * Actions and gaps the executor recorded after an end-mismatch hand-off;
+   * undefined without one. Counted here, not read off the recording: a
+   * scroll that repeats the replayed one folds into it and leaves the
+   * recording's length as it was.
+   */
+  private actionsAfterEndMismatch: number | undefined;
 
   constructor(host: StepCacheHost, options: StepCacheOptions) {
     this.host = host;
@@ -219,16 +214,19 @@ export class StepTraceSession {
   /** Records one committed grammar action into the step trace. */
   record(action: RecordableAction): void {
     this.recorder?.record(action);
+    this.countAfterEndMismatch();
   }
 
   /** Records one mutating project-tool call as a replay-ending gap. */
   recordGap(toolName: string): void {
     this.recorder?.recordGap(toolName);
+    this.countAfterEndMismatch();
   }
 
   /** Records a fill whose value was this run's data as a replay-ending gap, with the rule that said so. */
   recordDerivedGap(reason: DerivedReason): void {
     this.recorder?.recordDerivedGap(reason);
+    this.countAfterEndMismatch();
   }
 
   /** How many actions the step's recording holds, gaps included; undefined when this step records nothing. */
@@ -242,9 +240,9 @@ export class StepTraceSession {
   }
 
   /**
-   * Opens the step: reads the cache entry, captures the write-side
-   * preconditions — the start path and, when this step may write, the
-   * baseline screen — then attempts a zero-turn replay of a hit. Returns the
+   * Opens the step: reads the cache entry, captures the start screen when
+   * this step may write or has a hit to replay, then attempts a zero-turn
+   * replay of a hit. Returns the
    * self-finalized verdict on a full replay whose postcondition holds;
    * undefined dispatches the executor — after a miss from the top, after a
    * divergence mid-step with `replayedPrefix` set. Every failure to replay is
@@ -259,7 +257,10 @@ export class StepTraceSession {
       ? await this.readEntry()
       : { status: 'miss', reason: 'retry' };
     if (read.status === 'miss') {
-      await this.captureStart(this.recorder === undefined ? 'path-only' : 'baseline');
+      // A miss that records nothing reads nothing from the start screen, so it
+      // captures none: the executor's own first look is the step's only one,
+      // as with the cache off.
+      if (this.recorder !== undefined) await this.captureStart();
       this.info = this.missed(read.reason, 0);
       if (read.unavailable !== true) this.failIfStale();
       if (read.reason === 'no-entry') await this.failIfRekeyed();
@@ -359,7 +360,7 @@ export class StepTraceSession {
         if (this.consumedReplay) await this.evict();
         return;
       case 'passed':
-        if (this.repairedAfterEndMismatch(recorder)) await this.evict();
+        if (this.repairedAfterEndMismatch()) await this.evict();
         else if (this.replayedWhole) {
           this.cache.staged.push({
             kind: 'keep',
@@ -403,12 +404,16 @@ export class StepTraceSession {
   }
 
   /**
-   * The write-side preconditions, captured before any action: the start path,
-   * doubling as the replay decision's current path, and the baseline screen
-   * when this step may write. Settled as far as the capture's purpose asks.
+   * The start screen, captured before any action: its path is the replay
+   * decision's current path, and when this step may write it is the baseline
+   * (the end anchors are the delta from it). Held still, since a baseline and
+   * a replay's first relocation both need a settled screen, and it serves the
+   * executor's first look. A hit the decision then refuses has paid that
+   * settle for nothing in read-only mode, a rarer case than the replay it
+   * saves a capture on.
    */
-  private async captureStart(purpose: StartPurpose): Promise<ObservedScreen | undefined> {
-    const observation = await probeScreen(this.host, purpose === 'path-only' ? 'raw' : 'held-still', true);
+  private async captureStart(): Promise<ObservedScreen | undefined> {
+    const observation = await probeScreen(this.host, 'held-still', true);
     this.startPath = observation?.path;
     if (this.recorder !== undefined && observation?.kind === 'semantic') this.startNodes = observation.nodes;
     return observation;
@@ -424,7 +429,7 @@ export class StepTraceSession {
    * capturing the same screen again.
    */
   private async replayEntry(entry: TraceEntry): Promise<StepVerdict | undefined> {
-    const start = await this.captureStart('replay-start');
+    const start = await this.captureStart();
     const trace = entry.payload;
     this.recordedBy = trace.recordedBy;
     if (!this.host.traceEligible) {
@@ -564,7 +569,7 @@ export class StepTraceSession {
 
   private handOff(outcome: ReplayOutcome, stopReason: HandOffReason, detail: string | undefined): void {
     this.handedOffMs = Date.now();
-    if (stopReason === 'end-mismatch') this.actionsAtEndMismatch = this.recorder?.recordedCount ?? 0;
+    if (stopReason === 'end-mismatch') this.actionsAfterEndMismatch = 0;
     this.prefix = {
       replayedActions: outcome.summaries,
       totalActions: outcome.total,
@@ -668,8 +673,12 @@ export class StepTraceSession {
     if (deleted) this.cache.staged.push({ kind: 'decided', outcome: 'evicted', keyHash: this.keyHash, stepIndex: this.options.stepIndex });
   }
 
-  private repairedAfterEndMismatch(recorder: TraceRecorder): boolean {
-    return this.actionsAtEndMismatch !== undefined && recorder.recordedCount > this.actionsAtEndMismatch;
+  private countAfterEndMismatch(): void {
+    if (this.actionsAfterEndMismatch !== undefined) this.actionsAfterEndMismatch += 1;
+  }
+
+  private repairedAfterEndMismatch(): boolean {
+    return this.actionsAfterEndMismatch !== undefined && this.actionsAfterEndMismatch > 0;
   }
 
   /** Cache detail as the report keeps it: redacted, then cut to the schema's bound. */

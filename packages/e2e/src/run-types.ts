@@ -5,7 +5,7 @@
 
 import type { RunEvent, RunExitCode, RunStatus } from './run/events.ts';
 import type { Report1Document } from './report/build.ts';
-import type { ProjectConfig } from '@e2e-dev/core/lib/types';
+import type { ProjectConfig, ServiceMap } from '@e2e-dev/core/lib/types';
 
 /** The reporters the runner ships, named by id; each is a `Reporter` on the same contract. */
 export type BuiltinReporter = 'list' | 'dot' | 'line' | 'json' | 'junit' | 'markdown' | 'ctrf';
@@ -232,9 +232,11 @@ export interface TestFilterResult {
 
 /**
  * The config an `e2e.config.ts` default-exports, through `defineConfig` or
- * ending in `satisfies E2EConfig`.
+ * ending in `satisfies E2EConfig`. `Services` is the type of `services`
+ * passed to a target's `app.command.env` function, inferred by `defineConfig`
+ * from `services`.
  */
-export interface E2EConfig extends ProjectConfig {
+export interface E2EConfig<Services = Readonly<Record<string, unknown>>> extends ProjectConfig<Services> {
   /**
    * The run's reporters: built-in ids, each its factory from
    * `e2e/reporters` with no options, and reporter objects. `list`, `dot`, and
@@ -245,4 +247,14 @@ export interface E2EConfig extends ProjectConfig {
   reporters?: readonly (BuiltinReporter | Reporter)[];
   /** Test filters, in order, run with `--changed-since`: each judges the tests the one before it kept. */
   filters?: readonly TestFilter[];
+  /**
+   * Dependencies of the app under test, keyed by name and defined with
+   * `defineService`. Services start in key order before the app commands and
+   * stop in reverse order after the app commands. `e2e run` and `e2e explore`
+   * share one instance of each across all workers, `e2e mcp` shares one
+   * across sessions open on one config file, and each `openHost` host starts
+   * its own. Tests read their values through the `services` fixture, and an
+   * `app.command.env` function receives them through its argument.
+   */
+  services?: ServiceMap;
 }

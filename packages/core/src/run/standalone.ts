@@ -31,6 +31,11 @@ export interface StandaloneHostOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly signal: AbortSignal;
   readonly processes?: ProcessPool | undefined;
+  /**
+   * Service values passed to `app.command.env` as `services` and exposed by
+   * the `services` fixture. Empty unless set.
+   */
+  readonly services?: Readonly<Record<string, unknown>> | undefined;
   readonly notice?: (target: string, message: string) => void;
   readonly debug?: DebugTrace;
 }
@@ -156,16 +161,25 @@ export async function openWorker<Sessions extends EngineSessions, Extra>(
       runId, hostId: options.hostId, projectRoot: config.projectRoot, env: options.env, signal, headed: options.headed, notice,
     });
     const hooks = { ci: config.ci, env: options.env, notice: (message: string) => notice('app', message) };
-    processes = await startDeclaredProcesses([target], config.projectRoot, hooks, signal, debug, options.processes);
-    if (signal.aborted) throw new InfrastructureError('CANCELLED', `opening a host on target "${target.name}" was cancelled`);
+
+    processes = await startDeclaredProcesses([target], config.projectRoot, hooks, signal, debug, { services: options.services, pool: options.processes });
+
+    if (signal.aborted) {
+      throw new InfrastructureError('CANCELLED', `opening a host on target "${target.name}" was cancelled`);
+    }
+
     executor = policy.sessions({
       config, target, runId, hostId: options.hostId, artifactsRoot: layout.results, sessionStore,
       headed: options.headed, workerSlot: 0, env: { ...prepared?.env, ...options.env },
-      interruptSignal: signal, debug,
+      interruptSignal: signal, debug, services: options.services,
       events: { onNotice: (message) => notice(target.name, message) },
     });
+
     await executor.initEngineOnce();
-    if (signal.aborted) throw new InfrastructureError('CANCELLED', `opening a host on target "${target.name}" was cancelled`);
+
+    if (signal.aborted) {
+      throw new InfrastructureError('CANCELLED', `opening a host on target "${target.name}" was cancelled`);
+    }
   } catch (cause) {
     hostEnd.abort();
     await teardown();
@@ -200,12 +214,17 @@ export async function openWorker<Sessions extends EngineSessions, Extra>(
     try {
       reservation = reserveAttempt(worker, policy, sessionOptions);
     } catch (cause) { return Promise.reject(cause); }
-    const pending = launchAttempt(worker, policy, reservation, async ({ cleanup }) => {
+    let launchRetires = false;
+    const pending = launchAttempt(worker, policy, reservation, async ({ cleanup, launchErrors }) => {
       if (cleanup === 'complete') {
         state = { phase: 'idle' };
         return;
       }
-      state = { phase: 'retired' };
+      // Recorded before teardown counts its own failures, which alone decide engine reuse.
+      errors.push(...launchErrors ?? []);
+      // A failed launch stays opening until it releases publication, so close() waits for it.
+      if (state.phase === 'opening') launchRetires = true;
+      else state = { phase: 'retired' };
       hostEnd.abort();
       await teardown();
     }).then(
@@ -215,7 +234,7 @@ export async function openWorker<Sessions extends EngineSessions, Extra>(
       },
       (cause: unknown) => {
         reservation.publication?.release();
-        state = { phase: 'idle' };
+        state = launchRetires ? { phase: 'retired' } : { phase: 'idle' };
         throw cause;
       },
     );

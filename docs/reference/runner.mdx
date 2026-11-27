@@ -320,8 +320,9 @@ await session.fixtures.app.open('/checkout');
 ```
 
 - Your runner owns collection, retries, and reporting.
-- The host prepares the target's engine, starts app processes, and
-  initializes the engine once per worker lifetime. Use a worker-scoped host
+- The host starts the config's [services](/services), prepares the
+  target's engine, starts the app processes, and initializes the engine once
+  per worker lifetime. Use a worker-scoped host
   and a test-scoped session; see the
   [Playwright Test example](#playwright-test-fixtures).
 - Each [`host.openSession`](#host-opensession) creates a test-lifetime attempt
@@ -349,8 +350,8 @@ await session.fixtures.app.open('/checkout');
 - `signal` cancels host provisioning, a pending session open, or live
   fixture calls.
 - `headed` runs a browser engine headed.
-- `onNotice` receives progress outside a step, such as provisioning or an
-  app process. It must not throw.
+- `onNotice` receives progress outside a step, like provisioning, a service,
+  or an app process. It must not throw.
 
 A host given a config path loads the file and its project-file imports fresh. Package
 imports stay shared, so their singleton state is not recreated per host. A
@@ -398,8 +399,10 @@ across different hosts and whether the config is a file or a value.
   `session.close()` before opening the next session on the same host.
 - A launch that fails or is cancelled ends what it opened and leaves the host
   usable, as a run keeps its worker for the retry.
-- A session whose engine cleanup failed closes the host permanently, since
-  its isolation is uncertain; open a new host.
+- A session or failed launch whose engine cleanup failed closes the host
+  permanently, since its isolation is uncertain; open a new host. A session's
+  cleanup failure comes back from `session.close()`, a failed launch's from
+  `host.close()`.
 
 | Throws | When |
 | --- | --- |
@@ -454,7 +457,8 @@ const session = await host.openSession({
 #### `host.close`
 
 `host.close()` cancels any active or pending session, waits for it to close,
-then disposes the engine, stops app processes, and releases provisioning.
+then disposes the engine, stops app processes, releases provisioning, and
+stops the config's services.
 
 ```ts
 const failures = await host.close();

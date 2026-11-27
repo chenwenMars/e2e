@@ -41,6 +41,7 @@ describe('checkout', { tags: ['billing'] }, () => {
 | [`test.fail`](#test-fail) | `TestCase \| void` |
 | [`test.setTimeout`](#test-settimeout) | `void` |
 | [`test.slow`](#test-slow) | `void` |
+| [`test.step`](#test-step) | `Promise<T>` |
 | [`test.only`](#test-only) | `TestCase` |
 | [`test.setup`](#test-setup) | `TestCase` |
 | [`test.extend`](#test-extend) | `TestAPI` |
@@ -191,7 +192,7 @@ test.skipIf(process.platform === 'win32')('watches files', async ({ app }) => {}
 test.skipIf(process.env.CI)('opens the system dialog', async ({ app }) => {});
 ```
 
-- The condition is read one time, at the call, while the file is collected.
+- The condition is read once, at the call, while the file is collected.
   Use a value known then, such as `process.platform` or an environment
   variable. For a condition you learn at runtime, call
   [`test.skip(condition, reason)`](#test-skip) inside the body.
@@ -390,6 +391,41 @@ test('renders the report', async ({ platform }) => {
 | `INVALID_ARGUMENT` | A call from an `afterEach` or `afterAll` hook, a fixture teardown, or a hosted session; or from code a test or hook left running after it ended. |
 | `COLLECTION_ERROR` | A call outside a running test or hook, even with a false condition, or `test.slow(title, fn)`. Use the `timeout` option there. |
 
+#### `test.step`
+
+Runs a function as one step with a name of your own. Reports show the name,
+with the calls the function makes nested under it.
+
+```ts
+test('buys a ticket', async ({ screen }) => {
+  await test.step('Log in as test user', async () => {
+    await screen.getByLabel('Email').fill('ada@example.com');
+    await screen.getByRole('button', 'Log in').tap();
+  });
+  const total = await test.step('Read the total', () => screen.getByTestId('total').textContent());
+});
+```
+
+- It returns what the function returns.
+- Steps nest: a `test.step` inside another is listed under it.
+- When the function throws, the step is failed and the error goes on to the
+  test. Catch it to continue.
+- Call it in a test body, a `beforeEach` or `afterEach` hook, or a fixture.
+  In a `beforeAll` or `afterAll` hook the function runs, but no report has
+  the step.
+- In a fixture, call it before or after `use()`. A `test.step` around
+  `use()` fails the test with `STEP_NOT_AWAITED`.
+- A failed [`expect.soft`](/reference/expect#soft-assertions) inside it does not
+  fail the step. A `test.skip()` inside it skips the test and the step
+  passes.
+- [`e2e run --step`](/reference/cli#e2e-run) stops before each call inside
+  it, not before the `test.step` itself.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | A title that is not a non-empty string, or no function. |
+| `COLLECTION_ERROR` | A call outside a running test, hook, or fixture. |
+
 #### `test.only`
 
 Registers one focused local test.
@@ -460,7 +496,8 @@ export const test = base.extend<{ device: Device }>(); // types only
   2. [Worker fixtures](#worker-fixtures), which are available in `beforeAll`
      and `afterAll`. `device`, `app`, and `screen` from `@e2e-dev/mobile` are
      typed here.
-  3. The config's type (`typeof config`), for the fixtures of every target.
+  3. The config's type (`typeof config`), used to type fixtures from the
+     config.
      See [Engine fixtures across targets](#engine-fixtures-across-targets).
 
 #### `describe`
@@ -628,7 +665,7 @@ The module is re-imported for every retry, serial group, and setup test, so
 It receives [worker fixtures](#worker-fixtures) only:
 
 - The [built-in fixtures](#fixtures) whose scope is worker on the target:
-  `platform`, and on a mobile target `device`, `app`, and `screen`.
+  `platform`, `services`, and on a mobile target `device`, `app`, and `screen`.
 - The worker fixtures of the `test` it was registered through. The ones it
   names are set up, and the ones declared with `auto: true`.
 
@@ -919,7 +956,7 @@ describe('reports', { parallel: true }, () => {
   top level. For every file, set
   [`fullyParallel`](/reference/config#fullyparallel).
 - Tests that run apart on the same worker share the state in the test
-  file: the worker imports the file one time for them. Tests on different
+  file: the worker imports the file once for them. Tests on different
   workers do not, so keep no state in the file that one test leaves for
   another. A `beforeAll` and its `afterAll` can run several times on that
   state, so create in `beforeAll` what `afterAll` closes.
@@ -933,9 +970,9 @@ describe('reports', { parallel: true }, () => {
 - `false` keeps a group inside a parallel scope in order on one worker.
 - Tests with a `beforeAll` or `afterAll` hook around them run in batches,
   at most as many as the target has workers, for each agent. Each batch
-  runs in order on one worker and runs the hooks one time, and again after
+  runs in order on one worker and runs the hooks once, and again after
   a failed test. A serial group or a `parallel: false` group runs the hooks
-  around it one time more.
+  around it one more time.
 - The repeats of a test (`--repeat-each`) run one after another on one
   worker, so the first records the replay cache and the rest replay it.
 - With one worker the tests run one at a time, and not always in
@@ -972,6 +1009,7 @@ scope on each engine.
 | [`screen`](/reference/screen) | `Screen` | test | worker |
 | `platform` | `string` | worker | worker |
 | [`request`](/reference/request) | `APIRequest` | test | test |
+| [`services`](#services) | `Record<string, unknown>` | worker | worker |
 | [`session`](#test-setup) | `SetupSession` | test | test |
 | [`browser`](/reference/web) | `Browser` | test | - |
 | [`device`](/reference/mobile#device) | `Device` | - | worker |
@@ -1010,6 +1048,44 @@ Built-in fixtures are lazy. Destructuring in the parameter list acquires
 them before the body's first statement. [Your own
 fixtures](#your-own-fixtures) are set up before the first `beforeEach`.
 </Note>
+
+#### `services`
+
+Values yielded by the config's [`services`](/reference/config#services), keyed
+by name. Each worker, `e2e mcp` session, or `openHost` host receives a copy of
+the data. Each yielded function becomes an async function that calls the
+original in the process that started the services (the runner, the `e2e mcp`
+server, or the `openHost` host) and resolves to a copy of the result.
+
+```ts
+import { expect, test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+const test = base.extend<{}, {}, typeof config>();
+
+test('signing up sends one welcome email', async ({ app, screen, services }) => {
+  const inbox = await services.email.createInbox();
+
+  await app.open('/');
+  await screen.getByRole('textbox', { name: 'Email' }).fill(inbox.address);
+  await screen.getByRole('button', { name: 'Sign up' }).click();
+
+  const email = await services.email.waitForEmail(inbox.address, { subject: /welcome/i });
+
+  expect(email.subject).toContain('Welcome');
+  expect(await services.email.received(inbox.address)).toHaveLength(1);
+});
+```
+
+All workers share one instance of each service, so a test can observe state
+created by other tests. In the example above, the test creates an inbox with a
+unique address and counts only the emails sent to it.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | An argument is a function, a custom class instance, or another value that can't be copied. |
+| The function's error | The function throws in the process that started the services. |
+| `Error` | The return value is a function, a custom class instance, or another value that can't be copied. |
 
 #### Your own fixtures
 
@@ -1077,7 +1153,7 @@ checked against that target's fixtures.
 | A function that does not destructure its first parameter, takes a rest or computed property there, or is a bound function | At import, `COLLECTION_ERROR` naming the fixture |
 | Fixtures that name each other in a cycle | At import, `COLLECTION_ERROR` naming the cycle |
 | A name that isn't a fixture on any target in the config, in a test that runs, its hooks, or a fixture they need | At collection, `COLLECTION_ERROR` |
-| A `scope` or an `auto` that differs from that of the [fixture it extends](#extending-a-fixture) | At import when it is the same on every engine, else at collection, `COLLECTION_ERROR` naming both |
+| A `scope` or an `auto` that differs from that of the [fixture it extends](#extending-a-fixture) | At import when it is the same on every engine, otherwise at collection, `COLLECTION_ERROR` naming both |
 | A fixture that names one a later `extend` declares | At collection, `COLLECTION_ERROR` |
 | A definition that returns without calling `use` | The attempt, in `beforeEach`, `TEST_SETUP_FAILED` |
 | A definition that calls `use` twice | The attempt, at teardown, `TEST_SETUP_FAILED` |
@@ -1174,8 +1250,11 @@ test('signs out', async ({ app, platform, device }) => {
 - With `platforms` on a test, its fixtures are typed for the targets that
   run it. With `platforms: ['ios']`, `device` is typed as `Device`. On a
   `describe`, `platforms` doesn't change the types.
-- With a type annotation such as `const config: E2EConfig`, the engine types
-  are lost. To keep them, use `as const satisfies E2EConfig` or `defineConfig` instead.
+- With a type annotation such as `const config: E2EConfig`, `typeof config` is
+  plain `E2EConfig`. Calling `test.extend<{}, {}, typeof config>()` with that
+  type fails with a type error because the target types aren't inferred.
+  Use `as const satisfies E2EConfig` or `defineConfig` instead to keep the
+  config's inferred type.
 
 #### Extending a fixture
 
@@ -1199,7 +1278,7 @@ export const test = base.extend({
 - Its scope and `auto` come from its options, like any other fixture. Without
   options, it's a test fixture that's set up for code that names it, even if
   the fixture it extends is a worker fixture or `auto`.
-- To run a `device` override one time per worker and use it in `beforeAll`,
+- To run a `device` override once per worker and use it in `beforeAll`,
   pass `{ scope: 'worker' }`. Like any worker fixture, it can't use test
   fixtures, so it fails on a target where the fixture it extends is a test
   fixture, such as `app` on web.
@@ -1351,7 +1430,7 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *
    *   export const test = base.extend<{ device: Device }>();
    */
-  extend<Extra = {}, ExtraWorker = {}, Config = unknown>(): TestAPI<
+  extend<Extra = {}, ExtraWorker = {}, Config extends InferredConfig<Config> = {}>(): TestAPI<
     ConfigBase<Fixtures, Config> & Extra & ConfigFixtures<Config, 'test'>,
     ConfigBase<Worker, Config> & ExtraWorker & ConfigFixtures<Config, 'worker'>
   >;
@@ -1406,7 +1485,7 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    * (`[fn, { scope: 'worker', auto: true }]`). A suite hook sets up the auto
    * worker fixtures of its chain, never a test fixture.
    */
-  extend<Extra = {}, ExtraWorker = {}, Config = unknown>(
+  extend<Extra = {}, ExtraWorker = {}, Config extends InferredConfig<Config> = {}>(
     fixtures: FixtureDefinitions<
       ConfigBase<Fixtures, Config> & ConfigBase<Worker, Config> & ConfigFixtures<Config, 'test'> & ConfigFixtures<Config, 'worker'>,
       Extra,
@@ -1528,6 +1607,13 @@ export interface TestFixtures {
   readonly platform: string;
   /** HTTP calls, each one a step; a path resolves against the app URL. */
   readonly request: APIRequest;
+  /**
+   * Values yielded by the config's `services`, keyed by name. Each worker, each
+   * `e2e mcp` session, and each `openHost` host receives a copy of the data
+   * (sessions on one host share the same copy). Each function becomes an async
+   * function called in the process that started the services.
+   */
+  readonly services: Readonly<Record<string, unknown>>;
 }
 
 export interface SetupFixtures extends TestFixtures {
@@ -1554,6 +1640,13 @@ export type FixtureScope = 'test' | 'worker';
 export interface WorkerFixtures {
   /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
   readonly platform: string;
+  /**
+   * Values yielded by the config's `services`, keyed by name. Each worker, each
+   * `e2e mcp` session, and each `openHost` host receives a copy of the data
+   * (sessions on one host share the same copy). Each function becomes an async
+   * function called in the process that started the services.
+   */
+  readonly services: Readonly<Record<string, unknown>>;
 }
 
 /** @deprecated `beforeAll` and `afterAll` receive the worker fixtures: use `WorkerFixtures`. */

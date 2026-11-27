@@ -80,6 +80,7 @@ describe('classifyChange and watchRoots', () => {
       configPath: path.join(root, 'e2e.config.ts'),
       tests: ['tests/**/*.e2e.ts', '!tests/wip/**'],
       written: [path.join(root, 'test-results'), path.join(root, 'tests', 'cache')],
+      writtenFiles: [],
     };
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -98,6 +99,17 @@ describe('classifyChange and watchRoots', () => {
     expect(at('test-results', 'report.json')).toBeUndefined();
     expect(at('tests', 'cache', 'abc.json')).toBeUndefined();
     expect(at('..', 'other', 'tests', 'x.e2e.ts')).toBeUndefined();
+  });
+
+  it('ignores the --timings file itself but not saves under a --timings path that names a directory', () => {
+    const globs = compileGlobList(scope.tests);
+    const file: WatchScope = { ...scope, writtenFiles: [path.join(root, 'timings.json')] };
+    expect(classifyChange(file, globs, path.join(root, 'timings.json'))).toBeUndefined();
+    const directory: WatchScope = { ...scope, writtenFiles: [path.join(root, 'tests')] };
+    expect(classifyChange(directory, globs, path.join(root, 'tests', 'agent', 'signup.e2e.ts'))).toEqual({ kind: 'test', file: 'tests/agent/signup.e2e.ts' });
+    mkdirSync(path.join(root, 'src'));
+    const wide: WatchScope = { ...directory, tests: ['**/*.e2e.ts'] };
+    expect(watchRoots(wide, compileGlobList(wide.tests))).toContainEqual({ dir: path.join(root, 'tests'), recursive: true });
   });
 
   it('a glob from the project root watches the root flat and its directories, not node_modules or dot directories', () => {
@@ -154,7 +166,7 @@ describe('ChangeWatcher', () => {
     vi.useFakeTimers();
     root = mkdtempSync(path.join(tmpdir(), 'e2e-watch-'));
     mkdirSync(path.join(root, 'tests'));
-    scope = { projectRoot: root, configPath: path.join(root, 'e2e.config.ts'), tests: ['tests/**/*.e2e.ts'], written: [] };
+    scope = { projectRoot: root, configPath: path.join(root, 'e2e.config.ts'), tests: ['tests/**/*.e2e.ts'], written: [], writtenFiles: [] };
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -434,6 +446,79 @@ describe('watchSession', () => {
     await expect(session).resolves.toBe(0);
   });
 
+  it('the --timings file the run writes does not rerun it, from the first run on', async () => {
+    const listeners = new Map<string, (event: string, filename: string | null) => void>();
+    const runs: RunOptions[] = [];
+    let release: (() => void) | undefined;
+    const run = async (options: RunOptions): Promise<RunOutcome> => {
+      runs.push(options);
+      // The run's atomic write of the history, a temp file renamed over timings.json in the flat-watched root, then the rest of its teardown.
+      writeFileSync(path.join(root, 'timings.json'), '{}');
+      listeners.get(root)!('rename', 'timings.json');
+      await new Promise<void>((resolve) => (release = resolve));
+      return passed(0);
+    };
+    const signals = new SignalLadder();
+    const session = watchSession({
+      base: { timings: 'timings.json' },
+      cwd: root,
+      signals,
+      run,
+      stdin: undefined,
+      write: () => undefined,
+      writeError: () => undefined,
+      pc,
+      clear: false,
+      watch: fakeWatch(listeners),
+    });
+    // The first run's write lands while only the config directory is watched.
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    release!();
+    await settle();
+    expect(runs).toHaveLength(1);
+    // A save reruns; that run's write, under the loaded config's watcher, does not.
+    writeFileSync(path.join(root, 'helpers.ts'), '');
+    listeners.get(root)!('change', 'helpers.ts');
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    expect(runs).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    release!();
+    await settle();
+    expect(runs).toHaveLength(2);
+    signals.escalate(() => undefined);
+    await expect(session).resolves.toBe(0);
+  });
+
+  it('a --timings path that names a directory still reruns on a save under it', async () => {
+    const listeners = new Map<string, (event: string, filename: string | null) => void>();
+    const runs: RunOptions[] = [];
+    const run = async (options: RunOptions): Promise<RunOutcome> => {
+      runs.push(options);
+      return passed(0);
+    };
+    const signals = new SignalLadder();
+    const session = watchSession({
+      base: { timings: 'tests' },
+      cwd: root,
+      signals,
+      run,
+      stdin: undefined,
+      write: () => undefined,
+      writeError: () => undefined,
+      pc,
+      clear: false,
+      watch: fakeWatch(listeners),
+    });
+    await settle();
+    writeFileSync(path.join(root, 'tests', 'a.e2e.ts'), '');
+    listeners.get(path.join(root, 'tests'))!('change', 'a.e2e.ts');
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    await settle();
+    expect(runs).toHaveLength(2);
+    signals.escalate(() => undefined);
+    await expect(session).resolves.toBe(0);
+  });
+
   it('keys: a clears the filters, f and u rerun once each, h prints the help, an unmapped key does nothing', async () => {
     const stdin = fakeStdin();
     const runs: RunOptions[] = [];
@@ -538,6 +623,125 @@ describe('watchSession', () => {
     answer!(CANCEL);
     await expect(session).resolves.toBe(0);
     expect(runs).toHaveLength(2);
+  });
+
+  it('a signal from outside the terminal while a prompt is open closes it and ends the session; an answered prompt keeps nothing on the signal', async () => {
+    const stdin = fakeStdin();
+    const runs: RunOptions[] = [];
+    const run = async (options: RunOptions): Promise<RunOutcome> => {
+      runs.push(options);
+      return passed(0);
+    };
+    const signals = new SignalLadder();
+    const session = watchSession({
+      base: { files: [], configPath: undefined },
+      cwd: root,
+      signals,
+      run,
+      stdin,
+      write: () => undefined,
+      writeError: () => undefined,
+      pc,
+      clear: false,
+      watch: fakeWatch(new Map()),
+    });
+    await settle();
+    // Like clack, a prompt answers when the user does or when its signal aborts.
+    const prompts: { signal: AbortSignal | undefined; answer: (value: unknown) => void }[] = [];
+    textMock.mockImplementation(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise((resolve) => {
+          prompts.push({ signal, answer: resolve });
+          signal?.addEventListener('abort', () => resolve(CANCEL), { once: true });
+        }),
+    );
+    let ended = false;
+    void session.then(() => (ended = true));
+    stdin.write('t');
+    await settle();
+    prompts[0]!.answer('signs in');
+    await settle();
+    expect(runs).toHaveLength(2);
+    stdin.write('p');
+    await settle();
+    expect(prompts).toHaveLength(2);
+    // SIGTERM from a process manager: the ladder's first rung, no keypress.
+    signals.escalate(() => undefined);
+    await settle();
+    expect(ended).toBe(true);
+    await expect(session).resolves.toBe(0);
+    expect(prompts[1]!.signal?.aborted).toBe(true);
+    expect(prompts[0]!.signal?.aborted).toBe(false);
+    expect(runs).toHaveLength(2);
+  });
+
+  it('Ctrl-C in a prompt leaves closing it to the prompt, which sees the keypress; Ctrl-D, which the prompt ignores, closes it', async () => {
+    for (const [key, closedBy] of [
+      ['\x03', 'keypress'],
+      ['\x04', 'signal'],
+    ] as const) {
+      const stdin = fakeStdin();
+      const session = watchSession({
+        base: { files: [], configPath: undefined },
+        cwd: root,
+        signals: new SignalLadder(),
+        run: async () => passed(0),
+        stdin,
+        write: () => undefined,
+        writeError: () => undefined,
+        pc,
+        clear: false,
+        watch: fakeWatch(new Map()),
+      });
+      await settle();
+      // Like clack, a prompt cancels on a Ctrl-C keypress and on its signal, and closes again on each.
+      const closes: string[] = [];
+      textMock.mockImplementation(
+        ({ signal }: { signal: AbortSignal }) =>
+          new Promise((resolve) => {
+            const close = (by: string): void => {
+              closes.push(by);
+              resolve(CANCEL);
+            };
+            stdin.on('keypress', (_chunk: unknown, press: { ctrl: boolean; name: string }) => {
+              if (press.ctrl && press.name === 'c') close('keypress');
+            });
+            signal.addEventListener('abort', () => close('signal'), { once: true });
+          }),
+      );
+      stdin.write('t');
+      await settle();
+      stdin.write(key);
+      await expect(session).resolves.toBe(0);
+      expect(closes).toEqual([closedBy]);
+    }
+  });
+
+  it('an interrupt read together with p ends the session without opening the prompt', async () => {
+    const stdin = fakeStdin();
+    const signals = new SignalLadder();
+    const session = watchSession({
+      base: { files: [], configPath: undefined },
+      cwd: root,
+      signals,
+      run: async () => passed(0),
+      stdin,
+      write: () => undefined,
+      writeError: () => undefined,
+      pc,
+      clear: false,
+      watch: fakeWatch(new Map()),
+    });
+    await settle();
+    // A prompt that only an answer would close.
+    textMock.mockImplementation(() => new Promise(() => undefined));
+    let ended = false;
+    void session.then(() => (ended = true));
+    stdin.write('p\x03');
+    await settle();
+    expect(ended).toBe(true);
+    await expect(session).resolves.toBe(0);
+    expect(textMock).not.toHaveBeenCalled();
   });
 
   it('cancels the run a key lands on, keeps the exit code of the last finished run, and quits on q', async () => {

@@ -94,8 +94,10 @@ Without `attach`, starts a new attempt using the config, engine, and app
 command for the target. The app opens at its URL or starts fresh on a
 device from the [pinned app](/mobile#point-at-your-app). It installs
 no build, so a local device target needs `app.bundleId`. Returns the session
-id, the catalog, and the first observation. The catalog there gives the single
-actions by name and arguments only; [`tools`](#tools-2) describes each. The summary above the observation
+id, the catalog, and one line that names the first screen: its revision, path,
+and node count. [`observe`](#observe) lists the nodes, and action results
+report changes against that screen. The catalog in the reply gives the single
+actions by name and arguments only; [`tools`](#tools-2) describes each. The summary
 tells the agent to read the `writing-tests` guide (`e2e://guide/writing-tests`) before it
 writes or edits a test; the server's instructions say the same.
 
@@ -116,10 +118,10 @@ open_session {target: "web", headed: true}
 
 | Input | Type | Required | Does |
 | --- | --- | --- | --- |
-| `target` | string | no | The target to open. Otherwise `--target`, else the only target. |
-| `config` | string (path) | no | The config for this session, absolute or relative to the server's working directory (`cwd` in the client's MCP config). Otherwise `--config`, else discovered like `e2e run`. |
+| `target` | string | no | The target to open. Falls back to `--target`, then the sole target. |
+| `config` | string (path) | no | The config for this session, absolute or relative to the server's working directory (`cwd` in the client's MCP config). Falls back to `--config`, then normal `e2e run` discovery. |
 | `headed` | boolean | no | `true` shows this session's browser or simulator, `false` hides it. Without it the session follows `--headed`. |
-| `path` | string | no | Where on the app URL to open instead of its root, such as `/settings/members`. The first observation is that page. Not with `test`. |
+| `path` | string | no | Where on the app URL to open instead of its root, such as `/settings/members`. The session opens on that page. Not with `test`. |
 | `test` | string | no | One test to run first, named like an `e2e run` positional. The session stops where the test stopped. See [Running a test](#running-a-test). |
 | `engine` | string or object | no | The session's engine in a directory with no config file, as a package name or `{package, export, options}`. See [Without a config](#without-a-config). |
 | `app` | object | no | The app under test for an `engine` session, as `url`, `bundleId`, or `appPath`. |
@@ -268,7 +270,7 @@ call {tool: "run_code", args: {code: "const rows = screen.getByRole('listitem');
 
 | Input | Does |
 | --- | --- |
-| `code` | The body of an async function. `screen`, `app`, `expect`, `credentials`, `secrets`, `console`, and the engine's fixture (`browser` or `device`) are in scope. A session attached to a held test has no engine fixture. |
+| `code` | The body of an async function. `screen`, `app`, `expect`, `credentials`, `secrets`, `services`, `console`, and the engine's fixture (`browser` or `device`) are in scope. A session attached to a held test doesn't have an engine fixture. |
 | `timeout` | Optional. How long each action or matcher on `screen` waits by default, in ms, 1 through 120000. Without it: `5000`, or the config's timeout when shorter. |
 
 ```txt
@@ -335,9 +337,16 @@ name with the line it was thrown on.
 
 #### `test_lines`
 
-Returns every test line the session's actions printed, and every line
-[`run_code`](#run_code) passed, in order, as a draft test body. Takes no
-arguments.
+Returns, in order, the test lines from session actions and passing
+[`run_code`](#run_code) statements. Takes no arguments.
+
+For a new recording, split the draft into tests with one behavior each
+and check the outcome at the end of each test (when the session's agent
+configures a model or custom executor, the draft also recommends using
+`agent.act` for user flows). If you opened an existing
+test with `open_session {test}`, use the lines to continue that test
+where it stopped. If you attached to a held test with
+`open_session {attach}`, put the lines at the pause point of that test.
 
 Each action's result carries its line after the summary:
 
@@ -358,7 +367,7 @@ Test line: await screen.getByRole("button", "Sign in").tap();
   moved together.
 - A control with no name, label, placeholder, text, or test id is found by
   its role: alone when it is the only one (`getByRole("spinbutton")`, with
-  a comment), else narrowed like twins.
+  a comment), otherwise narrowed like twins.
 - At most 10 locators are tried per target. On a device each try reads the
   whole screen.
 - When nothing reaches the target alone, the result says `No test line:`
@@ -696,7 +705,7 @@ open_session {test: "tests/checkout.e2e.ts:12"}
   is torn down. The opening text leads with the outcome: passed, or failed
   with the code, the message, the failing line and the code around it, the
   URL, the nodes nearest a locator that matched nothing, and the last 15
-  steps. The session summary, the catalog, and the screen follow.
+  steps. The session summary, the catalog, and the line that names the screen follow.
 - **Test lines.** The test's own steps print no [test line](#test_lines).
   The session's lines start with the agent's first action, and `test_lines`
   returns them as the lines that continue the test.

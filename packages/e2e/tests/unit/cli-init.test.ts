@@ -79,7 +79,7 @@ function writeCopy(location: string, content?: string): void {
 }
 
 /** A completed `spawnSync` result with the given exit status. */
-function spawnResult(status: number): ReturnType<typeof spawnSync> {
+function spawnResult(status: number | null): ReturnType<typeof spawnSync> {
   return { pid: 1, output: [], stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), status, signal: null };
 }
 
@@ -665,7 +665,7 @@ describe('e2e init', () => {
     expect(clack.select).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('No API key needed during setup'), initialValue: 'vercel' }));
     expect(clack.confirm).toHaveBeenCalledWith(expect.objectContaining({ message: 'Install dependencies with npm?' }));
     expect(spawnSync).toHaveBeenCalledExactlyOnceWith('npm', ['install'], {
-      cwd: dir, stdio: 'inherit', shell: process.platform === 'win32',
+      cwd: dir, env: expect.objectContaining({ YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' }), stdio: 'inherit', shell: process.platform === 'win32',
     });
     expect(output()).toContain('Next: APP_URL=http://localhost:3000 npm run test:e2e');
   });
@@ -907,7 +907,64 @@ describe('e2e init', () => {
     }
     vi.mocked(clack.confirm).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
     await init(dir);
-    expect(spawnSync).toHaveBeenCalledWith('pnpm', ['install'], expect.objectContaining({ cwd: dir }));
+    expect(spawnSync).toHaveBeenCalledWith('pnpm', ['install', '--no-frozen-lockfile'], expect.objectContaining({ cwd: dir }));
+  });
+
+  it.each([
+    ['pnpm', ['install', '--no-frozen-lockfile'], { private: true }, { 'pnpm-workspace.yaml': 'packages:\n  - apps/*\n', 'pnpm-lock.yaml': '' }],
+    ['yarn', ['install'], { private: true, packageManager: 'yarn@4.5.0', workspaces: ['apps/*'] }, { '.yarnrc.yml': '', 'yarn.lock': '__metadata:\n  version: 8\n' }],
+  ] as const)('installs a workspace member with %s, the manager of its workspace root', async (manager, install, rootManifest, rootFiles) => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify(rootManifest));
+    for (const [name, content] of Object.entries(rootFiles)) writeFileSync(path.join(dir, name), content);
+    const project = path.join(dir, 'apps', 'web');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'web', type: 'module' }));
+    expect((await init(project, { yes: true, install: true })).exitCode).toBe(0);
+    expect(vi.mocked(spawnSync).mock.calls.map(([command, args]) => [command, args])).toEqual([[manager, ['--version']], [manager, install]]);
+    expect(spawnSync).toHaveBeenNthCalledWith(1, manager, ['--version'], { cwd: dir, stdio: 'ignore', shell: process.platform === 'win32' });
+    expect(spawnSync).toHaveBeenLastCalledWith(manager, install, {
+      cwd: project, env: expect.objectContaining({ YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' }), stdio: 'inherit', shell: process.platform === 'win32',
+    });
+    expect(output()).toContain(`${manager} test:e2e`);
+    expect(output()).not.toContain('was not found');
+  });
+
+  it.each([
+    ['one level down', 'apps/*', ['apps', 'new']],
+    ['two levels down', 'apps/**', ['apps', 'a', 'b']],
+  ] as const)('finds the workspace manager from the workspace root for a member folder %s that does not exist yet', async (_case, glob, segments) => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@10.0.0' }));
+    writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), `packages: ['${glob}']\n`);
+    const project = path.join(dir, ...segments);
+    vi.mocked(spawnSync).mockImplementationOnce((_command, _args, options) => {
+      expect(existsSync(project)).toBe(false);
+      return existsSync(String(options?.cwd)) ? spawnResult(0) : { ...spawnResult(null), error: new Error('spawnSync pnpm ENOENT') };
+    });
+    expect((await init(project, { yes: true })).exitCode).toBe(0);
+    expect(spawnSync).toHaveBeenCalledExactlyOnceWith('pnpm', ['--version'], expect.objectContaining({ cwd: dir }));
+    expect(output()).toContain('pnpm test:e2e');
+    expect(output()).not.toContain('was not found');
+    expect(existsSync(path.join(project, 'package.json'))).toBe(true);
+  });
+
+  it.each([
+    ['is missing', (): ReturnType<typeof spawnSync> => ({ ...spawnResult(null), error: new Error('spawnSync pnpm ENOENT') })],
+    ['does not run', (): ReturnType<typeof spawnSync> => spawnResult(1)],
+  ] as const)('keeps the invoking manager for a workspace member when the workspace manager %s', async (_case, probe) => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@10.0.0' }));
+    writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+    const project = path.join(dir, 'apps', 'web');
+    mkdirSync(project, { recursive: true });
+    vi.mocked(spawnSync).mockImplementationOnce(() => {
+      expect(existsSync(path.join(project, 'package.json'))).toBe(false);
+      return probe();
+    });
+    expect((await init(project, { yes: true, install: true })).exitCode).toBe(0);
+    expect(spawnSync).toHaveBeenNthCalledWith(1, 'pnpm', ['--version'], expect.anything());
+    expect(spawnSync).toHaveBeenLastCalledWith('npm', ['install'], expect.objectContaining({ cwd: project }));
+    expect(spawnSync).toHaveBeenCalledTimes(2);
+    expect(output()).toContain('This workspace uses pnpm, which was not found on this machine; continuing with npm');
+    expect(output()).toContain('npm run test:e2e');
   });
 
   it('keeps the scaffold and returns a failure when installation fails', async () => {
@@ -1040,6 +1097,94 @@ describe('e2e init', () => {
     expect(existsSync(path.join(dir, 'CLAUDE.md'))).toBe(true);
     expect(read('CLAUDE.md')).toContain('.claude/skills/e2e/SKILL.md');
     expect(read('AGENTS.md')).toContain('.agents/skills/e2e/SKILL.md');
+  });
+
+  describe.skipIf(!symlinks)('with pnpm linking the skill', () => {
+    /** The installed e2e's skill, and pnpm's link to it in `location` as pnpm 12 writes it. */
+    function pnpmLink(location: string, name = 'e2e'): void {
+      const target = path.join(dir, 'node_modules', 'e2e', 'skills', 'e2e');
+      mkdirSync(target, { recursive: true });
+      writeFileSync(path.join(target, 'SKILL.md'), 'installed');
+      mkdirSync(path.join(dir, location), { recursive: true });
+      symlinkSync(path.relative(path.join(dir, location), target), path.join(dir, location, name), process.platform === 'win32' ? 'junction' : 'dir');
+    }
+
+    it('leaves the links alone and asks nothing about them', async () => {
+      pnpmLink('.agents/skills');
+      pnpmLink('.claude/skills');
+      vi.mocked(clack.confirm).mockResolvedValue(true);
+      expect((await init(dir, { install: false })).exitCode).toBe(0);
+      expect(clack.multiselect).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Install the e2e skill for coding agents?' }));
+      expect(clack.confirm).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Replace the symlink') }));
+      expect(lstatSync(path.join(dir, '.agents/skills/e2e')).isSymbolicLink()).toBe(true);
+      expect(read('.agents/skills/e2e/SKILL.md')).toBe('installed');
+      expect(output()).toContain('Linked to the installed e2e, not touching: .agents/skills/e2e');
+      expect(output()).toContain('Linked to the installed e2e, not touching: .claude/skills/e2e');
+      expect(output()).not.toContain('Symlink, not touching');
+      expect(output()).not.toContain('Create .agents/skills/e2e/');
+    });
+
+    it('writes no copy beside a link pnpm named after the package, which a copy would turn into a second skill', async () => {
+      pnpmLink('.agents/skills', 'pnpm-e2e-e2e');
+      expect((await init(dir, { yes: true, skills: ['.agents/skills', '.claude/skills'], mcp: [] })).exitCode).toBe(0);
+      expect(existsSync(path.join(dir, '.agents/skills/e2e'))).toBe(false);
+      expect(existsSync(path.join(dir, '.claude/skills/e2e'))).toBe(false);
+      expect(output()).toContain('Not copying the skill into .claude/skills: the package manager links it from the installed e2e in this project; create the folder and install again to link it there');
+      expect(output()).not.toContain('Not copying the skill into .agents/skills');
+      expect(output()).toContain('Linked to the installed e2e, not touching: .agents/skills/pnpm-e2e-e2e');
+    });
+
+    it('warns about a copy beside a link and still refreshes the copy', async () => {
+      writeCopy('.agents/skills', 'stale');
+      pnpmLink('.agents/skills', 'pnpm-e2e-e2e');
+      expect((await init(dir, { yes: true, mcp: [] })).exitCode).toBe(0);
+      expect(read('.agents/skills/e2e/SKILL.md')).toMatch(/^---\nname: e2e\n/);
+      expect(output()).toContain(
+        'Two e2e skills in .agents/skills: e2e and pnpm-e2e-e2e, the link to the installed e2e; delete .agents/skills/e2e and run pnpm install --force',
+      );
+    });
+
+    it('names only the deletion for a link another tool made', async () => {
+      writeCopy('.agents/skills');
+      pnpmLink('.agents/skills', 'npm-e2e-e2e');
+      expect((await init(dir, { yes: true, mcp: [] })).exitCode).toBe(0);
+      expect(output()).toContain('Two e2e skills in .agents/skills: e2e and npm-e2e-e2e, the link to the installed e2e; delete .agents/skills/e2e\n');
+    });
+
+    it('leaves a dangling skill link beside pnpm\'s link alone, without calling it a copy or offering to replace it', async () => {
+      pnpmLink('.claude/skills', 'pnpm-e2e-e2e');
+      symlinkSync('../../.agents/skills/e2e', path.join(dir, '.claude/skills/e2e'), process.platform === 'win32' ? 'junction' : 'dir');
+      vi.mocked(clack.confirm).mockResolvedValue(true);
+      expect((await init(dir, { install: false })).exitCode).toBe(0);
+      expect(output()).not.toContain('Two e2e skills');
+      expect(clack.confirm).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Replace the symlink') }));
+      expect(existsSync(path.join(dir, '.agents/skills/e2e'))).toBe(false);
+      expect(lstatSync(path.join(dir, '.claude/skills/e2e')).isSymbolicLink()).toBe(true);
+    });
+
+    it('writes no copy in a workspace member when pnpm links the skill at the workspace root', async () => {
+      pnpmLink('.agents/skills');
+      writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - app\n');
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'root', private: true }));
+      const member = path.join(dir, 'app');
+      mkdirSync(path.join(member, '.agents/skills'), { recursive: true });
+      writeFileSync(path.join(member, 'package.json'), JSON.stringify({ name: 'app', private: true }));
+      expect((await init(member, { yes: true, skills: ['.agents/skills'], mcp: [] })).exitCode).toBe(0);
+      expect(existsSync(path.join(member, '.agents/skills/e2e'))).toBe(false);
+      expect(output()).toContain('Not copying the skill into .agents/skills: the package manager links it from the installed e2e at the workspace root, in ../.agents/skills/e2e');
+    });
+  });
+
+  it('removes a file an earlier e2e shipped and this one does not, and keeps the user\'s own', async () => {
+    writeCopy('.agents/skills');
+    writeFileSync(path.join(dir, '.agents/skills/e2e/references/notes.md'), 'mine\n');
+    const bundle = readSkillFiles();
+    expect(bundle.some((file) => file.relative === 'references/explore.md')).toBe(true);
+    vi.mocked(readSkillFiles).mockReturnValue(bundle.filter((file) => file.relative !== 'references/explore.md'));
+    expect((await init(dir, { yes: true, skills: ['.agents/skills'], mcp: [] })).exitCode).toBe(0);
+    expect(existsSync(path.join(dir, '.agents/skills/e2e/references/explore.md'))).toBe(false);
+    expect(read('.agents/skills/e2e/references/notes.md')).toBe('mine\n');
+    expect(output()).toContain(`Updated .agents/skills/e2e/ (${bundle.length - 1} files; removed references/explore.md)`);
   });
 
   it('repairs a damaged copy without asking and leaves other locations alone', async () => {

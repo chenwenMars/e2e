@@ -84,9 +84,9 @@ for that build, because that uploads it a second time.
 }
 ```
 
-A screen read on a Revyl device takes about 2.5 s, and sometimes more than
-5 s. Set `assertionTimeout` to `15_000`. With the default of 5 s, an `expect`
-can fail before it reads the screen one time.
+A screen read on a Revyl device takes about 2.5 s (occasionally over 5 s),
+so set `assertionTimeout` to `15_000`. With the default 5 s, an `expect` can
+time out before it even reads the screen once.
 
 ## Test an app flow
 
@@ -121,6 +121,12 @@ Unknown or invalid options fail config load with `INVALID_CONFIG`.
   device when the run finishes or is interrupted.
 - If the runner is killed before it releases a device, nothing sends the
   session another command, and Revyl ends it after 5 minutes idle.
+- A release fails the run when agent-device can't confirm it ended the
+  session, even when every test passed. This happens when Revyl session
+  cleanup fails (with more than 20 seconds of `cleanupTimeout` remaining) or
+  goes unconfirmed across daemon stop, or when the daemon exits during the run.
+  On Windows, ending the session before daemon stop also requires more than
+  20 seconds of remaining `cleanupTimeout` (keep the default 30 seconds).
 - `app` must be reachable over `https` without credentials in the URL. A
   presigned storage URL works. Set `app` or `app.appPath`, not both.
 - An `app.appPath` build is uploaded to each device's own session, so a run

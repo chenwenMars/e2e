@@ -110,8 +110,10 @@ Calls on `device` run only on a device, so a test that uses it declares
 | `stopApp`, `killApp` | `device.closeApp()`, a force stop; `app.restart()` to stop the app and launch it again |
 | `clearKeychain`, `openLink`, `setLocation`, `setAirplaneMode`, `setOrientation`, `setClipboard` | the same on `device`, such as `device.openLink(url)`. `clearKeychain` is iOS simulator only, `setAirplaneMode(true)` Android 11 or newer. For `travel`, loop `device.setLocation` |
 | `back`, `pressKey: Home`, `hideKeyboard`, `setDarkMode` | `app.back()`, `device.home()`, `device.dismissKeyboard()`, `device.setAppearance('dark')` |
+| `pressKey: lock` | [`device.lock()`](/reference/mobile#lock) on Android 11 or newer or an iOS simulator; [`device.unlock()`](/reference/mobile#unlock) to come back |
 | `pressKey: Remote Dpad Up`, `Down`, `Left`, `Right`, `Remote Dpad Center` | `device.pressRemote('up')`, `'down'`, `'left'`, `'right'`, `'select'` |
 | `pressKey: Remote Media Play Pause`, `Remote Media Stop`, `Remote Media Next`, `Remote Media Previous`, `Remote Media Rewind`, `Remote Media Fast Forward`, `Remote Menu` | `device.pressRemote('play-pause')`, `'stop'`, `'next'`, `'previous'`, `'rewind'`, `'fast-forward'`, `'menu'`; the [remote keys](/reference/engine#keys) list the rest |
+| `pressKey: volume up`, `volume down`, `power` | [`device.pressButton('volume-up')`](/reference/mobile#pressbutton), `'volume-down'`, `'power'`; not on an iOS simulator |
 
 </Accordion>
 <Accordion title="Taps, input, and swipes">
@@ -140,6 +142,7 @@ Calls on `device` run only on a device, so a test that uses it declares
 | `assertScreenshot: { path, thresholdPercentage }` | `await expect(screen).toHaveScreenshot(name, { maxDiffPixelRatio })`, see [Visual comparison](/visual-testing) |
 | `takeScreenshot`, `startRecording`, `stopRecording` | `app.screenshot('label')`, [`app.startRecording()`, `app.stopRecording()`](/reference/app#startrecording) |
 | `assertWithAI`, `assertNoDefectsWithAI`, `extractTextWithAI` | `agent.assert('...', { vision: true })`, `agent.extract('...', { schema })` |
+| `label` on a command | [`test.step('label', fn)`](/reference/test#test-step) around the call; reports show the label with the call under it |
 | `runFlow: file.yaml`, `onFlowStart`, `onFlowComplete` | a function or a `test.extend` fixture; `beforeEach`, `afterEach` |
 | `runFlow: { when: { visible } }` | `if (await locator.isVisible()) { ... }`, see [Rewrite selectors](#rewrite-selectors) |
 | `repeat`, `runScript`, `evalScript`, `${output.x}`, `http.get` | TypeScript in the test: loops, variables, and the `request` fixture, see [API](/api-testing) |
@@ -154,9 +157,9 @@ Calls on `device` run only on a device, so a test that uses it declares
   `getByText(/^mute account$/i)`, or `{ exact: false }` for a substring of text.
 - Maestro taps the first of several matches. e2e fails with
   `LOCATOR_AMBIGUOUS`, so add `.first()` when the first match is what you mean.
-- `isVisible()` replaces `optional` and `runFlow: { when }`. It reads the
-  screen one time and doesn't wait. It fails on several matches, so add
-  `{ visible: true }` or `.first()` when a hidden twin may exist.
+- `isVisible()` replaces `optional` and `runFlow: { when }`. It checks the
+  screen once without waiting and fails on multiple matches, so add
+  `{ visible: true }` or `.first()` if a hidden duplicate may exist.
 - `below`, `above`, `leftOf`, and `rightOf` have no port, see
   [Not yet](#not-yet). `filter({ has })` and chaining match nothing on a
   plain React Native `View` on iOS, see [Known device limitations](/mobile#known-device-limitations).
@@ -173,13 +176,11 @@ on purpose.
 | The grant-all default, names such as `bluetooth` and `storage` | `app.permissions: 'all'`, which on Android grants every runtime permission the app declares, or accept the prompt with `device.alert('accept')` |
 | `inputText` and `pressKey: Enter` with no field, `eraseText: N`, `pressKey: backspace`, `tab` | `fill` or `press` on the field's locator; `fill` a shortened `inputValue()` to erase; tap the next field for Tab |
 | `addMedia` | On an iOS simulator, `xcrun simctl addmedia` before `app.open()`; Android is unchecked. See "Photos for a picker test" under [The device fixture](/mobile#the-device-fixture) |
-| `label` on a command | `-`. The call names each step |
 | `scrollUntilVisible: { centerElement, visibilityPercentage }` | No exact match. After it resolves, read `boundingBox()`, then `screen.swipe({ direction, momentum: 'slow' })` if the node is off center |
 | Device logs and crash reports beside a failure | `adb logcat` or `xcrun simctl spawn <udid> log stream`, collected in a fixture |
 | `maestro hierarchy` as a terminal command | A one-line test that calls `screen.debug()` |
 | `--device-locale` | `app.launchArguments: { AppleLanguages: ['de'], AppleLocale: 'de_DE' }` on iOS, see [Run the app in another language](/mobile#run-the-app-in-another-language); on Android, set the device language before the run |
 | Maestro Cloud | Your [CI](/ci) with a [hosted device provider](/mobile#hosted-devices) |
-| `pressKey: lock`, `power`, `volume up`, `volume down` | `client.command.hardwareButton` on [`unstable_raw`](/reference/mobile#unstable_raw): power and volume on Android, volume on a physical iPhone |
 | JUnit `properties`, a JUnit path with `--output` | Ids in tags or the title; copy `.e2e/junit.xml` after the run |
 
 ### Not yet

@@ -98,7 +98,7 @@ declaration.
 | `INVALID_CONFIG` | A `device` value that is neither a string, a list, nor a valid provider: a provider without a non-empty `name`, without `acquire()` or `release()`, or with a `record` that is not a function. |
 | `INVALID_CONFIG` | `platform` is missing or not `'ios'` or `'android'`; the match is case-sensitive. |
 | `INVALID_CONFIG` | A provided `snapshot` value is not `'full'` or `'interactive'`, or a provided `videoTouches` value is not a boolean. |
-| `INVALID_CONFIG` | An option `mobile()` does not take, such as `mobile({ app })` and the other old app options. The message names the nearest known option for a likely typo, else every option. |
+| `INVALID_CONFIG` | An option `mobile()` does not take, such as `mobile({ app })` and the other old app options. The message names the nearest known option for a likely typo, or lists every option. |
 | `INVALID_CONFIG` | `settle` or `transition` is not a non-negative integer of milliseconds (`settle` may also be `false`). |
 
 #### `platform`
@@ -259,8 +259,8 @@ mobile({ platform: 'ios', transition: 800 }); // default: 500
 
 If the control changes during the wait, the action finds it again within its timeout before acting.
 
-`back`, `home`, `shake`, `alert`, `dismissKeyboard`, `setOrientation`, and `fold` on
-[`device`](#device) change the screen, so they count as actions for this
+`back`, `home`, `pressRemote`, `pressButton`, `shake`, `lock`, `unlock`, `alert`,
+`dismissKeyboard`, `setOrientation`, and `fold` on [`device`](#device) change the screen, so they count as actions for this
 budget the way a tap does. A control that arrives with the screen they reveal
 waits out the budget before the next action lands on it.
 
@@ -465,7 +465,7 @@ them to finish.
 
 | Contract member | On a device |
 | --- | --- |
-| `observe` | The accessibility tree with rects. Element types map onto roles as listed under [Roles](#roles); a `Switch` or `CheckBox`, and an Android `RadioButton`, carry the `checked` state the device reports, and a `SecureTextField` or an Android field UIAutomator flags as `password` is a secure `textbox`. An iOS field keeps a value equal to its label (an unlabeled field is named by its text); Android's echo of a text view's label as its value is dropped. The accessibility identifier (iOS) or resource id (Android) is the node's `testId`. An Android node is named by the content description its app set (React Native's `accessibilityLabel`), else by its text, and its `text` is what it shows, so a labeled text view or a filled field answers `getByLabel` by its label and `getByText` by its text. A field's hint is its `placeholder` attribute, showing or not. Compose Multiplatform reports no placeholder on iOS: an empty field appends the text it draws to its label (`Name, Ada Lovelace`) over one `StaticText` child, so that text is the field's `placeholder` and the child is left out. An empty field has no value: Android flags a showing hint, and XCTest reports an empty iOS field's placeholder as its value, so an iOS field whose value equals its placeholder (trimmed) reads empty, text typed to match the placeholder exactly included. One Android fact is agent-device's, not the platform's: `rect` and every point are the screen's physical pixels; the display density it reports is not applied yet. Android's status bar and navigation bar, the full-width `com.android.systemui` windows along the screen's edges and the narrow status icons (clock, signal, battery) agent-device reports on their own inside that edge band, are left out; the notification shade, system dialogs, and a heads-up notification or other popup inset from the sides stay. Pixels on request, with every secure node's bounds painted black. |
+| `observe` | The accessibility tree with rects. Element types map onto roles as listed under [Roles](#roles); a `Switch` or `CheckBox`, and an Android `RadioButton`, carry the `checked` state the device reports, and a `SecureTextField` or an Android field UIAutomator flags as `password` is a secure `textbox`. An iOS field keeps a value equal to its label (an unlabeled field is named by its text); Android's echo of a text view's label as its value is dropped. The accessibility identifier (iOS) or resource id (Android) is the node's `testId`. An Android node is named by the content description its app set (React Native's `accessibilityLabel`), or by its text, and its `text` is what it shows, so a labeled text view or a filled field answers `getByLabel` by its label and `getByText` by its text. Nodes also carry `label`, `resource-id`, `class`, and Android `content-desc` attributes (see [`getAttribute`](/reference/screen#getattribute)). A field's hint is its `placeholder` attribute, showing or not. Compose Multiplatform reports no placeholder on iOS: an empty field appends the text it draws to its label (`Name, Ada Lovelace`) over one `StaticText` child, so that text is the field's `placeholder` and the child is left out. An empty field has no value: Android flags a showing hint, and XCTest reports an empty iOS field's placeholder as its value, so an iOS field whose value equals its placeholder (trimmed) reads empty, text typed to match the placeholder exactly included. One Android fact is agent-device's, not the platform's: `rect` and every point are the screen's physical pixels; the display density it reports is not applied yet. Android's status bar and navigation bar, the full-width `com.android.systemui` windows along the screen's edges and the narrow status icons (clock, signal, battery) agent-device reports on their own inside that edge band, are left out; the notification shade, system dialogs, and a heads-up notification or other popup inset from the sides stay. Pixels on request, with every secure node's bounds painted black. |
 | `perform` | `tap`, `doubleTap`, `multiTap`, `longPress`, `fill`, `clear`, `hover`, `check`, `uncheck`, `press` (`Enter`, `Space`, or one character), `swipe`, `dragTo`, and `focus` on editable fields. A tap on a `switch` or `checkbox` lands on its innermost control, since UIKit reports a settings row as one labelled switch with the real toggle as a child. `check` and `uncheck` need a `checked` state. Switches report one on both platforms, and so does a native Android `CheckBox`; a React Native checkbox or radio reports one only when the app sets `accessibilityState.checked`. A control with no state is `UNSUPPORTED_CAPABILITY`, so tap it instead. `doubleTap` is two presses, 284 to 285 ms apart on iOS (the cadence of agent-device's XCTest tap): agent-device's own double-tap gesture reaches a React Native `Pressable` as one press. A detector with a window of 300 ms or less can read the pair as two single taps. `multiTap` is `count` presses at the same cadence as `doubleTap`, so the same short-window caveat applies; a `count` above agent-device's 200 is `UNSUPPORTED_CAPABILITY` before any press. At about 285 ms a press on iOS, 200 presses take about a minute, past the default action timeout of 30 s, so pass a longer `timeout` for a large `count`. `longPress` holds for one second unless the test passes `duration`, past a React Native `Pressable`'s `delayLongPress` of 500 ms and the longer thresholds apps set; agent-device's own default hold is shorter and registers as a tap on those. `blur`, `selectOption`, `setInputFiles`, `scrollIntoView`, and `secondaryTap` are not declared, and neither is `tapModifiers`, so `tap`, `doubleTap`, or `multiTap` with `modifiers` is `UNSUPPORTED_CAPABILITY`. An action on a node that a newer snapshot replaced finds the node again instead of acting on a different element. |
 | `performAt` | `tap`, `doubleTap`, `longPress`, and `swipeTo` at a bare screen point, so `screen.tapAt`, `screen.doubleTapAt`, `tap({ position })`, `screen.swipe({ from, to })`, and the agent's `tap_at` reach a control the tree does not list. On iOS, while the soft keyboard is open, a `screen.swipe({ from, to })` with no `duration` has to stay above it, and fails with `ACTION_FAILED` before anything is sent when it doesn't. With `duration` the path goes out as given, across the keyboard, as a test of interactive keyboard dismissal needs. No `hover`, `secondaryTap`, or `dragTo` at a point: touch has none without a node, so `hover_at` needs a listed control. |
 | `keyboard` | `type` and `press` into the focused field, the agent's `type` and `press` without a target and the fallback of `type_at` and `press_at`, and `dismiss`, the agent's `dismiss_keyboard`. |
@@ -516,7 +516,10 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`home`](#home) | `Promise<void>` |
 | [`back`](#back) | `Promise<void>` |
 | [`pressRemote`](#pressremote) | `Promise<void>` |
+| [`pressButton`](#pressbutton) | `Promise<void>` |
 | [`shake`](#shake) | `Promise<void>` |
+| [`lock`](#lock) | `Promise<void>` |
+| [`unlock`](#unlock) | `Promise<void>` |
 | [`alert`](#alert) | `Promise<void>` |
 | [`dismissKeyboard`](#dismisskeyboard) | `Promise<void>` |
 | [`isKeyboardShown`](#iskeyboardshown) | `Promise<boolean>` |
@@ -524,7 +527,7 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`setClipboard`](#setclipboard) | `Promise<void>` |
 
 Every async method is a recorded step named `device.<method>`, bounded by
-`config.actionTimeout`. `back`, `home`, `pressRemote`, `shake`, `alert`, `dismissKeyboard`,
+`config.actionTimeout`. `back`, `home`, `pressRemote`, `pressButton`, `shake`, `lock`, `unlock`, `alert`, `dismissKeyboard`,
 `setOrientation`, and `fold` count as actions for the
 [`transition`](#transition) budget. Each entry below shows its member's
 declaration; the types they use are under [Types](#device-fixture).
@@ -664,13 +667,22 @@ await app.open();
 #### `setLocation`
 
 ```ts
-/** Sets the simulated location, switching location services on first on Android. */
+/**
+ * Sets the simulated location, switching location services on first on
+ * Android. A latitude outside -90 to 90, a longitude outside -180 to 180,
+ * or either one not a finite number is `INVALID_ARGUMENT`, before any
+ * device command.
+ */
 setLocation(coordinates: { latitude: number; longitude: number }): Promise<void>;
 ```
 
 ```ts
 await device.setLocation({ latitude: 52.23, longitude: 21.01 });
 ```
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | A latitude outside -90 to 90, a longitude outside -180 to 180, or either one not a finite number. Fails before any device command. |
 
 #### `clearLocation`
 
@@ -800,11 +812,12 @@ await device.openApp(app);
 
 - Use it for the run's build, or for another build on an upgrade path.
 - The resolved id is the bundle id or package agent-device read from the
-  build, else the `app` passed in.
+  build, or the `app` passed in.
 
 | Throws | When |
 | --- | --- |
-| `APP_NOT_OPEN` | No path was passed and the target has no `app.appPath`; or `reinstall: true` with no `app` passed and no app pinned (no `app.bundleId`, build not installed yet). |
+| `INVALID_STATE` | No path was passed and the target has no `app.appPath`; or `reinstall: true` with no `app` passed and no app pinned (no `app.bundleId`, build not installed yet). |
+| `INVALID_ARGUMENT` | A path was passed and nothing exists at it on the machine running e2e, resolved against the project root. Fails before any device command. |
 | `ENGINE_FAILURE` | agent-device reported no id and no `app` was passed, instead of a file path posing as an id. See [Troubleshooting](/mobile#troubleshooting). |
 
 #### `uninstallApp`
@@ -1048,6 +1061,40 @@ await device.pressRemote('play-pause');
 Most Android TV remotes carry one Play button that toggles: that is
 `play-pause`. `play` is the dedicated Play key.
 
+#### `pressButton`
+
+```ts
+/**
+ * Presses one hardware button: `'volume-up'`, `'volume-down'`, or
+ * `'power'`. An Android emulator or phone takes all three, and a physical
+ * iPhone or iPad the volume buttons; an iOS simulator, an Android TV, and
+ * any other device or button is `UNSUPPORTED_CAPABILITY`. A name outside
+ * the list is `INVALID_ARGUMENT`.
+ * It resolves once the press is sent, with no volume level or screen state,
+ * so assert on what the screen shows next.
+ */
+pressButton(button: HardwareButton): Promise<void>;
+```
+
+```ts
+await device.pressButton('volume-up');
+await expect(screen.getByRole('slider', { name: 'Media' })).toBeVisible();
+```
+
+On Android a volume press opens the system volume panel over the app, so
+the next read shows its sliders until the panel hides itself a few seconds
+later. `power` turns the screen off, and the screen cannot be read until it
+is on again: a read or an action times out. Two quick `power` presses can
+trigger the phone's double-press shortcut, which opens the camera on a stock
+emulator, instead of waking the app.
+To lock the screen and wait until the device reports it locked, use
+[`lock`](#lock), then [`unlock`](#unlock).
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | `button` is not one of the three names. Nothing is sent to the device. |
+| `UNSUPPORTED_CAPABILITY` | The device cannot press that button: an iOS simulator, an Android TV, `power` on an iPhone or iPad, or a hosted device whose WebDriver backend does not expose the button. |
+
 #### `shake`
 
 ```ts
@@ -1072,6 +1119,84 @@ An app reads the shake the way it reads one on a real device: a React Native dev
 | --- | --- |
 | `UNSUPPORTED_CAPABILITY` | The device is not one agent-device can shake: a physical device, a TV or watch target, or a device a provider drives through its own backend, such as a WebDriver session or a provider's own iOS simulator. |
 | `ENGINE_FAILURE` | The Android emulator's console refused the shake, as an image with no accelerometer does. |
+
+#### `lock`
+
+```ts
+/**
+ * Locks the screen and resolves once the device reports it locked: the
+ * sleep key on an Android phone or tablet, the lock button on an iPhone or
+ * iPad simulator. A screen that is already locked stays locked. A lock
+ * that asks for a PIN, pattern, password, or passcode is locked too, but
+ * `unlock()` refuses it, so the device stays locked until someone unlocks
+ * it by hand: use Swipe on Android and no passcode on iOS.
+ * `UNSUPPORTED_CAPABILITY` on a device agent-device cannot lock (a physical
+ * iPhone or iPad, a TV, a device a provider drives through a backend that
+ * has no lock command), and on an Android device whose screen lock is set
+ * to None, which has no lock screen to show. Android 11 to 15 do not
+ * report that setting, so there the sleep key is sent, the display turns
+ * off, and the lock fails with `ENGINE_FAILURE` after about 5 seconds.
+ * Android 10 and older do not report the lock type either, so a lock or
+ * an unlock that would change the state fails with `ENGINE_FAILURE`
+ * before any key is sent.
+ */
+lock(): Promise<void>;
+```
+
+```ts
+try {
+  await device.lock();
+} finally {
+  await device.unlock();
+}
+await expect(screen.getByText('Welcome back')).toBeVisible();
+```
+
+To lock the screen for a time, as Appium's `lock(seconds)` does, wait between `lock()` and `unlock()`.
+
+On an iPhone simulator with an always-on display, such as the iPhone 17 Pro, `unlock()` can leave the display off while the device reports it unlocked: the lock dims the display instead of turning it off, and the unlock swipe dismisses the lock screen without waking it. Taps and screen reads still work, but a screenshot shows the last frame before the display went off, and on iOS 26.5 every later `fill` on that simulator fails its read-back for the rest of the run. An iPhone without an always-on display, such as the iPhone 16e, is not affected. The cause is in agent-device's iOS unlock.
+
+The engine never unlocks the device for you. A test that fails while the screen is locked leaves it locked for the next test on that device, so unlock in a `finally` block or in `afterEach`. Both methods run on the app session: after [`closeApp`](#closeapp) they fail with `APP_NOT_OPEN` until `openApp` opens an app, so unlock before you close the app.
+
+| Throws | When |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | The device is not one agent-device can lock: a physical iPhone or iPad, an Android TV or Apple TV, or a device a provider drives through its own backend with no lock command. |
+| `UNSUPPORTED_CAPABILITY` | The Android device's screen lock is set to None, on Android 16 or newer. The message says so; set any other screen lock, such as Swipe, in Settings > Security. |
+| `ACTION_FAILED` | `actionTimeout` expired before the device reported the screen locked. On an Android device with a PIN, pattern, or password and "Power button instantly locks" off, the keyguard waits for "Lock after screen timeout", up to one minute; raise `actionTimeout` or turn that setting on. |
+| `ENGINE_FAILURE` | The device did not report the screen locked: on Android within 5 seconds, plus the "Lock after screen timeout" delay up to one minute. On Android 11 to 15 with the screen lock set to None, this is the failure, with the message `still reports the keyguard hidden`, and the display is left off. |
+| `ENGINE_FAILURE` | Android 10 or older, on an unlocked screen: agent-device cannot read the lock type (`Unable to read the screen lock type`), and no key is sent. |
+
+#### `unlock`
+
+```ts
+/**
+ * Unlocks the screen and resolves once the device reports it unlocked.
+ * Nothing brings an app to the front: check the screen you expect next.
+ * Android wakes the screen and dismisses
+ * the keyguard, an iOS simulator swipes up from the bottom edge. A display
+ * that is off turns on even when the screen is not locked (Android always
+ * sends its wake key); an unlocked screen that is on stays as it is. The
+ * exception is an iPhone simulator with an always-on display, such as the
+ * iPhone 17 Pro: the unlock can leave its display off, and on iOS 26.5 the
+ * text a later fill types does not reach the app. It never
+ * enters a PIN, pattern, password, or passcode: a lock that asks for one is
+ * `UNSUPPORTED_CAPABILITY`, and so is a device agent-device cannot lock (a
+ * physical iPhone or iPad, a TV, a device a provider drives through a
+ * backend that has no lock command).
+ */
+unlock(): Promise<void>;
+```
+
+```ts
+await device.unlock();
+```
+
+| Throws | When |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | The lock asks for a PIN, pattern, password, or passcode. The message names it; unlock the device by hand, or remove the credential. |
+| `UNSUPPORTED_CAPABILITY` | The device is not one agent-device can lock: a physical iPhone or iPad, an Android TV or Apple TV, or a device a provider drives through its own backend with no lock command. An Android device whose screen lock is set to None is not refused: `unlock()` wakes it. |
+| `ENGINE_FAILURE` | The device still reported the screen locked after the unlock. |
+| `ENGINE_FAILURE` | Android 10 or older, on a locked screen: agent-device cannot read the lock type (`Unable to read the screen lock type`), and no key is sent. |
 
 #### `alert`
 
@@ -1512,6 +1637,9 @@ export type RemoteKey =
   | 'fast-forward'
   | 'next'
   | 'previous';
+
+/** A hardware button `device.pressButton` takes. */
+export type HardwareButton = 'volume-up' | 'volume-down' | 'power';
 
 /** Orientations `setOrientation` accepts. */
 export type DeviceOrientation = 'portrait' | 'portrait-upside-down' | 'landscape-left' | 'landscape-right';

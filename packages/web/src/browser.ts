@@ -12,7 +12,7 @@
  * says which URLs a test may open.
  */
 
-import type { Download, Route } from 'playwright-core';
+import type { Download, Request, Response, Route } from 'playwright-core';
 import type { ActionOptions, Expectable, JsonValue, Locator, Screen, TextMatch, WebResponse } from '@e2e-dev/core';
 import {
   Deadline,
@@ -36,6 +36,17 @@ import {
   type OperationContext,
 } from '@e2e-dev/core/engine';
 import { classifyInputError } from './actions.ts';
+import {
+  clockInstallLabel,
+  clockTicks,
+  clockTicksLabel,
+  clockTime,
+  clockTimeLabel,
+  pausedInThePast,
+  translateClockError,
+  type BrowserClock,
+  type ClockCall,
+} from './clock.ts';
 import { cookieUrlsLabel, resolveCookieUrl, resolveCookieUrls, validateCookies } from './cookies.ts';
 import type { AttemptTab } from './attempt-session.ts';
 import type { DialogHandler } from './dialogs.ts';
@@ -51,9 +62,11 @@ import {
   routeMethodMatches,
   routePatternsEqual,
   toRoutePattern,
+  toWaitPattern,
   type NormalizedRoutePattern,
 } from './route-pattern.ts';
 import { describeExpectedUrl, urlPattern } from './url-glob.ts';
+import type { BrowserName } from './browser-connection.ts';
 import type { PlaywrightSurface } from './surface.ts';
 import { createWebMcp, type WebMcp } from './webmcp.ts';
 
@@ -87,14 +100,31 @@ export interface RouteContinueOverrides {
   postData?: string;
 }
 
+/** A request the page made: what a route handler reads as `route.request` and `waitForRequest` returns. */
+export interface WebRequest {
+  /** Request URL. */
+  readonly url: string;
+  /** HTTP method, as the page sent it. */
+  readonly method: string;
+  /**
+   * Request headers, lower-cased names. The cookie headers the browser adds
+   * on its own are there only when a route intercepts the request, so always
+   * in `route.request`.
+   */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Request body as text; absent when the request has none. */
+  readonly postData?: string;
+}
+
+/** What `waitForResponse` returns and its predicate reads: a `WebResponse` and the request it answers. */
+export interface PageResponse extends WebResponse {
+  /** The request this response answers. */
+  readonly request: WebRequest;
+}
+
 export interface WebRoute {
   /** The intercepted request. */
-  readonly request: {
-    readonly url: string;
-    readonly method: string;
-    readonly headers: Readonly<Record<string, string>>;
-    readonly postData?: string;
-  };
+  readonly request: WebRequest;
   /** Reads the upstream response without deciding the route or following redirects. */
   fetch(): Promise<WebResponse>;
   /** Fulfills the intercepted request once. */
@@ -113,8 +143,8 @@ export interface RouteMatcher {
   readonly method: string;
   /**
    * The URL pattern: a string using the same grammar as a plain `route`
-   * pattern, or a `RegExp`. `route` and `waitForResponse` match requests
-   * against it; `unroute` compares it structurally.
+   * pattern, or a `RegExp`. `route`, `waitForResponse`, and `waitForRequest`
+   * match requests against it; `unroute` compares it structurally.
    */
   readonly url: string | RegExp;
 }
@@ -148,6 +178,62 @@ async function readResponseBody(
     );
     return () => Promise.reject(error);
   }
+}
+
+/** The `WebRequest` over a Playwright request: one reading for route handlers and `waitForRequest`, so the two cannot drift. */
+function webRequest(request: Request): WebRequest {
+  const postData = request.postData();
+  return {
+    url: request.url(),
+    method: request.method(),
+    headers: request.headers(),
+    ...(postData === null ? {} : { postData }),
+  };
+}
+
+/**
+ * Keeps the failure of a test's wait predicate away from Playwright: its
+ * waiter rewrites the message of whatever the predicate throws, in place,
+ * and fails on a thrown non-`Error`. `call` throws a stand-in that remembers
+ * the cause, and `translate`, given to `surface.guard`, throws that cause
+ * untranslated, so an `expect` in a predicate keeps `ASSERTION_FAILED` and a
+ * plain throw reads as the test's own `ERROR`, never `ENGINE_FAILURE`. Only
+ * the rejection that ended the wait is translated, so a predicate that fails
+ * after a timeout cannot replace it.
+ */
+function predicateFailures() {
+  const causes = new WeakMap<Error, { readonly cause: unknown }>();
+  return {
+    async call<T>(predicate: (candidate: T) => unknown, candidate: T): Promise<boolean> {
+      try {
+        return Boolean(await predicate(candidate));
+      } catch (cause) {
+        const standIn = new Error('wait predicate failed');
+        causes.set(standIn, { cause });
+        throw standIn;
+      }
+    },
+    translate(cause: unknown, label: string): Error {
+      const failure = cause instanceof Error ? causes.get(cause) : undefined;
+      if (failure !== undefined) throw failure.cause;
+      return translatePwError(cause, label);
+    },
+  };
+}
+
+type PredicateFailures = ReturnType<typeof predicateFailures>;
+
+/** Memoizes `make` per candidate, so the view a wait predicate saw is the one the wait returns. */
+function viewOnce<Candidate extends object, View>(make: (candidate: Candidate) => View): (candidate: Candidate) => View {
+  const views = new WeakMap<Candidate, View>();
+  return (candidate) => {
+    let view = views.get(candidate);
+    if (view === undefined) {
+      view = make(candidate);
+      views.set(candidate, view);
+    }
+    return view;
+  };
 }
 
 /** The `WebResponse` over a Playwright response's metadata and a reader for its body bytes. */
@@ -246,8 +332,8 @@ export interface BrowserTab {
 
 /**
  * The browser the attempt drives, showing one active tab. Navigation, reads,
- * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForDownload`,
- * the keyboard and mouse, `expect(browser)`, and `screen` act on the active
+ * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForRequest`,
+ * `waitForDownload`, the keyboard and mouse, `expect(browser)`, and `screen` act on the active
  * tab; cookies, routes, and dialog handlers cover the whole browser, every
  * tab included. A tab the app opens (a `target="_blank"` link,
  * `window.open`) joins `tabs()` but does not become active on its own:
@@ -256,6 +342,18 @@ export interface BrowserTab {
  * again.
  */
 export interface Browser extends Expectable<BrowserExpectation> {
+  /**
+   * The browser the attempt drives, as the driver names it: the
+   * `web({ browser })` value, and `chromium` for every browser the engine
+   * attaches to over CDP (`connect`, a provider), whatever it is.
+   */
+  readonly name: BrowserName;
+  /**
+   * The version the running browser reports, such as `159.0.8154.6`: for
+   * an attached or hosted one, what its CDP endpoint reports. The target's
+   * `userAgent` does not change it.
+   */
+  readonly version: string;
   /** Navigates to an allowed URL. */
   goto(
     url: string,
@@ -308,11 +406,26 @@ export interface Browser extends Expectable<BrowserExpectation> {
   unroute(pattern: string | RegExp | RouteMatcher): Promise<void>;
   /** Removes all routes registered by this browser fixture, preserving the configured headers. */
   unrouteAll(): Promise<void>;
-  /** Waits for a matching response, optionally narrowed to one HTTP method. */
+  /**
+   * Waits for a response on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate. The predicate runs per response
+   * until one returns or resolves to a truthy value; throwing fails the wait
+   * with the predicate's own error.
+   */
   waitForResponse(
-    pattern: string | RegExp | RouteMatcher,
+    pattern: string | RegExp | RouteMatcher | ((response: PageResponse) => boolean | Promise<boolean>),
     options?: { timeout?: number },
-  ): Promise<WebResponse>;
+  ): Promise<PageResponse>;
+  /**
+   * Waits for a request on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate, and resolves when the page sends
+   * it before any response arrives. Predicate matching and errors work the
+   * same way as in `waitForResponse`.
+   */
+  waitForRequest(
+    pattern: string | RegExp | RouteMatcher | ((request: WebRequest) => boolean | Promise<boolean>),
+    options?: { timeout?: number },
+  ): Promise<WebRequest>;
   /**
    * Returns every cookie of the browser, or only those a request to `urls`
    * (one URL or several) would carry. A relative URL resolves against the
@@ -402,6 +515,14 @@ export interface Browser extends Expectable<BrowserExpectation> {
    * from the page, so treat them as untrusted input.
    */
   readonly webmcp: WebMcp;
+  /**
+   * Controls time in the attempt's pages, as Playwright's `page.clock` does:
+   * `Date`, timers, and `requestAnimationFrame` in every tab and frame, the
+   * ones the app opens included. It covers the whole browser, survives
+   * navigation, `app.restart()`, and `app.clearState()`, and ends with the
+   * attempt.
+   */
+  readonly clock: BrowserClock;
 }
 
 interface StoredRoute {
@@ -578,6 +699,19 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
     return handle;
   };
 
+  /**
+   * Runs one checked clock call as the step's operation. `pauseAt` is
+   * compared with the page clock first: Playwright logs a call for the next
+   * documents before it runs it, so a time it refused would still move them.
+   */
+  const runClock = (call: ClockCall): Promise<void> => {
+    const label = `browser.clock.${call.method}`;
+    return surface.guard(context.operation(), label, async () => {
+      if (call.method === 'pauseAt' && call.ms < ((await surface.clockNow()) ?? -Infinity)) throw pausedInThePast(label);
+      await surface.clock(call);
+    }, (cause) => translateClockError(cause, label, call.method));
+  };
+
   /** Unregisters the stored routes `match` selects, newest first. */
   const removeRoutes = async (match: (stored: StoredRoute) => boolean): Promise<void> => {
     for (let i = routes.length - 1; i >= 0; i -= 1) {
@@ -619,10 +753,84 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
   /** The page title, read within the action timeout or, for a matcher poll, within the poll's deadline. */
   const currentTitle = (deadline?: Deadline) =>
     surface.guard(context.operation(deadline?.remaining()), 'title', () => surface.requirePage().title());
+  /**
+   * What Playwright's waiter calls with each candidate of `waitForResponse`
+   * or `waitForRequest`: the test's predicate over the candidate's view, or
+   * the route pattern over its request's URL and method. The pattern compiles
+   * here, before the wait, so an invalid glob fails before anything waits.
+   */
+  const waitMatcher = <Candidate, View>(
+    wanted: NormalizedRoutePattern | ((view: View) => unknown),
+    requestOf: (candidate: Candidate) => Request,
+    failures: PredicateFailures,
+  ): ((view: (candidate: Candidate) => View) => (candidate: Candidate) => boolean | Promise<boolean>) => {
+    if (typeof wanted === 'function') return (view) => (candidate) => failures.call(wanted, view(candidate));
+    const { matches } = urlPattern(wanted.url, baseHref);
+    return () => (candidate) => {
+      const request = requestOf(candidate);
+      return matches(request.url()) && routeMethodMatches(wanted, request.method());
+    };
+  };
+
+  /**
+   * The `PageResponse` over one response a wait saw. Its body is read once,
+   * when first asked for. While the wait runs, a read is bounded by
+   * `waitSignal` only, since the wait's own timeout already bounds a predicate
+   * that reads it; a read still pending when the wait ends is cancelled with
+   * it, unless its response is the one the wait returns. `settle` starts
+   * reading that response at once, while the browser still holds the body. A
+   * read that starts after the wait, on any response it saw, and a read of the
+   * returned response the predicate left pending, wait on a budget of their
+   * own: the timeout bounds the match, never a body still streaming in behind
+   * headers that already arrived.
+   */
+  const responseView = (response: Response, waitSignal: AbortSignal) => {
+    let started: Promise<() => Promise<Buffer>> | undefined;
+    let settled = false;
+    const start = () =>
+      (started ??= readResponseBody('waitForResponse', () => response.body(), () => response.request().failure()?.errorText));
+    const read = async (): Promise<Buffer> => {
+      if (!settled && !waitSignal.aborted) {
+        const inWait = await raceAbort(start(), waitSignal, 'waitForResponse body').catch((cause: unknown) => {
+          // The wait returned this response while the read was pending: it goes on as a read of that response.
+          if (settled) return undefined;
+          throw cause;
+        });
+        if (inWait) return inWait();
+      }
+      const { signal, timeoutMs } = context.operation();
+      const bytes = await raceAbort(
+        withTimeout(start(), timeoutMs, () =>
+          new TestError('ACTION_FAILED', `waitForResponse: response body did not finish within ${timeoutMs}ms`)),
+        signal,
+        'waitForResponse body',
+      );
+      return bytes();
+    };
+    const view: PageResponse = { ...webResponse(response, read), request: webRequest(response.request()) };
+    return {
+      response: view,
+      settle(): PageResponse {
+        settled = true;
+        // Never rejects: `readResponseBody` keeps a failed read for the readers.
+        void start();
+        return view;
+      },
+    };
+  };
+
   const expectationDeps: ExpectationDeps = { currentUrl, currentTitle, baseHref, deadlineFor, context };
   const expectation = createBrowserExpectation(expectationDeps);
 
+  const identity = surface.browserIdentity(() => context.signal);
+
   const browser: Omit<Browser, keyof Expectable<BrowserExpectation>> = {
+    get name() {
+      return identity().name;
+    },
+    get version() {
+      return identity().version;
+    },
     goto(url, options) {
       const resolved = context.app.resolveUrl(url);
       return navigation('browser.goto', options, (operation) => surface.navigating(async () => {
@@ -712,14 +920,8 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
             throw cause;
           }
         };
-        const postData = request.postData();
         const publicRoute: WebRoute = {
-          request: {
-            url: request.url(),
-            method: request.method(),
-            headers: request.headers(),
-            ...(postData === null ? {} : { postData }),
-          },
+          request: webRequest(request),
           fetch: async (...args: unknown[]) => {
             requireNoArguments('route.fetch', args);
             return surface.guard(context.operation(), 'route.fetch', async currentOperation => {
@@ -813,32 +1015,42 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
       return surface.guard(context.operation(), 'unrouteAll', () => removeRoutes(() => true));
     },
     waitForResponse(pattern, options) {
-      const wirePattern = toRoutePattern('browser.waitForResponse', pattern);
-      const { matches } = urlPattern(wirePattern.url, baseHref);
+      rejectUnknownOptions('browser.waitForResponse', options, ['timeout']);
+      const failures = predicateFailures();
+      const match = waitMatcher(toWaitPattern('browser.waitForResponse', pattern), (response: Response) => response.request(), failures);
       const operation = context.operation(stepTimeout(options?.timeout, 'browser.waitForResponse'));
       return surface.guard(operation, 'waitForResponse', async (currentOperation) => {
         const page = await surface.ensurePage();
-        const response = await page.waitForResponse(
-          (candidate) => matches(candidate.url()) && routeMethodMatches(wirePattern, candidate.request().method()),
-          { timeout: currentOperation.timeoutMs },
-        );
-        // Started now, while the browser still holds the body, and awaited
-        // only by the body readers on a budget of their own: the timeout
-        // bounds the match, never a body still streaming in behind headers
-        // that already arrived.
-        const body = readResponseBody('waitForResponse', () => response.body(), () => response.request().failure()?.errorText);
-        const read = async (): Promise<Buffer> => {
-          const { signal, timeoutMs } = context.operation();
-          const bytes = await raceAbort(
-            withTimeout(body, timeoutMs, () =>
-              new TestError('ACTION_FAILED', `waitForResponse: response body did not finish within ${timeoutMs}ms`)),
-            signal,
-            'waitForResponse body',
+        // Ends the body reads of the responses the wait passed over once it settles,
+        // so a predicate still reading one stops instead of holding it for the attempt.
+        const waited = new AbortController();
+        const reads = AbortSignal.any([currentOperation.signal, waited.signal]);
+        try {
+          const view = viewOnce((response: Response) => responseView(response, reads));
+          const response = await page.waitForResponse(
+            match((candidate) => view(candidate).response),
+            { timeout: currentOperation.timeoutMs, signal: currentOperation.signal },
           );
-          return bytes();
-        };
-        return webResponse(response, read);
-      });
+          return view(response).settle();
+        } finally {
+          waited.abort();
+        }
+      }, failures.translate);
+    },
+    waitForRequest(pattern, options) {
+      rejectUnknownOptions('browser.waitForRequest', options, ['timeout']);
+      const failures = predicateFailures();
+      const match = waitMatcher(toWaitPattern('browser.waitForRequest', pattern), (request: Request) => request, failures);
+      const operation = context.operation(stepTimeout(options?.timeout, 'browser.waitForRequest'));
+      return surface.guard(operation, 'waitForRequest', async (currentOperation) => {
+        const page = await surface.ensurePage();
+        const view = viewOnce(webRequest);
+        const request = await page.waitForRequest(
+          match(view),
+          { timeout: currentOperation.timeoutMs, signal: currentOperation.signal },
+        );
+        return view(request);
+      }, failures.translate);
     },
     cookies(urls) {
       const targets = resolveCookieUrls(urls, context.app.resolveUrl);
@@ -967,6 +1179,20 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
       up: () => surface.guard(context.operation(), 'mouse.up', () => surface.requirePage().mouse.up(), classifyInputError),
     },
     webmcp: createWebMcp(surface, context),
+    // Async, so an argument a check refuses rejects like a failed call.
+    clock: {
+      async install(options) {
+        rejectUnknownOptions('browser.clock.install', options, ['time']);
+        const time = options?.time;
+        await runClock({ method: 'install', ms: time === undefined ? Date.now() : clockTime('browser.clock.install', time) });
+      },
+      fastForward: async (ticks) => runClock({ method: 'fastForward', ms: clockTicks('browser.clock.fastForward', ticks) }),
+      runFor: async (ticks) => runClock({ method: 'runFor', ms: clockTicks('browser.clock.runFor', ticks) }),
+      pauseAt: async (time) => runClock({ method: 'pauseAt', ms: clockTime('browser.clock.pauseAt', time) }),
+      resume: () => runClock({ method: 'resume' }),
+      setFixedTime: async (time) => runClock({ method: 'setFixedTime', ms: clockTime('browser.clock.setFixedTime', time) }),
+      setSystemTime: async (time) => runClock({ method: 'setSystemTime', ms: clockTime('browser.clock.setSystemTime', time) }),
+    },
   };
 
   const action: FixtureOperation = { kind: 'resource' };
@@ -991,6 +1217,7 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
     unroute: { ...action, label: patternLabel },
     unrouteAll: action,
     waitForResponse: { ...action, timeout: (_pattern, options) => options?.timeout, label: patternLabel },
+    waitForRequest: { ...action, timeout: (_pattern, options) => options?.timeout, label: patternLabel },
     cookies: { ...action, label: cookieUrlsLabel },
     setCookies: action,
     clearCookies: action,
@@ -1005,6 +1232,15 @@ export function createBrowserFixture(surface: PlaywrightSurface, context: Engine
     keyboard: { down: { ...action, label: (key) => key }, up: { ...action, label: (key) => key }, press: { ...action, label: (key) => key }, type: { ...action, label: (text) => `${text.length} chars` } },
     mouse: { move: action, wheel: action, down: action, up: action },
     webmcp: { tools: action, callTool: { ...action, label: (name) => String(name) } },
+    clock: {
+      install: { ...action, label: clockInstallLabel },
+      fastForward: { ...action, label: clockTicksLabel },
+      runFor: { ...action, label: clockTicksLabel },
+      pauseAt: { ...action, label: clockTimeLabel },
+      resume: action,
+      setFixedTime: { ...action, label: clockTimeLabel },
+      setSystemTime: { ...action, label: clockTimeLabel },
+    },
   });
 }
 

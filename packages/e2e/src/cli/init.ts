@@ -10,6 +10,7 @@ import {
   detectPackageManager,
   detectWorkspacePackageManager,
   execCommand,
+  installCommand,
   readPackageManifest,
   runScriptCommand,
   type PackageManager,
@@ -18,16 +19,23 @@ import { CONFIG_NAMES, JS_CONFIG_NAMES } from '../config/names.ts';
 import { DOCS_URL } from './docs-url.ts';
 import { initStarStrip } from './star.ts';
 import {
+  describeCopy,
+  describeDuplicate,
   describeLinks,
   describeObstacles,
+  findDuplicateSkills,
   findInstalledSkillDirs,
+  findPackageSkillLinks,
   holdsCopyAfter,
+  holdsSkill,
+  linkedAtSkillName,
   planSkillInstall,
   planSkillLink,
   replaceableLinks,
   SKILL_LOCATIONS,
   splitSkillDirs,
   type SkillInstall,
+  writeSkillCopy,
 } from './init/agent-skill.ts';
 import {
   CI_SERVICES,
@@ -288,7 +296,14 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
         ci: 'none',
       }
     : {};
-  const foundSkillDirs = findInstalledSkillDirs(cwd);
+  // A location pnpm links the installed skill into counts as installed, whatever the link's name.
+  const packageLinks = findPackageSkillLinks(cwd);
+  const installedSkillDirs = findInstalledSkillDirs(cwd);
+  const foundSkillDirs = SKILL_LOCATIONS.map(({ dir }) => dir)
+    .filter((dir) => installedSkillDirs.includes(dir) || packageLinks.some((link) => link.dir === dir));
+  // In a workspace member, pnpm links the skill into the workspace root's folders only.
+  const workspace = detectWorkspacePackageManager(cwd);
+  const rootLinks = path.resolve(workspace.root) === path.resolve(cwd) ? [] : findPackageSkillLinks(workspace.root);
   const foundMcpFiles = findRegisteredMcpFiles(cwd);
   const given = {
     engines: options.engines ?? defaults.engines,
@@ -352,7 +367,19 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
   );
   if (isCancelled(skillDirs)) return cancel();
   facts.skill = skillDirs.length > 0;
-  const { copies, links } = splitSkillDirs(skillDirs);
+  const duplicates = findDuplicateSkills(cwd, packageLinks);
+  for (const link of packageLinks.filter((found) => skillDirs.includes(found.dir))) {
+    if (duplicates.includes(link)) clack.log.warn(describeDuplicate(link));
+    else clack.log.info(`Linked to the installed e2e, not touching: ${link.dir}/${link.name}`);
+  }
+  // Where the package manager links the skill, init refreshes the copies there are and adds none: pnpm would link a second skill beside a new copy.
+  const unwritten = packageLinks.length === 0 && rootLinks.length === 0 ? [] : skillDirs.filter((dir) => !holdsSkill(cwd, dir));
+  for (const dir of unwritten.filter((missing) => !packageLinks.some((link) => link.dir === missing))) {
+    clack.log.info(packageLinks.length > 0
+      ? `Not copying the skill into ${dir}: the package manager links it from the installed e2e in this project; create the folder and install again to link it there`
+      : `Not copying the skill into ${dir}: the package manager links it from the installed e2e at the workspace root, in ${rootLinks.map((link) => posixRelative(cwd, path.join(workspace.root, link.dir, link.name))).join(' and ')}`);
+  }
+  const { copies, links } = splitSkillDirs(skillDirs.filter((dir) => !linkedAtSkillName(packageLinks, dir) && !unwritten.includes(dir)));
   const plannedCopies = planSkillInstall(cwd, copies, bundledSkill);
   const skillInstalls: SkillInstall[] = [];
   for (const planned of plannedCopies) {
@@ -374,7 +401,10 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
   );
   if (isCancelled(mcpFiles)) return cancel();
   facts.mcp = mcpFiles.length > 0;
-  const manager = detectPackageManager(cwd, pkg.manifest.packageManager);
+  // A workspace member takes its workspace root's manager when this machine has it, and is treated as a standalone project otherwise.
+  const own = detectPackageManager(cwd, pkg.manifest.packageManager);
+  const manager = workspace.manager === own || isInstalled(workspace.manager, workspace.root) ? workspace.manager : own;
+  if (manager !== workspace.manager) clack.log.warn(`This workspace uses ${workspace.manager}, which was not found on this machine; continuing with ${manager}`);
   let mcpRegistrations: ReturnType<typeof planMcpRegistration>['registrations'];
   try {
     const plan = planMcpRegistration(cwd, mcpFiles, manager);
@@ -521,12 +551,9 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
       clack.log.success(`Linked ${skill.relative} -> ${skill.target}${linkReplaces(skill, 'replaced')}`);
       continue;
     }
-    for (const file of skill.files) {
-      mkdirSync(path.dirname(file.absolute), { recursive: true });
-      writeFileSync(file.absolute, file.content, 'utf8');
-    }
+    writeSkillCopy(cwd, skill);
     const verb = skill.links.length > 0 ? 'Replaced' : skill.existing ? 'Updated' : 'Created';
-    clack.log.success(`${verb} ${skill.relative}/ (${skill.files.length} files)`);
+    clack.log.success(`${verb} ${skill.relative}/ (${describeCopy(skill)})`);
   }
   if (skillDirs.length === 0) {
     clack.log.info(`Skipped the agent skill; agents can still print it with ${execCommand(manager, 'e2e guide')}`);
@@ -554,7 +581,11 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
       clack.log.info(`${CACHE_IGNORE_ENTRY} is ignored; committing agent.act replays is opt-in, see ${DOCS_URL}/cache#commit-the-replay-cache`);
     }
   }
-  const installed = install ? spawnSync(manager, ['install'], { cwd, stdio: 'inherit', shell: process.platform === 'win32' }) : undefined;
+  let installed: ReturnType<typeof spawnSync> | undefined;
+  if (install) {
+    const { args, env } = installCommand(manager);
+    installed = spawnSync(manager, args, { cwd, env: { ...process.env, ...env }, stdio: 'inherit', shell: process.platform === 'win32' });
+  }
   // After the install, so an existing config's engines load; the user's config runs only once they agreed to the changes.
   if (writesCi) {
     await writePipeline({
@@ -800,6 +831,11 @@ function describeApp(app: FrameworkApp, manager: PackageManager): string {
 function servedBuild(manifest: FrameworkManifest, config: string): string | undefined {
   const scripts = productionScripts(manifest);
   return scripts !== undefined && configRunsScript(config, scripts.start) ? scripts.build : undefined;
+}
+
+/** Whether `manager` runs in the workspace root, which exists before init writes and where a Corepack shim picks the workspace's version. */
+function isInstalled(manager: PackageManager, workspaceRoot: string): boolean {
+  return spawnSync(manager, ['--version'], { cwd: workspaceRoot, stdio: 'ignore', shell: process.platform === 'win32' }).status === 0;
 }
 
 /** The major version of the pnpm on this machine, for `pnpm/action-setup`; `latest` when it cannot be read. */

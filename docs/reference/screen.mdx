@@ -68,6 +68,8 @@ screen.getByRole('heading', /welcome/i, { level: 1 });
 The accessible name goes second, a string or a `RegExp`, with the other
 options after it. The object form, `{ name: 'Save' }`, is the same query.
 The options are [`RoleOptions`](#types).
+For visible content inside an unlabelled list item or status, filter by
+text, for example `screen.getByRole('listitem').filter({ hasText: 'Invoice 42' })`.
 
 <Note>
 A role query never matches a node hidden from the accessibility tree: one
@@ -848,9 +850,15 @@ await screen.getByRole('textbox', 'Notes').press('ControlOrMeta+a');
 A key is zero or more modifiers and one key, joined with `+`, as the
 [key grammar](/reference/engine#keys) lists them. `Shift++` presses `+`.
 
+On the web engine, a character that is not on a US keyboard (`é`, `中`) is
+pressed in Chromium only. The page gets the same `keydown`, `input`, and
+`keyup` as for any key, with an empty `code` and a `keyCode` of 0. Enter it
+with [`fill`](#fill) or [`pressSequentially`](#presssequentially) in Firefox and
+WebKit.
+
 | Throws | When |
 | --- | --- |
-| `UNSUPPORTED_CAPABILITY` | A key the platform lacks. |
+| `UNSUPPORTED_CAPABILITY` | A key the platform lacks. On the web engine, a character that is not on a US keyboard, in Firefox or WebKit. |
 
 #### `check`
 
@@ -1082,6 +1090,27 @@ getAttribute(name: string): Promise<string | null>;
 const href = await screen.getByRole('link', 'Docs').getAttribute('href');
 ```
 
+On a device, a node carries up to five attributes:
+
+- `label`: the accessibility label. On iOS, that is the device's own label, so
+  an empty field whose placeholder was folded out keeps its full label. On
+  Android, it is the content description, or the node's text when there is no
+  description. An empty Android field showing only its hint has no `label`, and
+  neither does an empty Android field whose content description equals its hint.
+- `resource-id`: the node's test id, which is the Android resource id or the
+  iOS accessibility identifier (what Appium reads as `name`).
+- `class`: the Android class name, or the iOS element type without the
+  `XCUIElementType` prefix, such as `TextField` (what Appium reads as `type`).
+- `content-desc`: Android only. Missing when the content description equals the
+  visible text or hint, because agent-device reports it only when it differs.
+- `placeholder`: present when the platform reports a hint or placeholder.
+
+On an iOS device cloud that serves an Appium page source, agent-device falls
+back to Appium's `name` for both values. `name` is the identifier, or the label
+when an element has no identifier. So `resource-id` and `label` can each return
+the other's value there: an element with a test id and no label reads its test
+id as `label`. For the text a field holds, use `inputValue()`.
+
 #### `isVisible`
 
 ```ts
@@ -1233,7 +1262,7 @@ document.
 
 #### `all`
 
-Resolves the query one time, so a loop can act on each row.
+Resolves the query once, so a loop can act on each row.
 
 ```ts
 /** One `nth(i)` locator per current match, without auto-waiting; empty when nothing matches. */

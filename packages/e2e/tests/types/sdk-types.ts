@@ -9,6 +9,7 @@ import { ctrf, json, junit, line, list as listReporter, markdown } from '../../s
 import {
   credentials,
   defineConfig,
+  defineService,
   expect,
   secrets,
   unique,
@@ -516,6 +517,9 @@ finishedRun.lastRun satisfies FinishedRun['report'] | undefined;
 // A reporter folds a --last-failed rerun into the runs before it the way the runner does.
 foldLastRun(finishedRun.report, finishedRun.lastRun ?? finishedRun.report) satisfies Report;
 finishedRun.report.run.shard?.index satisfies number | undefined;
+finishedRun.report.run.merge?.shardDurationMs satisfies number | undefined;
+finishedRun.report.run.merge?.shards[0]?.configDigest satisfies string | undefined;
+finishedRun.report.run.merge?.shards[0]?.exitCode satisfies RunExitCode | undefined;
 // @ts-expect-error the shard marker is set or absent, never false
 ({ cause: 'filtered', reason: 'outside the shard', otherShard: false }) satisfies NonNullable<Report['run']['results'][number]['skip']>;
 // @ts-expect-error the run status is a closed union
@@ -816,6 +820,13 @@ test.slow('imports a large file');
 test.slow('slow', async () => {});
 // @ts-expect-error the condition is a boolean
 test.slow(1);
+// step resolves to what its body returns, sync or async.
+void (test.step('Log in', async () => 7) satisfies Promise<number>);
+void (test.step('Read the title', () => 'Home') satisfies Promise<string>);
+// @ts-expect-error a step needs a body
+void test.step('Log in');
+// @ts-expect-error the title is a string
+void test.step(1, async () => {});
 test.fail('gap', async () => {}) satisfies ReturnType<typeof test>;
 void (test.fail(false) satisfies void);
 test('gap', { fail: 'known gap' }, async () => {});
@@ -1255,10 +1266,16 @@ test.extend<{}, {}, typeof constConfig>()('narrows a target platform', async ({ 
   if (platform === 'ios') await handset.closeApp();
   platform satisfies 'api' | 'plain' | 'ios';
 });
-// With an E2EConfig type annotation, the inferred engine types are lost, so engine fixtures aren't typed.
+// With an E2EConfig type annotation, the config has no target types, so test.extend rejects it.
 const annotatedConfig: E2EConfig = mixedConfig;
-// @ts-expect-error handset is absent from the annotated config type
-test.extend<{}, {}, typeof annotatedConfig>()('names handset', async ({ handset }) => { void handset; });
+// @ts-expect-error the annotated config type is rejected
+test.extend<{}, {}, typeof annotatedConfig>();
+// @ts-expect-error the annotated config type is rejected with fixture definitions too
+test.extend<{ extra: number }, {}, typeof annotatedConfig>({ extra: async ({}, use) => { await use(1); } });
+const annotatedTarget: Target = { engine: paneEngine };
+const spreadConfig = { targets: [{ ...annotatedTarget, name: 'one' }, { ...annotatedTarget, name: 'two' }] } as const satisfies E2EConfig;
+// @ts-expect-error a target spread from an annotated Target has no engine type either
+test.extend<{}, {}, typeof spreadConfig>();
 const inferredEngine = defineEngine({ name: 'tv', version: '1.0.0', spiVersion: 1, platform: 'tv', isolation: 'worker' });
 void (inferredEngine.platform satisfies 'tv' | undefined);
 void (inferredEngine.isolation satisfies 'worker' | undefined);
@@ -1267,22 +1284,305 @@ defineEngine<{}, 'ios'>({ name: 'tv', version: '1.0.0', spiVersion: 1 });
 // @ts-expect-error the literal 'worker' requires isolation: 'worker' in the spec
 defineEngine<{}, string, 'worker'>({ name: 'tv', version: '1.0.0', spiVersion: 1 });
 
-// defineConfig keeps the config's own type, so the config type passed to
-// test.extend types the engine's fixtures.
-const definedConfig = defineConfig({ targets: [{ engine: paneEngine, app: { url: 'http://127.0.0.1:0' } }] });
-test.extend<{}, {}, typeof definedConfig>()('reads an engine fixture', async ({ pane }) => {
-  await pane.goto('/');
+// defineConfig types the services an app.command.env function receives from
+// the config's services. Data keeps its type, and each function of a
+// service's value becomes an async function.
+const mailbox = defineService({
+  async *start({ signal }) {
+    signal satisfies AbortSignal;
+
+    yield {
+      url: 'http://127.0.0.1:4010',
+      clear: () => {},
+      count: (inbox: string) => inbox.length,
+      admin: { reset: async () => true },
+      sentAt: [new Date()],
+    };
+  },
 });
-// A config from defineConfig is still an E2EConfig.
-void (definedConfig satisfies E2EConfig);
-// defineConfig refuses a key E2EConfig doesn't have, as satisfies E2EConfig does.
+
+const servicesConfig = defineConfig({
+  services: { mailbox },
+  targets: [
+    {
+      engine: paneEngine,
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          env: async ({ services }) => {
+            services.mailbox.url satisfies string;
+            services.mailbox.clear() satisfies Promise<void>;
+            services.mailbox.count('ada') satisfies Promise<number>;
+            services.mailbox.admin.reset() satisfies Promise<boolean>;
+            // An async function's promise isn't wrapped in a second one.
+            void services.mailbox.admin.reset().then((reset) => reset satisfies boolean);
+            services.mailbox.sentAt[0] satisfies Date | undefined;
+            // @ts-expect-error the config has no service called sms
+            void services.sms;
+            // @ts-expect-error count takes a string
+            void services.mailbox.count(1);
+
+            return { PORT: '{port}', MAILBOX_URL: services.mailbox.url };
+          },
+        },
+      },
+    },
+  ],
+});
+
+// The config type passed to test.extend types the services fixture in tests, hooks, and fixtures of both scopes.
+const servicesTest = test.extend<{}, {}, typeof servicesConfig>();
+
+servicesTest.beforeEach(async ({ services }) => {
+  await services.mailbox.clear();
+});
+
+servicesTest.beforeAll(async ({ services }) => {
+  services.mailbox.url satisfies string;
+});
+
+servicesTest('reads a service', async ({ services, pane }) => {
+  (await services.mailbox.count('ada')) satisfies number;
+
+  await pane.goto(services.mailbox.url);
+
+  // @ts-expect-error a function of a service's value returns a promise in a test
+  services.mailbox.count('ada') satisfies number;
+  // @ts-expect-error the config has no service called sms
+  void services.sms;
+});
+
+test.extend<{ inbox: string }, { resetAll: () => Promise<boolean> }, typeof servicesConfig>({
+  inbox: async ({ services }, use) => {
+    await use(services.mailbox.url);
+  },
+  resetAll: [
+    async ({ services }, use) => {
+      await use(() => services.mailbox.admin.reset());
+    },
+    { scope: 'worker' },
+  ],
+});
+
+// Without the config type, services is a record of unknown values.
+test('reads a service without the config type', async ({ services }) => {
+  services satisfies Readonly<Record<string, unknown>>;
+  // @ts-expect-error a service's value is unknown without the config type
+  void services['mailbox'].url;
+});
+
+// A config without services hands env and tests an empty record.
 defineConfig({
-  targets: [{ engine: paneEngine }],
+  targets: [
+    {
+      engine: paneEngine,
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          env: ({ services }) => {
+            // @ts-expect-error the config has no services
+            void services.mailbox;
+
+            return { PORT: '{port}' };
+          },
+        },
+      },
+    },
+  ],
+});
+
+// satisfies E2EConfig still takes a config with services, and env sees them untyped.
+void ({
+  services: { mailbox },
+  targets: [
+    {
+      engine: paneEngine,
+      app: {
+        url: 'http://127.0.0.1:4000',
+        command: {
+          executable: 'node',
+          env: ({ services }) => ({ MAILBOX: String(services['mailbox']) }),
+        },
+      },
+    },
+  ],
+} satisfies E2EConfig);
+
+// A config from defineConfig is still an E2EConfig.
+void (servicesConfig satisfies E2EConfig);
+
+// A SharedArrayBuffer can't be copied to a test. defineService refuses it,
+// and its type in a test is never.
+const counters = defineService({
+  // @ts-expect-error a SharedArrayBuffer can't be copied to a test
+  async *start() {
+    yield { shared: new SharedArrayBuffer(8), bytes: new Uint8Array(8) };
+  },
+});
+
+test.extend<{}, {}, { services: { counters: typeof counters }; targets: [{ engine: typeof paneEngine }] }>()('reads copied buffers', ({ services }) => {
+  services.counters.shared satisfies never;
+  services.counters.bytes satisfies Uint8Array;
+});
+
+defineService({
+  // @ts-expect-error a service yields an object
+  async *start() {
+    yield 'http://127.0.0.1:4010';
+  },
+});
+
+// defineService takes data, maps, sets, and functions whose arguments and
+// results are data, including interfaces.
+interface SentEmail {
+  to: string;
+  subject: string;
+}
+
+defineService({
+  async *start() {
+    const emails: SentEmail[] = [];
+
+    yield {
+      received: (address: string) => emails.filter((email) => email.to === address),
+      waitFor: async (address: string, { subject }: { subject: RegExp }) => emails.find((email) => email.to === address && subject.test(email.subject)),
+      byAddress: new Map([['ada@example.com', new Set(['Welcome'])]]),
+      sentTo: new Set([{ to: 'ada@example.com' }]),
+      reset: () => {},
+    };
+  },
+});
+
+// defineService refuses values that can't be copied to a test.
+defineService({
+  // @ts-expect-error a Promise can't be copied to a test
+  async *start() {
+    yield { ready: Promise.resolve(true) };
+  },
+});
+
+defineService({
+  // @ts-expect-error a function can't take a callback from a test
+  async *start() {
+    yield { onEmail: (listener: (to: string) => void) => listener('ada@example.com') };
+  },
+});
+
+defineService({
+  // @ts-expect-error a Response has methods, so a function can't return it to a test
+  async *start() {
+    yield { fetchInbox: async () => new Response('[]') };
+  },
+});
+
+defineService({
+  // @ts-expect-error a function inside a Map can't be copied to a test
+  async *start() {
+    yield { handlers: new Map([['welcome', () => 'sent']]) };
+  },
+});
+
+defineService({
+  // @ts-expect-error a URL loses its class when it's copied to a test
+  async *start() {
+    yield { url: new URL('http://127.0.0.1:4010') };
+  },
+});
+
+defineService({
+  // @ts-expect-error a service yields a plain object, not an array
+  async *start() {
+    yield ['http://127.0.0.1:4010'];
+  },
+});
+
+defineService({
+  // @ts-expect-error a service yields a plain object, not a Map
+  async *start() {
+    yield new Map([['url', 'http://127.0.0.1:4010']]);
+  },
+});
+
+defineService({
+  // @ts-expect-error a service yields a plain object, not a Date
+  async *start() {
+    yield new Date();
+  },
+});
+
+defineService({
+  // @ts-expect-error a service yields a plain object, not a function
+  async *start() {
+    yield () => 'http://127.0.0.1:4010';
+  },
+});
+
+declare const server: import('node:http').Server;
+
+defineService({
+  // @ts-expect-error a server's methods take callbacks
+  async *start() {
+    yield { server };
+  },
+});
+
+defineConfig({
+  targets: [
+    {
+      engine: paneEngine,
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          // @ts-expect-error env returns string values
+          env: () => ({ PORT: 4000 }),
+        },
+      },
+    },
+  ],
+});
+
+// defineConfig takes the config's type as its first type argument.
+type PaneOnlyConfig = { readonly targets: readonly [{ readonly engine: typeof paneEngine }] };
+defineConfig<PaneOnlyConfig>({ targets: [{ engine: paneEngine }] });
+
+// defineConfig refuses a key E2EConfig doesn't have, as satisfies E2EConfig does, and still types env from services.
+defineConfig({
+  services: { mailbox },
+  targets: [
+    {
+      engine: paneEngine,
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          env: ({ services }) => ({ MAILBOX_URL: services.mailbox.url }),
+        },
+      },
+    },
+  ],
   // @ts-expect-error E2EConfig has no key called bogus
   bogus: true,
 });
+
 // @ts-expect-error E2EConfig has no key called reporter
 defineConfig({ reporter: ['list'], targets: [{ engine: paneEngine }] });
+// @ts-expect-error E2EConfig has no key called service
+defineConfig({ service: { mailbox }, targets: [{ engine: paneEngine }] });
+
+// A service configured behind a condition may be missing from the fixture.
+declare const withMailbox: boolean;
+const optionalServicesConfig = {
+  services: withMailbox ? { mailbox } : {},
+  targets: [{ engine: paneEngine }],
+} as const satisfies E2EConfig;
+test.extend<{}, {}, typeof optionalServicesConfig>()('reads an optional service', async ({ services }) => {
+  // @ts-expect-error mailbox is missing when the condition is false
+  void services.mailbox.url;
+  void services.mailbox?.url;
+});
 
 // A test, a group, and a call each pin a configured agent by name.
 test('as the buyer', { agent: 'buyer' }, async () => {});

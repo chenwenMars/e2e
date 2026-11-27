@@ -996,6 +996,20 @@ describe('ListReporter', () => {
       expect(lines.find((line) => line.includes('Duration'))).not.toContain('startup');
     });
 
+    it('takes down a setup step that failed with a run error, so an interrupt after it does not name it', () => {
+      const chunks: string[] = [];
+      const lines: string[] = [];
+      const reporter = plainReporter({ write: (line) => lines.push(line), raw: (text) => chunks.push(text) }, true);
+      reporter.handle(runStarted());
+      const app = { kind: 'app', label: 'target "chromium" command', url: 'http://127.0.0.1:4310/' } as const;
+      reporter.handle({ type: 'setup', step: app, state: 'started' });
+      expect(chunks.at(-1)).toContain('starting target "chromium" command');
+      reporter.handle({ type: 'run-error', error: { category: 'infrastructure', code: 'APP_UNREACHABLE', message: 'the app command exited with code 1', retryable: false, phase: 'launch' } });
+      expect(chunks.at(-1)).not.toContain('starting');
+      reporter.handle({ type: 'run-interrupted', mode: 'graceful' });
+      expect(lines.join('\n')).not.toContain('interrupted while starting');
+    });
+
   });
 
   describe('serial groups', () => {
@@ -1321,6 +1335,301 @@ describe('ListReporter', () => {
       // The window above the result line is erased before the block prints.
       expect(chunks.some((chunk) => chunk.includes('\u001b[0J'))).toBe(true);
       expect(chunks.at(-1)).not.toContain('└──');
+    });
+
+    it('keeps an agent step running after a step nested in it ends, and routes each step its own progress', () => {
+      const { chunks, output } = liveCapture();
+      const reporter = plainReporter(output, true);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+      reporter.handle(testStarted('t1', 'pays', 'chromium'));
+      const step = (stepId: string, progress: object) =>
+        reporter.handle({
+          type: 'step',
+          testId: 't1',
+          agent: 'default',
+          repeat: 0,
+          target: 'chromium',
+          progress: { ...progress, identity: { attemptId: 'a1', attemptIndex: 0, stepId, stepIndex: Number(stepId.slice(1)) } },
+        } as never);
+      const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+      step('s0', { phase: 'start', kind: 'agent', api: 'agent.act', label: 'pay' });
+      // An onAction hook takes a screenshot while the act runs.
+      step('s1', { phase: 'start', kind: 'locator', api: 'screen.screenshot', label: 'after tap' });
+      expect(shown()).toContain('screen.screenshot "after tap"');
+      step('s0', { phase: 'activity', api: 'agent.act', activity: 'observe' });
+      step('s1', { phase: 'end', kind: 'locator', api: 'screen.screenshot', label: 'after tap', status: 'passed', durationMs: 5, modelCalls: 0 });
+      expect(shown()).toContain('agent.act "pay"');
+      expect(shown()).toContain('Observing');
+      step('s0', { phase: 'activity', api: 'agent.act', activity: 'action' });
+      step('s0', { phase: 'event', api: 'agent.act', event: { kind: 'engine', name: 'tool:tap', detail: 'tap button "Pay"', startedAt: new Date(0).toISOString(), durationMs: 27, status: 'passed' } });
+      step('s0', { phase: 'activity', api: 'agent.act', activity: 'action' });
+      expect(shown()).toContain('agent.act "pay"');
+      expect(shown()).toContain('tap button "Pay"');
+      expect(shown()).toContain('Acting');
+      expect(shown()).not.toContain('screen.screenshot');
+      step('s0', { phase: 'end', kind: 'agent', api: 'agent.act', label: 'pay', status: 'passed', durationMs: 900, modelCalls: 1 });
+      expect(shown()).not.toContain('Acting');
+    });
+
+    describe('test.step', () => {
+      /** Feeds step progress of attempt `a1` of test `t1`; `parent` is the index of the `test.step` around the step. */
+      const feed = (reporter: ListReporter, testId = 't1') => (stepIndex: number, parent: number | undefined, progress: object) =>
+        reporter.handle({
+          type: 'step',
+          testId,
+          agent: 'default',
+          repeat: 0,
+          target: 'chromium',
+          progress: {
+            ...progress,
+            identity: { attemptId: 'a1', attemptIndex: 0, stepId: `a1:${stepIndex}`, stepIndex, ...(parent === undefined ? {} : { parentStepId: `a1:${parent}` }) },
+          },
+        } as never);
+      const group = (label: string) => ({ kind: 'step', api: 'test.step', label });
+      const ended = { phase: 'end', status: 'passed', durationMs: 1_200, modelCalls: 0 };
+      const act = { kind: 'agent', api: 'agent.act', label: 'pay' };
+
+      it('lists a running test.step where it started, the steps inside it under it, then prints them nested', () => {
+        const { chunks, lines, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const step = feed(reporter);
+        const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+        // Two side by side: each one's steps stay under it however their ends interleave.
+        step(0, undefined, { phase: 'start', ...group('Log in') });
+        step(1, undefined, { phase: 'start', ...group('Check out') });
+        step(2, 1, { phase: 'start', ...act });
+        step(2, 1, { ...ended, ...act, modelCalls: 2 });
+        step(3, 0, { phase: 'start', ...group('Type the password') });
+        step(4, 3, { phase: 'start', kind: 'locator', api: 'locator.fill', label: 'Password' });
+        step(4, 3, { ...ended, kind: 'locator', api: 'locator.fill', label: 'Password' });
+        step(3, 0, { ...ended, ...group('Type the password') });
+        const rows = () => shown().split('\n').filter((row) => /[◌✓×]/.test(row)).map((row) => row.replace(/^ {7}/, ''));
+        expect(rows()).toEqual(['◌ Log in', '  ✓ Type the password 1.20s', '◌ Check out', '  ✓ agent.act "pay" 1.20s · 2 model calls']);
+        step(1, undefined, { ...ended, ...group('Check out') });
+        step(0, undefined, { ...ended, ...group('Log in'), status: 'failed' });
+        expect(rows()).toEqual(['× Log in 1.20s failed', '  ✓ Type the password 1.20s', '✓ Check out 1.20s', '  ✓ agent.act "pay" 1.20s · 2 model calls']);
+
+        reporter.handle(finished(result({ status: 'passed', id: 't1', title: ['pays'] })));
+        const block = lines.slice(lines.findIndex((line) => line.includes('pays')) + 1).filter((line) => /[×✓]/.test(line));
+        // The passed `Type the password` had no agent step in it: it is not kept.
+        expect(block).toEqual([
+          '     × Log in 1.20s failed',
+          '     ✓ Check out 1.20s',
+          '       ✓ agent.act "pay" 1.20s · 2 model calls',
+        ]);
+      });
+
+      it('draws an open test.step once, and keeps the call running beside it as the current step', () => {
+        const { chunks, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const step = feed(reporter);
+        const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+        step(0, undefined, { phase: 'start', ...act });
+        step(1, undefined, { phase: 'start', ...group('Log in') });
+        expect(shown().match(/Log in/g)).toHaveLength(1);
+        expect(shown()).toContain('agent.act "pay"');
+        expect(shown()).not.toContain('test.step');
+      });
+
+      it('keeps a retry\'s steps under their test.step when a step of the attempt before ends late', () => {
+        const { chunks, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const at = (attemptIndex: number) => (stepIndex: number, parent: number | undefined, progress: object) =>
+          reporter.handle({
+            type: 'step', testId: 't1', agent: 'default', repeat: 0, target: 'chromium',
+            progress: { ...progress, identity: { attemptId: `a${attemptIndex}`, attemptIndex, stepId: `a${attemptIndex}:${stepIndex}`, stepIndex, ...(parent === undefined ? {} : { parentStepId: `a${attemptIndex}:${parent}` }) } },
+          } as never);
+        const side = { kind: 'agent', api: 'agent.act', label: 'side' };
+        at(0)(0, undefined, { phase: 'start', ...side });
+        at(1)(0, undefined, { phase: 'start', ...group('Log in') });
+        at(0)(0, undefined, { ...ended, ...side, status: 'cancelled' });
+        at(1)(1, 0, { phase: 'start', ...act });
+        at(1)(1, 0, { ...ended, ...act });
+        at(1)(0, undefined, { ...ended, ...group('Log in') });
+        const rows = chunks.at(-1)!.replace(ANSI_PATTERN, '').split('\n').filter((row) => /[✓×]/.test(row)).map((row) => row.replace(/^ {7}/, ''));
+        expect(rows).toEqual(['× agent.act "side" 1.20s cancelled', '✓ Log in 1.20s', '  ✓ agent.act "pay" 1.20s']);
+      });
+
+      it('keeps a test.step of the attempt before under the one around it when it ends after a retry began', () => {
+        const { chunks, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const at = (attemptIndex: number) => (stepIndex: number, parent: number | undefined, progress: object) =>
+          reporter.handle({
+            type: 'step', testId: 't1', agent: 'default', repeat: 0, target: 'chromium',
+            progress: { ...progress, identity: { attemptId: `a${attemptIndex}`, attemptIndex, stepId: `a${attemptIndex}:${stepIndex}`, stepIndex, ...(parent === undefined ? {} : { parentStepId: `a${attemptIndex}:${parent}` }) } },
+          } as never);
+        at(0)(0, undefined, { phase: 'start', ...group('Outer') });
+        at(0)(1, 0, { phase: 'start', ...group('Inner') });
+        at(1)(0, undefined, { phase: 'start', ...group('Outer') });
+        at(0)(1, 0, { ...ended, ...group('Inner'), status: 'cancelled' });
+        at(0)(0, undefined, { ...ended, ...group('Outer'), status: 'cancelled' });
+        at(1)(0, undefined, { ...ended, ...group('Outer') });
+        const rows = chunks.at(-1)!.replace(ANSI_PATTERN, '').split('\n').filter((row) => /[◌✓×]/.test(row)).map((row) => row.replace(/^ {7}/, ''));
+        expect(rows).toEqual(['× Outer 1.20s cancelled', '  × Inner 1.20s cancelled', '✓ Outer 1.20s']);
+      });
+
+      it('lists a test.step whose end never came above the steps that ran in it', () => {
+        const { lines, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const step = feed(reporter);
+        step(0, undefined, { phase: 'start', ...group('Log in') });
+        step(1, 0, { phase: 'start', ...act });
+        step(1, 0, { ...ended, ...act });
+        reporter.handle(finished(result({ status: 'failed', id: 't1', title: ['pays'] })));
+        const block = lines.slice(lines.findIndex((line) => line.includes('pays')) + 1).filter((line) => /[◌×✓]/.test(line));
+        expect(block.slice(0, 2)).toEqual(['     ◌ Log in', '       ✓ agent.act "pay" 1.20s']);
+      });
+
+      it('never lets control characters of a test.step title through in the name of a step printed inside it', () => {
+        const lines: string[] = [];
+        const reporter = plainReporter({ write: (line) => lines.push(line) });
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const step = feed(reporter);
+        step(0, undefined, { phase: 'start', ...group(`Check\u001b[2J out\nsecond ${'x'.repeat(300)}`) });
+        step(1, 0, { phase: 'start', ...act });
+        step(1, 0, { ...ended, ...act });
+        const line = lines.find((printed) => printed.includes('agent.act'))!;
+        expect(line.includes('\u001b') || line.includes('\n')).toBe(false);
+        expect(line.length).toBeLessThan(200);
+        expect(line).toContain('pays > Check');
+      });
+
+      it('prints an agent step as it ends, named after its test and the test.step calls around it, without a live window', () => {
+        const lines: string[] = [];
+        const reporter = plainReporter({ write: (line) => lines.push(line) });
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'pays', 'chromium'));
+        const step = feed(reporter);
+        step(0, undefined, { phase: 'start', ...group('Check out') });
+        step(1, 0, { phase: 'start', ...act });
+        step(1, 0, { ...ended, ...act, modelCalls: 2 });
+        step(2, 0, { phase: 'start', kind: 'locator', api: 'locator.tap', label: 'Pay' });
+        step(2, 0, { ...ended, kind: 'locator', api: 'locator.tap', label: 'Pay' });
+        step(0, undefined, { ...ended, ...group('Check out') });
+        expect(lines.filter((line) => line.includes('✓'))).toEqual([
+          '   ✓ pays > Check out > agent.act "pay" 1.20s · 2 model calls',
+        ]);
+      });
+
+      it('keeps a green file of tests that only name plain calls on its one line', () => {
+        const { lines, output } = liveCapture();
+        const reporter = plainReporter(output, true);
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/a.e2e.ts', tests: 1 }, { file: 'tests/b.e2e.ts', tests: 1 }]));
+        for (const [id, file] of [['t1', 'tests/a.e2e.ts'], ['t2', 'tests/b.e2e.ts']] as const) {
+          reporter.handle(testStarted(id, 'pays', 'chromium', file));
+          const step = feed(reporter, id);
+          step(0, undefined, { phase: 'start', ...group('Log in') });
+          step(1, 0, { phase: 'start', kind: 'locator', api: 'locator.tap', label: 'Pay' });
+          step(1, 0, { ...ended, kind: 'locator', api: 'locator.tap', label: 'Pay' });
+          step(0, undefined, { ...ended, ...group('Log in') });
+          reporter.handle(finished(result({ status: 'passed', id, title: ['pays'], file })));
+        }
+        expect(lines.filter((line) => line.includes('Log in') || line.includes('pays'))).toEqual([]);
+        expect(lines.filter((line) => line.includes('.e2e.ts'))).toHaveLength(2);
+      });
+    });
+
+    it('keeps the newer of two concurrent steps shown when the older one ends first', () => {
+      const { chunks, output } = liveCapture();
+      const reporter = plainReporter(output, true);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+      reporter.handle(testStarted('t1', 'pays', 'chromium'));
+      const step = (stepId: string, progress: object) =>
+        reporter.handle({
+          type: 'step',
+          testId: 't1',
+          agent: 'default',
+          repeat: 0,
+          target: 'chromium',
+          progress: { ...progress, identity: { attemptId: 'a1', attemptIndex: 0, stepId, stepIndex: Number(stepId.slice(1)) } },
+        } as never);
+      const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+      // Promise.all: an assertion polls while an act runs beside it, and the assertion settles first.
+      step('s0', { phase: 'start', kind: 'assertion', api: 'expect.toBeVisible', label: 'locator("p")' });
+      step('s1', { phase: 'start', kind: 'agent', api: 'agent.act', label: 'pay' });
+      step('s1', { phase: 'replay', api: 'agent.act', active: true });
+      step('s0', { phase: 'end', kind: 'assertion', api: 'expect.toBeVisible', label: 'locator("p")', status: 'passed', durationMs: 5, modelCalls: 0 });
+      expect(shown()).toContain('agent.act "pay"');
+      expect(shown()).toContain('Replaying');
+      expect(shown()).not.toContain('expect.toBeVisible');
+      step('s1', { phase: 'activity', api: 'agent.act', activity: 'action' });
+      step('s1', { phase: 'replay', api: 'agent.act', active: false });
+      expect(shown()).toContain('agent.act "pay"');
+      expect(shown()).toContain('Acting');
+    });
+
+    it('drops a step an earlier attempt left open once a retry starts its own', () => {
+      const { chunks, output } = liveCapture();
+      const reporter = plainReporter(output, true);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+      reporter.handle(testStarted('t1', 'pays', 'chromium'));
+      const step = (attemptId: string, stepIndex: number, progress: object) =>
+        reporter.handle({
+          type: 'step',
+          testId: 't1',
+          agent: 'default',
+          repeat: 0,
+          target: 'chromium',
+          progress: { ...progress, identity: { attemptId, attemptIndex: Number(attemptId.slice(1)), stepId: `${attemptId}:${stepIndex}`, stepIndex } },
+        } as never);
+      const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+      // The first attempt times out with its act still running: no end ever comes.
+      step('a0', 0, { phase: 'start', kind: 'agent', api: 'agent.act', label: 'pay' });
+      step('a1', 0, { phase: 'start', kind: 'locator', api: 'locator.tap', label: 'Pay' });
+      step('a1', 0, { phase: 'end', kind: 'locator', api: 'locator.tap', label: 'Pay', status: 'passed', durationMs: 5, modelCalls: 0 });
+      expect(shown()).toContain('└── pays');
+      expect(shown()).not.toContain('agent.act');
+    });
+
+    it('keeps a retry shown when the timed-out attempt starts a step after it began', () => {
+      const { chunks, output } = liveCapture();
+      const reporter = plainReporter(output, true);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/case.e2e.ts', tests: 1 }]));
+      reporter.handle(testStarted('t1', 'pays', 'chromium'));
+      const step = (attemptId: string, stepIndex: number, progress: object) =>
+        reporter.handle({
+          type: 'step',
+          testId: 't1',
+          agent: 'default',
+          repeat: 0,
+          target: 'chromium',
+          progress: { ...progress, identity: { attemptId, attemptIndex: Number(attemptId.slice(1)), stepId: `${attemptId}:${stepIndex}`, stepIndex } },
+        } as never);
+      const shown = () => chunks.at(-1)!.replace(ANSI_PATTERN, '');
+      step('a0', 0, { phase: 'start', kind: 'agent', api: 'agent.act', label: 'old pay' });
+      step('a1', 0, { phase: 'start', kind: 'agent', api: 'agent.act', label: 'pay' });
+      step('a1', 0, { phase: 'activity', api: 'agent.act', activity: 'observe' });
+      // The timed-out act's onAction hook still runs and takes a screenshot.
+      step('a0', 1, { phase: 'start', kind: 'screen', api: 'screen.screenshot', label: 'after tap' });
+      expect(shown()).not.toContain('screen.screenshot');
+      step('a0', 1, { phase: 'end', kind: 'screen', api: 'screen.screenshot', label: 'after tap', status: 'passed', durationMs: 5, modelCalls: 0 });
+      step('a1', 0, { phase: 'activity', api: 'agent.act', activity: 'action' });
+      expect(shown()).toContain('agent.act "pay"');
+      expect(shown()).toContain('Acting');
+      expect(shown()).not.toContain('old pay');
     });
 
     it('shows the --step prompt under its paused test, after every step that ran, and takes it down', () => {
@@ -2352,6 +2661,44 @@ describe('explore runs', () => {
     const header = lines.find((line) => line.includes('Exploring'));
     expect(header).toContain('|mixed|');
     expect(header).not.toContain('|capacity|');
+  });
+
+  describe('a finding that arrives after its step ended', () => {
+    const LATE = { ...FINDING, reportedAt: '2026-09-11T10:00:34.000Z' };
+    const LATE_LINE = '⚑ high issue  Cart total shows $0.00 with two items (/cart) · step 1';
+
+    function untilStepOneEnded(reporter: ListReporter): void {
+      reporter.handle(runStarted({ targets: ['web'] }));
+      reporter.handle(plan([{ file: 'explore', target: 'web', tests: 1 }]));
+      reporter.handle(testStarted('t1', GOAL, 'web', 'explore'));
+      reporter.handle(explore({ phase: 'started', goal: GOAL, budgets: { maxSteps: 4, timeoutMs: 300_000 } }));
+      reporter.handle(explore({ phase: 'step-started', step: STEP_1 }));
+      reporter.handle(explore({ phase: 'step-finished', step: { ...STEP_1, status: 'exhausted', startedAt: '2026-09-11T10:00:01.000Z', durationMs: 32_000 } }));
+    }
+
+    it('prints it in the log under the row already printed, naming its step', () => {
+      const { lines, output } = capture();
+      const reporter = plainReporter(output);
+      untilStepOneEnded(reporter);
+      reporter.handle(explore({ phase: 'planning', closing: false }));
+      reporter.handle(explore({ phase: 'finding', finding: LATE }));
+      expect(lines.slice(-2)).toEqual(['   × 1  Cart 32.00s ended at its limit', `   ${LATE_LINE}`]);
+    });
+
+    it('shows it in the live window at once, naming its step, while the planner works and through the next step', () => {
+      const frames: string[] = [];
+      const reporter = plainReporter({ write: () => {}, raw: (text) => frames.push(text.replace(ANSI_PATTERN, '')) }, true);
+      untilStepOneEnded(reporter);
+      reporter.handle(explore({ phase: 'planning', closing: false }));
+      reporter.handle(explore({ phase: 'finding', finding: LATE }));
+      expect(frames.at(-1)).toContain(LATE_LINE);
+      expect(frames.at(-1)).toContain('× 1  Cart 32.00s · 1 finding ended at its limit');
+      reporter.handle(explore({ phase: 'step-started', step: STEP_2 }));
+      expect(frames.at(-1)).toContain(LATE_LINE);
+      expect(frames.at(-1)).toContain('Steps  1 done of 4 · step 2 running');
+      reporter.handle(explore({ phase: 'step-finished', step: { ...STEP_2, status: 'passed', startedAt: '2026-09-11T10:00:40.000Z', durationMs: 9_000 } }));
+      expect(frames.at(-1)).not.toContain(LATE_LINE);
+    });
   });
 
   it('badges the record with the explored target after its test has finished', () => {

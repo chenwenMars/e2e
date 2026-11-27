@@ -6,9 +6,10 @@
  */
 
 import type { AgentDeviceClient as DeviceSessionClient } from 'agent-device';
-import type { EngineFixtureContext, Locator, ViewportSize } from '@e2e-dev/core/engine';
+import { TestError, type EngineFixtureContext, type Locator, type ViewportSize } from '@e2e-dev/core/engine';
 import { appLabel, linkLabel, linkTarget } from './links.ts';
 import { pressRemote, requireRemoteKey, type RemoteKey } from './remote.ts';
+import { pressButton, requireHardwareButton, type HardwareButton } from './buttons.ts';
 import type { DevicePermission, MobilePlatform, PermissionState } from './options.ts';
 import type { DeviceSelection } from './bindings.ts';
 import { unsupported } from './support.ts';
@@ -90,7 +91,12 @@ export interface Device {
    * on Android, so it goes before the `app.open()` a test starts with.
    */
   setPermission(permission: DevicePermission, state: PermissionState): Promise<void>;
-  /** Sets the simulated location, switching location services on first on Android. */
+  /**
+   * Sets the simulated location, switching location services on first on
+   * Android. A latitude outside -90 to 90, a longitude outside -180 to 180,
+   * or either one not a finite number is `INVALID_ARGUMENT`, before any
+   * device command.
+   */
   setLocation(coordinates: { latitude: number; longitude: number }): Promise<void>;
   /** Turns simulated location off; on Android that is location services off, until the next `setLocation`. */
   clearLocation(): Promise<void>;
@@ -203,6 +209,16 @@ export interface Device {
    */
   pressRemote(key: RemoteKey): Promise<void>;
   /**
+   * Presses one hardware button: `'volume-up'`, `'volume-down'`, or
+   * `'power'`. An Android emulator or phone takes all three, and a physical
+   * iPhone or iPad the volume buttons; an iOS simulator, an Android TV, and
+   * any other device or button is `UNSUPPORTED_CAPABILITY`. A name outside
+   * the list is `INVALID_ARGUMENT`.
+   * It resolves once the press is sent, with no volume level or screen state,
+   * so assert on what the screen shows next.
+   */
+  pressButton(button: HardwareButton): Promise<void>;
+  /**
    * Shakes the device once: the simulator's shake gesture on an iPhone or
    * iPad simulator, a swing of the accelerometer on an Android phone or
    * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
@@ -210,6 +226,40 @@ export interface Device {
    * shake is sent, so assert on what the app shows next.
    */
   shake(): Promise<void>;
+  /**
+   * Locks the screen and resolves once the device reports it locked: the
+   * sleep key on an Android phone or tablet, the lock button on an iPhone or
+   * iPad simulator. A screen that is already locked stays locked. A lock
+   * that asks for a PIN, pattern, password, or passcode is locked too, but
+   * `unlock()` refuses it, so the device stays locked until someone unlocks
+   * it by hand: use Swipe on Android and no passcode on iOS.
+   * `UNSUPPORTED_CAPABILITY` on a device agent-device cannot lock (a physical
+   * iPhone or iPad, a TV, a device a provider drives through a backend that
+   * has no lock command), and on an Android device whose screen lock is set
+   * to None, which has no lock screen to show. Android 11 to 15 do not
+   * report that setting, so there the sleep key is sent, the display turns
+   * off, and the lock fails with `ENGINE_FAILURE` after about 5 seconds.
+   * Android 10 and older do not report the lock type either, so a lock or
+   * an unlock that would change the state fails with `ENGINE_FAILURE`
+   * before any key is sent.
+   */
+  lock(): Promise<void>;
+  /**
+   * Unlocks the screen and resolves once the device reports it unlocked.
+   * Nothing brings an app to the front: check the screen you expect next.
+   * Android wakes the screen and dismisses
+   * the keyguard, an iOS simulator swipes up from the bottom edge. A display
+   * that is off turns on even when the screen is not locked (Android always
+   * sends its wake key); an unlocked screen that is on stays as it is. The
+   * exception is an iPhone simulator with an always-on display, such as the
+   * iPhone 17 Pro: the unlock can leave its display off, and on iOS 26.5 the
+   * text a later fill types does not reach the app. It never
+   * enters a PIN, pattern, password, or passcode: a lock that asks for one is
+   * `UNSUPPORTED_CAPABILITY`, and so is a device agent-device cannot lock (a
+   * physical iPhone or iPad, a TV, a device a provider drives through a
+   * backend that has no lock command).
+   */
+  unlock(): Promise<void>;
   /** Accepts or dismisses the visible system alert. */
   alert(action: 'accept' | 'dismiss'): Promise<void>;
   /**
@@ -252,6 +302,24 @@ export interface Device {
   clipboard(): Promise<string>;
   /** Writes the clipboard. */
   setClipboard(text: string): Promise<void>;
+}
+
+/**
+ * The coordinates `device.setLocation` was given, or `INVALID_ARGUMENT`
+ * naming the one out of range. agent-device refuses the same values, but as
+ * a device failure.
+ */
+function requireCoordinates(coordinates: unknown): { latitude: number; longitude: number } {
+  const given = typeof coordinates === 'object' && coordinates !== null ? (coordinates as Record<string, unknown>) : {};
+  return { latitude: coordinate(given, 'latitude', 90), longitude: coordinate(given, 'longitude', 180) };
+}
+
+/** One coordinate within ±`limit`, or `INVALID_ARGUMENT` showing what was given. */
+function coordinate(given: Record<string, unknown>, name: 'latitude' | 'longitude', limit: number): number {
+  const value = given[name];
+  if (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= limit) return value;
+  const shown = typeof value === 'string' ? JSON.stringify(value) : typeof value === 'object' && value !== null ? `type ${typeof value}` : String(value);
+  throw new TestError('INVALID_ARGUMENT', `device.setLocation: ${name} must be a finite number from -${limit} to ${limit}, got ${shown}`);
 }
 
 /** The raw driver session a surface is bound to: `device.unstable_raw`, and what `unstable_deviceSession()` hands a custom tool. */
@@ -301,7 +369,8 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     async setPermission(permission, state) {
       await surface.setPermission(permission, state, context.signal);
     },
-    async setLocation({ latitude, longitude }) {
+    async setLocation(coordinates) {
+      const { latitude, longitude } = requireCoordinates(coordinates);
       // Android reads a fix only while location services are on, and
       // `clearLocation` switched them off for good on the emulator (the
       // setting outlives the app); iOS has no such switch.
@@ -399,8 +468,19 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
       const input = surface.inputBudget('device.pressRemote', { timeoutMs: context.timeouts.action, signal: context.signal });
       await surface.screenCommand('device.pressRemote', (client) => input.send(() => pressRemote(client, key, surface.selection())), context.signal);
     },
+    async pressButton(button) {
+      requireHardwareButton(button);
+      const input = surface.inputBudget('device.pressButton', { timeoutMs: context.timeouts.action, signal: context.signal });
+      await surface.screenCommand('device.pressButton', (client) => input.send((signal) => pressButton(client, button, surface.selection(), signal)), context.signal);
+    },
     async shake() {
       await surface.screenCommand('device.shake', (client) => client.command.shake(surface.selection()), context.signal);
+    },
+    async lock() {
+      await surface.screenCommand('device.lock', (client) => client.command.lockScreen({ ...surface.selection(), action: 'lock' }), context.signal);
+    },
+    async unlock() {
+      await surface.screenCommand('device.unlock', (client) => client.command.lockScreen({ ...surface.selection(), action: 'unlock' }), context.signal);
     },
     async alert(action) {
       await surface.screenCommand('device.alert', (client) => client.command.alert({ ...surface.selection(), action }), context.signal);
@@ -447,7 +527,11 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     home: action,
     back: action,
     pressRemote: { ...action, label: (key) => key },
+    // A JavaScript caller can pass a key code; the label must still be text, so the step records the refusal.
+    pressButton: { ...action, label: (button) => String(button) },
     shake: action,
+    lock: action,
+    unlock: action,
     alert: { ...action, label: (value) => value },
     dismissKeyboard: action,
     isKeyboardShown: action,

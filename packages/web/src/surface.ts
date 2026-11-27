@@ -47,8 +47,9 @@ import {
 } from '@e2e-dev/core/engine';
 import { matchesText } from '@e2e-dev/core/engine';
 import { classifyActionError, classifyInputError, dispatchLocatorAction, dispatchPointerAction } from './actions.ts';
-import { BrowserConnection, connectCdp, defaultChromiumSandbox, type BrowserLaunchOptions, type BrowserName } from './browser-connection.ts';
+import { BrowserConnection, connectCdp, defaultChromiumSandbox, isBrowserName, type BrowserLaunchOptions, type BrowserName } from './browser-connection.ts';
 import { grantedPermissions, grantPermissions } from './permissions.ts';
+import { pressCharacter, pressCharacterOn, requireCharacterPress } from './press-character.ts';
 import { AttemptSession, type AttemptTab, type StorageState } from './attempt-session.ts';
 import type { CdpEndpointResolver } from './cdp-recovery.ts';
 import { webmcpLaunch } from './webmcp.ts';
@@ -64,11 +65,12 @@ import { captureObservation } from './observation-capture.ts';
 import { maskOptions, secureFieldMasks } from './observe.ts';
 import { SHOWN_SELECTOR } from './shown-selector.ts';
 import { withHiddenCaret } from './screenshot-caret.ts';
-import { connectionAbort, withOperationDeadline, type OperationBound } from './operation-budget.ts';
+import { withOperationDeadline, type OperationBound } from './operation-budget.ts';
 import { CLOSED_SHADOW_ROOTS_INIT_SCRIPT, CLOSED_SHADOW_ROOTS_KEY } from './closed-shadow.ts';
 import { MODAL_ORDER_INIT_SCRIPT } from './modal-dialogs.ts';
 import { ConfiguredInitScripts, type WebInitScript } from './init-scripts.ts';
 import type { WebMedia } from './media.ts';
+import { applyClockCall, readClockNow, type ClockCall, type ClockHost } from './clock.ts';
 import { SECURE_FIELD_SELECTOR, type RawNodeData } from './read-node.ts';
 import { readSelector, takeReadsFunction } from './read-selector.ts';
 import { credentialOrigins, httpCredentials, installConfiguredHeaders, lowercaseNames, configuredHeadersFor } from './protected-app.ts';
@@ -168,6 +170,9 @@ export interface WebScreencastOptions {
   /** JPEG quality of each captured frame, 0 through 100; Playwright's default when unset. */
   readonly quality?: number;
 }
+
+/** One entry of an attempt's document setup: an init script, or a clock call. */
+type DocumentSetup = { readonly script: string } | { readonly clock: ClockCall };
 
 /**
  * Options of the browser engine: how it drives the app. The app itself
@@ -354,8 +359,15 @@ export class PlaywrightSurface {
   /** The configured media features, which every attempt starts from. */
   private readonly media: WebMedia;
   private readonly configuredInitScripts: ConfiguredInitScripts;
-  /** The attempt's init scripts, configured then added, applied to each context the attempt opens. */
-  private initScripts: string[] = [];
+  /**
+   * What every document of the attempt runs before the page's own scripts,
+   * in the order it was added: the configured init scripts, then the test's
+   * init scripts and successful clock calls. Each context the attempt opens
+   * applies it, so a replacement context gives its documents the same order.
+   */
+  private documentSetup: DocumentSetup[] = [];
+  /** Whether the attempt called `browser.clock`, even a call that failed after Playwright installed it. */
+  private clockState = { used: false };
   private app: EngineAppInfo = {};
   private projectRoot = '';
   private headed = false;
@@ -583,8 +595,11 @@ export class PlaywrightSurface {
     const granted = grantedPermissions(this.browserName, this.app);
     this.latch = new ErrorLatch();
     const dialogs = new DialogRouter(this.latch);
+    const documentSetup: DocumentSetup[] = initScripts.map((script) => ({ script }));
+    const clockState = { used: false };
     this.routes = routes;
-    this.initScripts = initScripts;
+    this.documentSetup = documentSetup;
+    this.clockState = clockState;
     this.dialogs = dialogs;
     const session = new AttemptSession({
       artifactsDir: context.artifactsDir,
@@ -607,7 +622,11 @@ export class PlaywrightSurface {
       configure: async (target) => {
         await target.addInitScript(CLOSED_SHADOW_ROOTS_INIT_SCRIPT);
         await target.addInitScript(MODAL_ORDER_INIT_SCRIPT);
-        for (const script of initScripts) await target.addInitScript(script);
+        // A fresh context has no document yet, so a clock call only registers the clock's script and its log.
+        for (const setup of documentSetup) {
+          if ('script' in setup) await target.addInitScript(setup.script);
+          else await applyClockCall(target.clock, setup.clock);
+        }
         target.setDefaultTimeout(CONTEXT_DEFAULT_TIMEOUT_MS);
         target.on('dialog', (dialog) => { void dialogs.dispatch(dialog); });
         installAppLog(target, context.appLog, {
@@ -619,6 +638,7 @@ export class PlaywrightSurface {
         if (granted.length > 0) await grantPermissions(target, granted, this.app.allPermissions === true);
         for (const stored of routes) await target.route(stored.predicate, stored.handler);
       },
+      clockUsed: () => clockState.used,
       ...(persistent === undefined ? {} : { persistent }),
       record: this.leases?.recorder(context.attemptId),
     });
@@ -686,8 +706,42 @@ export class PlaywrightSurface {
   /** Adds one attempt-scoped init script to the current context, for every document it creates from now on. */
   async addInitScript(source: string): Promise<void> {
     const context = this.requireContext();
-    this.initScripts.push(source);
+    this.documentSetup.push({ script: source });
     await context.addInitScript(source);
+  }
+
+  /**
+   * Runs one clock call on the current context and logs it for a context
+   * that replaces this one. Playwright logs the call for the context's next
+   * documents before it runs it, so the call is logged whether it succeeds
+   * or fails, and a replacement context replays what a new document would.
+   * The attempt counts as using the clock from the start of the call:
+   * Playwright installs the clock before a call can fail. The log is the one
+   * this attempt started with, so a call that resolves after its step timed
+   * out never reaches the next attempt's.
+   */
+  async clock(call: ClockCall): Promise<void> {
+    const setup = this.documentSetup;
+    const { clock } = this.requireContext();
+    this.clockState.used = true;
+    try {
+      await applyClockCall(clock, call);
+    } finally {
+      setup.push({ clock: call });
+    }
+  }
+
+  /**
+   * The latest time a page clock of the current context reads, across every
+   * frame, or undefined when none has one yet. Playwright runs a call in
+   * every frame and fails it when one frame refuses, so the latest decides.
+   */
+  async clockNow(): Promise<number | undefined> {
+    const frames = this.requireContext().pages().flatMap((page) => page.frames());
+    // A frame that detaches or navigates while it is read has no clock to compare with.
+    const times = await Promise.all(frames.map((frame) => frame.evaluate(readClockNow).catch(() => undefined)));
+    const read = times.filter((time) => typeof time === 'number');
+    return read.length === 0 ? undefined : Math.max(...read);
   }
 
   // --- network routes shared with the browser fixture ---
@@ -840,6 +894,35 @@ export class PlaywrightSurface {
   /** Closes the open tab at `index`, in opening order, for the agent's `closeTab` verb, and shows the screen after it. */
   closeTabAt(index: number, operation: OperationContext): Promise<void> {
     return this.acted(operation, this.guard(operation, 'close tab', () => this.requireSession().closeTabAt(index)));
+  }
+
+  // --- identity shared with the browser fixture ---
+
+  /**
+   * Reads the engine and version of the browser the attempt is connected to,
+   * both asked of the driver: a browser attached over CDP was not launched
+   * from `web({ browser })`, and its version is no package's. The reader
+   * belongs to the session running when it is made, or else to the first it
+   * reads: a fixture kept past its attempt gets no answer from the next
+   * attempt's browser, which a provider may have leased anew. The owner is
+   * the session, not an attempt id, because the members of a serial group
+   * share one session under ids of their own. `ended` is the fixture's own
+   * signal: a fixture first made after its attempt ended would otherwise
+   * take the next attempt's session for its own.
+   */
+  browserIdentity(ended: () => AbortSignal): () => { readonly name: BrowserName; readonly version: string } {
+    let owner = this.session;
+    return () => {
+      const session = this.requireSession();
+      owner ??= session;
+      if (session !== owner || ended().aborted) throw invalidState('the attempt this browser belongs to has ended');
+      const { browser } = session.current();
+      const name = browser.browserType().name();
+      if (!isBrowserName(name)) {
+        throw new EngineError('ENGINE_FAILURE', `the driver reported an unknown browser "${name}"`, { retryable: false });
+      }
+      return { name, version: browser.version() };
+    };
   }
 
   // --- tabs shared with the browser fixture ---
@@ -1188,10 +1271,12 @@ export class PlaywrightSurface {
         }
         const session = this.requireSession();
         const { refs } = session;
+        const character = action.kind === 'press' ? requireCharacterPress(action.key, this.browserName) : undefined;
         return refs.lookup(ref).then(async (target) => {
           currentOperation.signal.throwIfAborted();
           try {
-            await dispatchLocatorAction(target, action, currentOperation, (other) => refs.lookup(other));
+            if (character === undefined) await dispatchLocatorAction(target, action, currentOperation, (other) => refs.lookup(other));
+            else await pressCharacterOn(target, page, character, currentOperation, session.checkpoint(currentOperation.signal, action.kind));
           } catch (cause) {
             // The input went out and its own tab closed: closing was what it did.
             if (dispatchedInput(cause) && session.tabClosed(page)) return;
@@ -1222,13 +1307,8 @@ export class PlaywrightSurface {
     return this.acted(operation, this.guard(operation, 'keyboard.type', async (currentOperation) => {
       const session = this.requireSession();
       session.requireObservation();
-      const token = session.token();
+      const checkpoint = session.checkpoint(currentOperation.signal, 'keyboard.type');
       const page = this.requirePage();
-      /** A delayed focus read or key must not continue input into a retired connection. */
-      const checkpoint = (): void => {
-        if (currentOperation.signal.aborted) throw connectionAbort(currentOperation.signal, 'keyboard.type');
-        session.check(token);
-      };
       await this.requireEditableFocus(page);
       checkpoint();
       if (options.replace) {
@@ -1243,9 +1323,12 @@ export class PlaywrightSurface {
 
   /** Sends one key to whatever holds focus, in the contract's key grammar Playwright shares. */
   pressKey(key: string, operation: OperationContext): Promise<void> {
-    return this.acted(operation, this.guard(operation, 'keyboard.press', () => {
-      this.requireSession().requireObservation();
-      return this.requirePage().keyboard.press(key);
+    return this.acted(operation, this.guard(operation, 'keyboard.press', (currentOperation) => {
+      const session = this.requireSession();
+      session.requireObservation();
+      const character = requireCharacterPress(key, this.browserName);
+      const page = this.requirePage();
+      return character === undefined ? page.keyboard.press(key) : pressCharacter(page, character, session.checkpoint(currentOperation.signal, 'keyboard.press'));
     }, classifyInputError));
   }
 
@@ -1606,6 +1689,8 @@ function measureViewportIntersection(element: Element): Promise<ViewportIntersec
       resolve({ intersects: ratio > 0, ratio });
     });
     observer.observe(element);
-    view.requestAnimationFrame(() => {});
+    // The native frame: under Playwright's clock, the page's own would queue a timer in the page's fake clock.
+    // oxlint-disable-next-line no-underscore-dangle -- Playwright's name for its page clock, which keeps the native timers
+    ((view as ClockHost).__pwClock?.builtins ?? view).requestAnimationFrame(() => {});
   });
 }
