@@ -129,6 +129,8 @@ export interface ExecutorNode {
   readonly inputPurpose?: SemanticNode['inputPurpose'];
   readonly states?: SemanticNode['states'];
   readonly attributes?: Readonly<Record<string, string>>;
+  /** The app's test id for the node, as the listing shows it (`testid="..."`). */
+  readonly testId?: string;
   readonly rect?: SemanticNode['rect'];
   readonly framePath?: readonly string[];
   readonly children?: readonly ExecutorNode[];

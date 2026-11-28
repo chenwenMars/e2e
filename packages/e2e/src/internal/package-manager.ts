@@ -1,11 +1,20 @@
 /** Which package manager a project uses, for install hints that name a runnable command. */
 
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { compileGlob, matchesGlob } from '@e2e-dev/core/lib/internal/globs';
 import { isPlainObject } from '@e2e-dev/core/lib/internal/options';
 
 export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
+
+/** A project's manager with what its commands depend on. */
+export interface ProjectManager {
+  readonly manager: PackageManager;
+  /** Where the install keeps its lockfile. */
+  readonly root: string;
+  /** True for Yarn 2 or later, whose commands differ from Yarn 1's. False for every other manager. */
+  readonly yarnBerry: boolean;
+}
 
 const PACKAGE_MANAGERS: ReadonlySet<string> = new Set<PackageManager>(['npm', 'pnpm', 'yarn', 'bun']);
 const LOCKFILES = [
@@ -39,17 +48,15 @@ function lockfileManager(dir: string): PackageManager | undefined {
 
 /**
  * The `packageManager` field wins, then a lockfile in `dir`, then the manager
- * that invoked the current process, then npm.
+ * `devEngines` pins in the package.json there, then the manager that invoked
+ * the current process, then npm.
  */
 export function detectPackageManager(
   dir: string,
   packageManagerField?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): PackageManager {
-  const found = fieldManager(packageManagerField) ?? lockfileManager(dir);
-  if (found !== undefined) return found;
-  const invoking = env['npm_config_user_agent']?.split('/')[0];
-  return isPackageManager(invoking) ? invoking : 'npm';
+  return fieldManager(packageManagerField) ?? lockfileManager(dir) ?? pinnedManager(dir)?.name ?? invokingManager(env);
 }
 
 /**
@@ -57,29 +64,38 @@ export function detectPackageManager(
  * whose lockfile and `packageManager` field are at the workspace root: the
  * package's own field or lockfile (or pnpm, for a pnpm workspace root that
  * has neither yet), else those of the nearest workspace root
- * above whose package globs include it, else the manager that invoked the
- * current process, else npm. A lockfile above that belongs to no workspace
- * holding the package is another project's, and does not count. `root` is
- * where the install keeps its lockfile: the workspace root for a member, the
- * package's own directory otherwise.
+ * above whose package globs include it, else the manager `devEngines` pins,
+ * else the manager that invoked the current process, else npm. A lockfile
+ * above that belongs to no workspace holding the package is another
+ * project's, and does not count. `root` is where the install keeps its
+ * lockfile: the workspace root for a member, the package's own directory
+ * otherwise. A `devEngines` pin names a manager and never an install root: a
+ * member may repeat its workspace's pin.
  */
 export function detectWorkspacePackageManager(
   dir: string,
   env: NodeJS.ProcessEnv = process.env,
-): { readonly manager: PackageManager; readonly root: string } {
+): ProjectManager {
   const project = path.resolve(dir);
   const own = managerAt(project) ?? workspaceGlobs(project)?.manager;
-  if (own !== undefined) return { manager: own, root: project };
+  if (own !== undefined) return projectManager(own, project, env);
   for (let current = path.dirname(project); ; current = path.dirname(current)) {
     const workspace = workspaceGlobs(current);
     if (workspace !== undefined) {
       const member = includesPackage(workspace.globs, path.relative(current, project).split(path.sep).join('/'));
-      if (member) return { manager: managerAt(current) ?? workspace.manager ?? invokingManager(env), root: current };
+      if (member) {
+        return projectManager(managerAt(current) ?? workspace.manager ?? pinnedManager(current)?.name ?? pinnedManager(project)?.name ?? invokingManager(env), current, env);
+      }
       break;
     }
     if (path.dirname(current) === current) break;
   }
-  return { manager: invokingManager(env), root: project };
+  return projectManager(pinnedManager(project)?.name ?? invokingManager(env), project, env);
+}
+
+/** `manager` as the manager of the install rooted at `root`. */
+export function projectManager(manager: PackageManager, root: string, env: NodeJS.ProcessEnv = process.env): ProjectManager {
+  return { manager, root, yarnBerry: manager === 'yarn' && usesYarnBerry(root, env) };
 }
 
 /** The lockfile names every manager writes, for a caller that must put one back. */
@@ -90,10 +106,61 @@ function invokingManager(env: NodeJS.ProcessEnv): PackageManager {
   return isPackageManager(invoking) ? invoking : 'npm';
 }
 
-/** The manager `dir` names itself: its `packageManager` field, else its lockfile. */
+/** The manager `dir` names itself as the root of an install: its `packageManager` field, else its lockfile. */
 function managerAt(dir: string): PackageManager | undefined {
   const field = readPackageManifest(dir)?.['packageManager'];
   return fieldManager(typeof field === 'string' ? field : undefined) ?? lockfileManager(dir);
+}
+
+/**
+ * The one manager `devEngines.packageManager` pins in the package.json in
+ * `dir`, with the version range it gives, or undefined when it pins none or
+ * allows several.
+ */
+function pinnedManager(dir: string): { readonly name: PackageManager; readonly version: string | undefined } | undefined {
+  const devEngines = readPackageManifest(dir)?.['devEngines'];
+  const declared: unknown = isPlainObject(devEngines) ? devEngines['packageManager'] : undefined;
+  const pin: unknown = Array.isArray(declared) && declared.length === 1 ? declared[0] : declared;
+  if (!isPlainObject(pin)) return undefined;
+  const { name, version } = pin;
+  if (typeof name !== 'string' || !isPackageManager(name)) return undefined;
+  return { name, version: typeof version === 'string' ? version : undefined };
+}
+
+/**
+ * Whether the Yarn project rooted at `root` is on Yarn 2 or later: it has a
+ * `.yarnrc.yml`, else its `packageManager` field names the version, else its
+ * lockfile is in one format or the other, else its `devEngines` pin starts
+ * with a major, else, for a project that says nothing, the Yarn that invoked
+ * the current process is.
+ */
+function usesYarnBerry(root: string, env: NodeJS.ProcessEnv): boolean {
+  if (existsSync(path.join(root, '.yarnrc.yml'))) return true;
+  const field = readPackageManifest(root)?.['packageManager'];
+  const major =
+    (typeof field === 'string' ? /^yarn@(\d+)/u.exec(field)?.[1] : undefined) ??
+    lockfileYarnMajor(root) ??
+    pinnedYarnMajor(root) ??
+    /^yarn\/(\d+)/u.exec(env['npm_config_user_agent'] ?? '')?.[1];
+  return major !== undefined && Number(major) >= 2;
+}
+
+/** `'1'` or `'2'` for the format of the `yarn.lock` in `root`; undefined for none, or one in neither format, such as an empty file. */
+function lockfileYarnMajor(root: string): string | undefined {
+  let lock: string;
+  try {
+    lock = readFileSync(path.join(root, 'yarn.lock'), 'utf8');
+  } catch {
+    return undefined;
+  }
+  if (/^__metadata:/mu.test(lock)) return '2';
+  return /^# yarn lockfile v1$/mu.test(lock) ? '1' : undefined;
+}
+
+/** The major a `devEngines` pin on Yarn in `root` starts with, as `4.19.0`, `^4.0.0`, and `~4.1` do; undefined for a range that leaves the major open. */
+function pinnedYarnMajor(root: string): string | undefined {
+  const pin = pinnedManager(root);
+  return pin?.name === 'yarn' ? /^[\^~=v]?(\d+)(?:\.[\dx*]+)*$/u.exec(pin.version?.trim() ?? '')?.[1] : undefined;
 }
 
 /** The package.json in `dir` as an object, or undefined when it is missing or not one. */
@@ -192,7 +259,12 @@ export function runScriptCommand(manager: PackageManager, name: string): string 
   }
 }
 
-/** The command that runs an installed binary, never a registry download, with the given manager. */
+/**
+ * The command a person types to run an installed binary, never a registry
+ * download, with the given manager. Yarn takes `exec --` in every version:
+ * `yarn e2e` runs a package.json script named e2e before the binary, and
+ * Yarn 1 takes the binary's flags as its own without the separator.
+ */
 export function execCommand(manager: PackageManager, command: string): string {
   switch (manager) {
     case 'npm':
@@ -200,9 +272,29 @@ export function execCommand(manager: PackageManager, command: string): string {
     case 'pnpm':
       return `pnpm exec ${command}`;
     case 'yarn':
-      return `yarn ${command}`;
+      return `yarn exec -- ${command}`;
     case 'bun':
       return `bun run ${command}`;
+  }
+}
+
+/**
+ * The program and leading arguments that run an installed binary when
+ * another program starts it and reads its stdout; the binary's name and
+ * arguments follow. It differs from `execCommand` on purpose: `npx` and
+ * `bunx` are the forms MCP clients document, and Yarn 1 prints a banner to
+ * stdout unless silenced, with a flag Yarn 2 and later refuse.
+ */
+export function execArgv({ manager, yarnBerry }: Pick<ProjectManager, 'manager' | 'yarnBerry'>): { readonly command: string; readonly args: readonly string[] } {
+  switch (manager) {
+    case 'npm':
+      return { command: 'npx', args: [] };
+    case 'pnpm':
+      return { command: 'pnpm', args: ['exec'] };
+    case 'yarn':
+      return { command: 'yarn', args: yarnBerry ? ['exec'] : ['--silent', 'exec', '--'] };
+    case 'bun':
+      return { command: 'bunx', args: [] };
   }
 }
 

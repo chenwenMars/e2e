@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { CaptureSnapshotResult } from 'agent-device';
+import { formatPinnedRef, type CaptureSnapshotResult } from 'agent-device';
 import {
   EngineError,
   KEY_NAMES,
@@ -41,12 +41,14 @@ import {
   type OperationContext,
   type PointerAction,
   type ProviderRecording,
+  type ScrollEdge,
   type VideoSegment,
   type SemanticNode,
   type ViewportIntersection,
   type ViewportPoint,
   type ViewportSize,
   ConfigurationError,
+  readPngSize,
   TestError,
 } from '@e2e-dev/core/engine';
 import { isAppNotRunning, isSnapshotPresentationFailure, isUnreadableCapture, ORIGIN_UNKNOWN_BOUNDS, ORIGIN_WARNING, refusedSwipePath, runCommand, staleOr } from './errors.ts';
@@ -69,6 +71,7 @@ import {
 import { keyboardDragStart, keyboardShownIn, type KeyboardUnknown } from './keyboard.ts';
 import { DEVICE_PERMISSIONS, type AgentDeviceClient, type ClientFactory, type DevicePermission, type LaunchPermissions, type MobileOptions, type MobilePlatform, type PermissionState } from './options.ts';
 import { maskPng } from './png.ts';
+import { above, clipTo, dragToEdge, EDGE_DIRECTION, regionSignature } from './scroll-to.ts';
 import { mobileDoctor } from './doctor.ts';
 import { deviceLabel, deviceSelection, pinnedApp, type DeviceSelection, type SlotBinding } from './bindings.ts';
 import { assertAppId } from './links.ts';
@@ -79,7 +82,6 @@ import {
   invalidState,
   notActionable,
   logicalScreenSize,
-  readPngSize,
   sanitizeFilename,
   screenLocation,
   type RawScreenshotResult,
@@ -230,7 +232,6 @@ interface NodeBinding {
   /** Whether `fill` and `clear` may type into the node, judged with the children `node` leaves out. */
   readonly takesText: boolean;
 }
-
 
 /**
  * How long a control that appeared or moved with the last action is given to
@@ -1043,16 +1044,17 @@ export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform
    * Installs a build on the session's device. `reinstall` removes the app
    * named by `options.app` (else the pinned app) first, so the build starts
    * with no data; a plain install replaces the binary and keeps its data.
-   * A path passed in with nothing at it is `INVALID_ARGUMENT`, before any
-   * device command.
+   * A leased daemon can resolve an absolute path on its own filesystem.
+   * Other explicit paths must exist on the runner.
    */
   async installApp(appPath: string | undefined, options: InstallAppOptions, signal: AbortSignal): Promise<InstalledApp> {
     const build = appPath ?? this.app.appPath;
     if (build === undefined) throw invalidState("installApp needs a build: pass a path, or name one with the target's app.appPath");
     const resolved = path.resolve(this.projectRoot, build);
-    // A path the test passed is the test's own mistake when nothing is there;
-    // agent-device would refuse it as a device failure (exit 3).
-    if (appPath !== undefined && (appPath.trim() === '' || !existsSync(resolved))) {
+    // The remote client uploads a runner-visible build and forwards an absent
+    // path to the leased daemon. Relative paths belong to the project root.
+    const daemonCanResolve = this.device?.daemon !== undefined && path.isAbsolute(build);
+    if (appPath !== undefined && (appPath.trim() === '' || (!daemonCanResolve && !existsSync(resolved)))) {
       throw new TestError('INVALID_ARGUMENT', `device.installApp(${JSON.stringify(appPath)}): no build at ${resolved}; the path resolves against the project root`);
     }
     const selection = this.selection();
@@ -1365,7 +1367,7 @@ export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform
   private actionTarget(entry: NodeBinding, control = false): { ref: string } {
     const ref = control ? entry.controlRef : entry.ref;
     if (ref === '') throw notActionable(`node ${entry.id} has no agent-device ref to act on`);
-    return { ref: entry.refsGeneration === undefined ? `@${ref}` : `@${ref}~s${entry.refsGeneration}` };
+    return { ref: entry.refsGeneration === undefined ? `@${ref}` : formatPinnedRef(ref, entry.refsGeneration) };
   }
 
   /**
@@ -1570,16 +1572,26 @@ export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform
     // live iOS run lost every `slow` scroll of the mobile benchmark's sticky
     // chrome flow that way.
     if (ref.id === ROOT_ID) {
-      if (action.kind !== 'swipe') throw notActionable(`the screen root takes swipe only, not ${action.kind}; act on a node`);
+      if (action.kind !== 'swipe' && action.kind !== 'scrollTo') {
+        throw notActionable(`the screen root takes swipe and scrollTo only, not ${action.kind}; act on a node`);
+      }
       if (deterministic) await this.waitOutTransition(operation, input);
       const before = this.latestScreen;
-      const stabilization = gestureStabilization(operation);
-      await this.command(
-        'swipe',
-        (client) => input.send(() => client.interactions.scroll({ direction: action.direction, ...settle, ...stabilization })),
-        operation.signal,
-      );
-      this.noteGesture(operation);
+      if (action.kind === 'scrollTo') {
+        try {
+          await raceAbort(() => this.track(this.scrollToEdge(undefined, action.edge, operation, input)), operation.signal, 'perform scrollTo');
+        } catch (cause) {
+          throw staleOr(cause, 'perform scrollTo', this.where);
+        }
+      } else {
+        const stabilization = gestureStabilization(operation);
+        await this.command(
+          'swipe',
+          (client) => input.send(() => client.interactions.scroll({ direction: action.direction, ...settle, ...stabilization })),
+          operation.signal,
+        );
+        this.noteGesture(operation);
+      }
       this.markAction(before);
       return;
     }
@@ -1667,6 +1679,8 @@ export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform
           this.noteGesture(operation);
           return sent;
         }
+        case 'scrollTo':
+          return this.scrollToEdge(target, action.edge, operation, input);
         case 'dragTo': {
           // A test locates the drop target in a capture of its own, after the
           // source's; agent-device takes both refs from the newest one only.
@@ -1694,6 +1708,70 @@ export class AgentDeviceSurface<Platform extends MobilePlatform = MobilePlatform
       throw staleOr(cause, label, this.where);
     }
     this.markAction(before);
+  }
+
+  /**
+   * `scrollTo` on a device: drags toward `edge` inside a region (the node's
+   * box, else the screen, clipped to the screen and cut off above the soft
+   * keyboard) until a drag leaves what the region shows unchanged
+   * (`dragToEdge`). The region is measured once, before the first drag: a
+   * list's own label can change as it scrolls, and the node is never looked
+   * up again once input went out. Each drag keeps agent-device's post-gesture
+   * stabilization, which holds the next read until the content rests, so a
+   * list still coasting is never read as at its edge.
+   */
+  private async scrollToEdge(entry: NodeBinding | undefined, edge: ScrollEdge, operation: OperationContext, input: InputBudget): Promise<void> {
+    const client = this.requireClient();
+    const capture = async (): Promise<{ raw: RawSnapshot; projected: ProjectedScreen }> => {
+      const raw = await this.snapshotOrEmpty(operation, false, input);
+      return { raw, projected: this.project(raw) };
+    };
+    const first = await capture();
+    const region = this.scrollRegion(entry, first.raw, first.projected);
+    // A capture that leaves nodes out never reads as unchanged, so it never ends the scroll.
+    const signature = ({ raw, projected }: { raw: RawSnapshot; projected: ProjectedScreen }): string | undefined =>
+      isTruncated(raw) ? undefined : regionSignature(projected.index, region);
+    const gesture = swipeWithin(region, EDGE_DIRECTION[edge], undefined);
+    await dragToEdge({
+      drag: async (count) => {
+        // A cancel that lands as a read finishes sends no further drag.
+        if (operation.signal.aborted) throw new EngineError('CANCELLED', 'scrollTo cancelled', { retryable: false });
+        await input.send(() => client.interactions.swipe({ ...gesture, count, pauseMs: 0 }));
+      },
+      read: async () => signature(await capture()),
+      remainingMs: () => input.remainingMs(),
+    }, signature(first));
+  }
+
+  /**
+   * Where `scrollTo` drags: the node's box, or the screen for the root,
+   * clipped to the screen and cut off above the soft keyboard. Refuses, with
+   * nothing sent, a node whose bounds may be window-local, a region with no
+   * area, and a keyboard that is up with bounds the capture does not give.
+   */
+  private scrollRegion(entry: NodeBinding | undefined, raw: RawSnapshot, projected: ProjectedScreen): Rect {
+    const viewport = projected.viewport ?? this.knownViewport;
+    let rect: Rect | undefined;
+    if (entry === undefined) {
+      rect = viewport === undefined ? undefined : { x: 0, y: 0, width: viewport.width, height: viewport.height };
+    } else {
+      const found = this.refind(entry, projected.index);
+      if (found === undefined) throw new EngineError('NODE_STALE', `node ${entry.id} is gone from the screen; re-resolve`, { retryable: true });
+      if (projected.originUnknown) {
+        throw notActionable(`perform scrollTo failed: the ${ORIGIN_UNKNOWN_BOUNDS} Nothing was sent. Scroll the screen with screen.scrollTo(edge).`);
+      }
+      rect = found.node.rect;
+    }
+    const target = entry === undefined ? 'the screen' : `node ${entry.id}`;
+    if (rect !== undefined && viewport !== undefined) rect = clipTo(rect, viewport);
+    if (rect === undefined || rect.width < 1 || rect.height < 1) throw notActionable(`${target} has no bounds on screen to scroll within`);
+    const keyboard = viewport === undefined ? undefined : keyboardTop(raw, viewport);
+    if (keyboard === undefined && keyboardShowing(raw)) {
+      throw notActionable('the soft keyboard is up and its bounds are unknown, so a drag could land on it; dismiss it first');
+    }
+    const region = above(rect, keyboard);
+    if (region.height < 1) throw notActionable(`the soft keyboard covers ${target}; dismiss it first`);
+    return region;
   }
 
   /**

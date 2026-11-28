@@ -5,7 +5,8 @@ import { afterAll } from 'vitest';
 
 /*
  * Each test file gets its own temporary directory. `init` sweeps every
- * `e2e-agent-desktop-*` directory under `os.tmpdir()`, and kills the
+ * `e2e-desktop-worker-*` directory under `os.tmpdir()` (and every
+ * `e2e-agent-desktop-*` one the agent-desktop engine left), and kills the
  * processes their launch records name: in a shared one, a run of the suite
  * in another checkout, or another test file in this run, would sweep the
  * directories a test plants and expects to find, and a developer's own

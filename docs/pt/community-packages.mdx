@@ -1,0 +1,82 @@
+---
+title: Pacotes da comunidade
+description: Encontre pacotes de terceiros que estendem o e2e e envie uma integração.
+---
+
+Os pacotes da comunidade estendem o e2e com ferramentas, engines e reporters. Os mantenedores de cada pacote, não o time principal do e2e, mantêm os pacotes e dão suporte a eles. Estar na lista não é um endosso.
+
+Consulte a documentação de cada pacote para ver as versões do e2e suportadas e os requisitos de configuração. As versões abaixo registram o pacote publicado que foi verificado quando cada entrada foi adicionada, não testes de compatibilidade feitos pelo time do e2e.
+
+## Encontre um pacote
+
+### `e2e-cige`
+
+Roda casos de teste [CIGE](https://www.amazon.science/publications/cige-an-agentic-ai-test-case-standard) em JSON por meio de `agent.act` e `agent.assert`. Inclui resumos de execução e verificações para agentes que corrigem testes que falham.
+
+Mantenedor: [Vivek Krishna](https://github.com/vivekkrishna). A versão `0.1.0` declara `e2e >=0.21.0 <1`.
+
+[npm](https://www.npmjs.com/package/e2e-cige) · [Repositório e configuração](https://github.com/vivekkrishna/cige)
+
+### `@appduct/e2e`
+
+Chama as ferramentas Appduct de um app a partir de fixtures de teste ou de passos do agente, via MCP. Suporta alvos web, de simulador iOS e de emulador Android.
+
+Mantenedor: [Callstack](https://github.com/callstackincubator/appduct). A versão `0.16.0` declara `e2e >=0.21.0 <1` e `ai ^7.0.0`.
+
+[npm](https://www.npmjs.com/package/@appduct/e2e) · [Repositório e configuração](https://github.com/callstackincubator/appduct/tree/main/packages/e2e)
+
+### `@mobai-app/e2e`
+
+Adiciona uma engine de dispositivos MobAI e um reporter de dashboard para dispositivos iOS e Android físicos, simuladores, emuladores e fazendas de dispositivos.
+
+Mantenedor: [MobAI](https://github.com/MobAI-App). A versão `0.1.3` declara `e2e >=0.19.0 <1`.
+
+[npm](https://www.npmjs.com/package/@mobai-app/e2e) · [Repositório e configuração](https://github.com/MobAI-App/mobai-e2e)
+
+### `@testdino/e2e`
+
+Envia ao TestDino casos de teste, novas tentativas, passos, erros, saída do console, capturas de tela e vídeos.
+
+Mantenedor: [TestDino](https://testdino.com). A versão `1.1.0` declara `e2e >=0.16.0 <1`. Os comandos de seleção e de reexecução exigem o e2e `0.19.0` ou posterior.
+
+[npm](https://www.npmjs.com/package/@testdino/e2e) · [Documentação](https://docs.testdino.com/cli/testdino-e2e)
+
+### `@testomatio/reporter`
+
+Envia os resultados do e2e ao Testomat.io pelo adaptador `@testomatio/reporter/e2e` do pacote.
+
+Mantenedor: [Testomat.io](https://github.com/testomatio). A versão `2.23.0` inclui o adaptador. O exemplo do pacote usa `e2e ^0.21.0`; o pacote não declara intervalo de peer para o e2e.
+
+[npm](https://www.npmjs.com/package/@testomatio/reporter) · [Repositório e exemplo](https://github.com/testomatio/reporter/tree/2.x/example/e2e)
+
+### `@waitcher/cli`
+
+Roda testes `*.e2e.ts` do seu repositório de forma agendada, como monitores do Waitcher, e envia alertas quando uma execução falha. Os testes de navegador usam `@e2e-dev/web` com Chromium; os testes de API usam `e2e`. O Waitcher é um serviço comercial hospedado com plano gratuito, e a CLI tem licença proprietária.
+
+Mantenedor: [Sławomir Radzymiński](https://github.com/slawekradzyminski). A versão `0.2.28`, publicada em 19 de novembro de 2026, roda testes no `e2e 0.24.0` e no `@e2e-dev/web 0.16.1`.
+
+[npm](https://www.npmjs.com/package/@waitcher/cli) · [Documentação e exemplo](https://waitcher.dev/docs/repository-workflow)
+
+## Encontre integrações relacionadas
+
+O time do e2e mantém as [integrações de navegadores e dispositivos hospedados](/integrations), o [reporter do GitHub](/github) e os [reporters embutidos](/reference/reporters).
+
+Para suítes de apps e exemplos de provedores, veja os [exemplos da comunidade e de parceiros](https://e2e.com/examples). Entre eles estão o [exemplo de fluxo de app da Limrun](https://github.com/limrun-inc/testerarmy-e2e-limrun) e o [exemplo de provedor de navegadores da Notte](https://github.com/nottelabs/notte/tree/main/examples/e2e).
+
+## Adicione o seu
+
+Abra um pull request para [editar esta página](https://github.com/e2e-inc/e2e/edit/main/docs/community-packages.mdx). Inclua:
+
+- O nome do pacote, um link para o pacote publicado e o repositório ou a documentação dele.
+- Uma descrição curta de como ele se integra ao e2e, com um exemplo de código-fonte ou de uso.
+- O mantenedor, as plataformas suportadas e os requisitos de compatibilidade com o e2e.
+- A versão e a data de publicação verificadas para a inclusão.
+
+Mantenha a descrição factual. Reporte os problemas de um pacote ao mantenedor dele. Envie exemplos de apps pelo [guia de contribuição de exemplos](https://github.com/e2e-inc/e2e/blob/main/examples/CONTRIBUTING.md).
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Ferramentas do projeto" href="/tools">Exponha ao agente ações específicas do app.</Card>
+  <Card title="Escrevendo fixtures" href="/fixtures">Compartilhe preparação e recursos entre testes.</Card>
+</CardGroup>

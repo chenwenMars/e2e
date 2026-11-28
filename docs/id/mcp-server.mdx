@@ -1,0 +1,237 @@
+---
+title: MCP server
+description: Izinkan coding agent menggunakan aplikasi Anda dan memeriksa hasil kerjanya sendiri.
+"og:image": "https://e2e.com/docs/images/og/mcp-server.png?v=17998906c0"
+"twitter:image": "https://e2e.com/docs/images/og/mcp-server.png?v=17998906c0"
+---
+
+`e2e mcp` memberi coding agent seperti Claude Code, Codex, atau Cursor sesi
+aktif pada aplikasi Anda di web, iOS, atau Android. Agent melihat layar,
+berinteraksi dengannya, lalu memeriksa hasil kerjanya.
+
+## Manfaatnya
+
+| Tugas | Tanpa `e2e mcp` | Dengan `e2e mcp` |
+| --- | --- | --- |
+| Menulis tes | Menebak locator, menjalankan tes, gagal, lalu menebak lagi | Menulis tes saat menjalani alur, berdasarkan baris tes yang telah diperiksa dan baris yang dijalankan dengan `run_code` |
+| Mengubah UI | Selesai saat berhasil dikompilasi | Membuka halaman dan memeriksa hasilnya |
+| Mereproduksi bug | Menebak dari kode | Mengikuti langkah-langkah di aplikasi |
+| Memperbaiki tes yang gagal | Mengklik alur dari awal lagi | Menjalankan tes dan berhenti saat terjadi kegagalan |
+| Menunjukkan perubahan di PR | Menjelaskannya | Merekam video |
+
+Server tidak memerlukan model. Tes yang dijalankannya hanya memerlukan model
+untuk langkah agent yang belum memiliki rekaman.
+
+## Siapkan MCP server
+
+[Plugin e2e](/coding-agents) untuk Codex dan Cursor menyertakan server dengan perintah `npx -y e2e@<version> mcp`. Perintah ini menjalankan rilis e2e milik plugin meskipun proyek memasang versi lain.
+Di Claude Code, atau jika tidak menggunakan plugin, daftarkan server di proyek. `e2e init` menawarkan pendaftaran server di `.mcp.json` (Claude Code),
+`.cursor/mcp.json` (Cursor), dan `.codex/config.toml` (Codex). Instal dependensi
+proyek lalu mulai klien MCP dari direktori proyek agar `npx` (`bunx` di
+proyek Bun) menggunakan versi e2e yang terpasang. Untuk menambahkannya manual:
+
+<Tabs>
+  <Tab title="Claude Code">
+    <CodeGroup>
+    ```bash npm
+    claude mcp add --scope project e2e -- npx e2e mcp
+    ```
+
+    ```bash pnpm
+    claude mcp add --scope project e2e -- pnpm exec e2e mcp
+    ```
+
+    ```bash bun
+    claude mcp add --scope project e2e -- bunx e2e mcp
+    ```
+    </CodeGroup>
+  </Tab>
+  <Tab title="Codex">
+    Jalankan `e2e init --yes --skills none --mcp .codex/config.toml` dengan CLI yang sudah terpasang,
+    atau tambahkan entri di bawah. Percayai proyek dan mulai sesi Codex baru.
+    Jalankan `codex mcp list` di proyek untuk melihat pendaftarannya:
+
+    ```toml title=".codex/config.toml"
+    [mcp_servers.e2e]
+    command = "npx"
+    args = ["e2e", "mcp"]
+    ```
+  </Tab>
+  <Tab title="Cursor">
+    Tambahkan server ke `.cursor/mcp.json`. Klien lain yang membaca map
+    `mcpServers` menggunakan blok yang sama.
+
+    ```json title=".cursor/mcp.json"
+    {
+      "mcpServers": {
+        "e2e": { "command": "npx", "args": ["e2e", "mcp"] }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="OpenCode">
+    Tambahkan server ke `opencode.json` di proyek. Jalankan `opencode mcp list`
+    di proyek untuk memastikan server terhubung:
+
+    ```json title="opencode.json"
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "e2e": { "type": "local", "command": ["npx", "e2e", "mcp"] }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Sesi menjalankan perintah aplikasi target jika tersedia, lalu mengenalinya
+melalui URL dan port. Konfigurasi membaca environment server, bukan shell agent.
+
+## Coba tanpa konfigurasi
+
+Di direktori tanpa file konfigurasi e2e, agent menyebutkan engine saat
+membuka sesi:
+
+```txt
+open_session {engine: "@e2e-dev/web", app: {url: "http://localhost:3000"}}
+```
+
+`e2e run` tetap memerlukan konfigurasi. Untuk opsi engine, provider perangkat,
+dan cara memasang engine, lihat [Tanpa konfigurasi](/reference/mcp#without-a-config).
+
+## Beri instruksi kepada agent
+
+- "Tambahkan checkbox Remember me ke formulir login. Periksa hasilnya di aplikasi dengan e2e."
+- "Tulis tes checkout sambil menjalani alurnya di aplikasi."
+- "Reproduksi issue #123 di aplikasi dan rekam video."
+
+Tambahkan "headed" untuk melihat browser lokal atau simulator berjalan.
+
+## Cara agent menulis baris tes
+
+Setiap tindakan dalam sesi menghasilkan baris tes yang mengulanginya. Locator
+di baris tersebut cocok hanya dengan kontrol itu pada layar aktif:
+
+```text wrap
+Tapped #n31.
+Test line: await screen.getByRole("button", "Sign in").tap();
+```
+
+Saat menjalani alur, agent menyalin baris yang diperlukan ke dalam tes.
+`test_lines` mengembalikan semua baris hingga saat ini secara berurutan sebagai
+draf isi tes. Lihat [`test_lines`](/reference/mcp#test_lines) untuk memahami
+cara sebuah baris dibuat.
+
+## Cara agent memeriksa locator
+
+Untuk baris yang tidak dihasilkan oleh tindakan, seperti assertion, agent
+mencoba locator terlebih dahulu di dalam sesi. Tebakan yang salah langsung
+gagal di sana, bukan saat tes dijalankan:
+
+```text wrap
+0 nodes match getByLabel("Email").
+A test using this locator would fail with LOCATOR_NOT_FOUND. ...
+
+1 node matches getByRole("button", name: "Sign in").
+Use: screen.getByRole("button", "Sign in")
+```
+
+## Cara agent menjalankan kode
+
+Agent menjalankan JavaScript di sesi yang terbuka dengan `run_code`, misalnya
+melakukan loop pada daftar, membaca dan menghitung nilai, atau menjalankan
+assertion yang tidak dihasilkan oleh tindakan. Satu pemanggilan dapat
+menggantikan banyak tindakan satu per satu:
+
+```js
+const rows = screen.getByRole('listitem');
+const names = await rows.allTextContents();
+await rows.nth(names.findIndex((name) => name.includes('Mug'))).getByRole('button', 'Add').tap();
+await expect(screen.getByRole('status')).toHaveText('1 item in cart');
+return names.length;
+```
+
+Baris yang berhasil ditambahkan ke draf `test_lines`. Baris yang salah akan
+gagal dalam hitungan detik tanpa menjalankan tes:
+
+```text wrap
+Failed: LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+Test lines: 2, 1 failed.
+1. await screen.getByLabel('Full name').fill('Grace Hopper');
+2. failed: await screen.getByRole('button', 'Save').tap();
+   LOCATOR_NOT_FOUND: locator matched no nodes within getByRole("button", name: "Save")
+```
+
+Kode tersebut adalah JavaScript biasa yang menggunakan objek yang tersedia
+di isi tes. Lihat [`run_code`](/reference/mcp#run_code).
+
+## Perbaiki tes yang gagal
+
+`open_session {test: "tests/checkout.e2e.ts:12"}` menjalankan satu tes di dalam
+sesi dan berhenti pada layar tempat tes gagal. Agent membaca kegagalannya,
+memeriksa layar, lalu mengedit tes:
+
+```text wrap
+Test "a member checks out" (tests/checkout.e2e.ts:12) failed after 30.25s; 8 steps ran.
+LOCATOR_NOT_FOUND: locator matched no nodes within getByLabel("Name")
+At tests/checkout.e2e.ts:20:3
+On screen, closest to what the locator asked for:
+  #n32 textbox "Full name"
+```
+
+Setiap tindakan dari layar tersebut mencetak
+[baris tes](#how-it-writes-a-test-line), dan `run_code` menjalankan baris tetap
+di sana. Agent mengganti baris yang gagal dengan baris-baris tersebut.
+
+Untuk menjalankan ulang tes yang sudah diedit, agent menutup sesi lalu
+membuka sesi baru dengan `test` yang sama. Langkah agent diputar ulang dari
+cache seperti pada `e2e run`. Lihat [Menjalankan tes](/reference/mcp#running-a-test)
+untuk mengetahui apa yang dijalankan dan batasannya.
+
+## Jalankan tes saat sesi terbuka
+
+Sesi tidak menulis hasil tes, dan hanya tes yang dijalankan dengan
+`open_session {test}` yang menggunakan cache replay. Agent menjalankan rangkaian
+tes dengan `e2e run`; jika memungkinkan untuk dijalankan bersamaan dengan sesi,
+agent mempertahankan sesi tetap terbuka di antara eksekusi. Setelah tes gagal, agent
+membuka layar yang gagal di sesi tersebut alih-alih membuat sesi baru.
+
+Di web, eksekusi tes saat sesi terbuka bergantung pada `app` target:
+
+| `app` pada target | Perilaku eksekusi |
+| --- | --- |
+| Tanpa `command` | Keduanya menggunakan aplikasi yang Anda jalankan. |
+| `url` pada port [`0`](/web#let-the-runner-pick-the-port) | Masing-masing menjalankan salinan aplikasi sendiri. Dev server yang hanya menjalankan satu salinan per direktori, seperti `next dev`, menyebabkan eksekusi gagal. |
+| `command` dengan [`reuseExisting: true`](/web#starting-your-app) | Eksekusi menggunakan aplikasi yang dimulai oleh sesi. Saat sesi ditutup, aplikasi itu juga berhenti, termasuk ketika eksekusi masih berlangsung. |
+| `command` pada port tetap tanpa `reuseExisting` | Gagal dengan `APP_ALREADY_RUNNING`. |
+
+Jika `CI` ditetapkan, e2e mengabaikan `reuseExisting` dan eksekusi gagal seperti
+pada port tetap. Tutup sesi sebelum menjalankan tes yang akan gagal. Untuk
+mobile, jalankan tes pada perangkat yang tidak digunakan oleh sesi mana pun.
+
+## Jalankan beberapa agent
+
+Setiap agent, termasuk subagent, membuka sesi sendiri dengan browser atau
+perangkatnya sendiri, hingga empat secara default. Untuk mobile, tetapkan
+target tersendiri pada setiap sesi.
+
+## Secret
+
+`type_secret` atau `fill` di `run_code` mengisi secret tanpa menampilkannya
+kepada agent. Screenshot hanya menyamarkan kolom aman, jadi secret yang
+ditampilkan aplikasi di tempat lain akan terlihat di screenshot.
+
+<Warning>
+Video dari `start_recording` tidak disamarkan.
+</Warning>
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Referensi MCP server" icon="book" href="/reference/mcp">
+    Semua tool, flag, aturan sesi, dan kode error.
+  </Card>
+  <Card title="Coding agent" icon="robot" href="/coding-agents">
+    Skill, cara menjalankan tes, dan cara membaca kegagalan.
+  </Card>
+</CardGroup>

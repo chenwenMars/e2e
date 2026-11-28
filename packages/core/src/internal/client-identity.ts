@@ -12,6 +12,6 @@ export const USER_AGENT = `e2e/${packageVersion(import.meta.url, '../../package.
  */
 export const MODEL_REQUEST_HEADERS: Readonly<Record<string, string>> = {
   'user-agent': USER_AGENT,
-  'http-referer': 'https://tester.army/e2e',
+  'http-referer': 'https://e2e.com',
   'x-title': 'e2e',
 };

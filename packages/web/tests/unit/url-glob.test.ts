@@ -79,10 +79,92 @@ describe('URL globs', () => {
     expect(matches('**/😀*', 'http://localhost:3000/%F0%9F%98%80x')).toBe(true);
   });
 
+  it('encodes an apostrophe in a special URL query and leaves path and fragment apostrophes literal', () => {
+    const path = "/a'b?next=/c'd#e'f";
+    expect(new URL(path, BASE).href).toBe(`${BASE}a'b?next=/c%27d#e'f`);
+    expect(matches("/a'b?next=/c'd*#e'f", new URL(path, BASE).href)).toBe(true);
+    expect(matches("/a'b?next=/c%27d*#e'f", new URL(path, BASE).href)).toBe(true);
+    expect(matches("custom://x.test/a?x='*", "custom://x.test/a?x='1")).toBe(true);
+    expect(matches("custom://x.test/a?x='*", 'custom://x.test/a?x=%271')).toBe(false);
+    expect(matches("**/a?x='*", 'https://x.test/a?x=%271')).toBe(true);
+    expect(matches("**/a?x='*", 'https://x.test/a?x=%25271')).toBe(false);
+    for (const scheme of ['http', 'https', 'ws', 'wss', 'ftp', 'file']) {
+      const url = new URL(`${scheme}://x.test/a?x='1`);
+      expect(url.search).toBe('?x=%271');
+      expect(matches("**/a?x='*", url.href), scheme).toBe(true);
+    }
+    expect(matches("/{a?x='*,b'c}", `${BASE}b'c`)).toBe(true);
+    expect(matches("/{a?x='*,b'c}", `${BASE}b%27c`)).toBe(false);
+  });
+
+  it('encodes a backtick in a path or fragment while keeping query backticks and escapes literal', () => {
+    const path = '/a`*?x=`1#b`2';
+    const url = new URL(path, BASE).href;
+    expect(url).toBe(`${BASE}a%60*?x=\`1#b%602`);
+    expect(matches('/a`\\*\\?x=`*#b`*', url)).toBe(true);
+    expect(matches('/a%60\\*?x=`*#b%60*', url)).toBe(true);
+    expect(matches('/a`\\*?x=`*#b`*', new URL('/a`other?x=`1#b`2', BASE).href)).toBe(false);
+    expect(matches('/a`\\*?x=%60*#b`*', url)).toBe(false);
+    expect(matches('**/a`*', 'https://x.test/a%601')).toBe(true);
+    expect(matches('about:`*', 'about:`a')).toBe(true);
+    expect(matches('about:`*', 'about:%60a')).toBe(false);
+  });
+
+  it.each([
+    ['/p?x="*', '/p?x="1', 'p?x=%221'],
+    ['/a"*', '/a"1', 'a%221'],
+    ['/a<*', '/a<1', 'a%3C1'],
+    ['/p#a>*', '/p#a>1', 'p#a%3E1'],
+  ])('matches %s against the browser serialization of %s', (glob, path, encoded) => {
+    const url = new URL(path, BASE).href;
+    expect(url).toBe(BASE + encoded);
+    expect(matches(glob, url)).toBe(true);
+  });
+
+  it('matches a raw path caret against the percent-encoded URL Chromium reports', () => {
+    expect(matches('/a^*', `${BASE}a%5E1`)).toBe(true);
+  });
+
+  it('matches escaped braces against their path encoding and keeps query braces raw', () => {
+    const url = new URL('/a{b}1?x={2', BASE).href;
+    expect(url).toBe(`${BASE}a%7Bb%7D1?x={2`);
+    expect(matches('**/a\\{b\\}*', url)).toBe(true);
+    expect(matches('/a\\{b\\}*?x=\\{*', url)).toBe(true);
+    expect(matches('**/a?x=\\{*', `${BASE}a?x=%7B1`)).toBe(false);
+  });
+
+  it('matches only the browser spelling in each brace alternative', () => {
+    const glob = "/{search?next=,authors}/O'Neil";
+    expect(matches(glob, BASE + "authors/O'Neil")).toBe(true);
+    expect(matches(glob, BASE + 'authors/O%27Neil')).toBe(false);
+    expect(matches(glob, BASE + 'search?next=/O%27Neil')).toBe(true);
+    expect(matches('/{search?next=,authors}/O%27Neil', BASE + 'authors/O%27Neil')).toBe(true);
+  });
+
   it('restores each glob segment to its own place when the glob or the base holds text like a placeholder', () => {
     expect(matches('/$_2_$/x*', 'http://localhost:3000/$_2_$/xyz')).toBe(true);
     expect(matches('/$_2_$/x*', 'http://localhost:3000/xyz/$_2_$')).toBe(false);
     expect(matches('x*', 'http://localhost:3000/$_0_$/xyz', 'http://localhost:3000/$_0_$/')).toBe(true);
+  });
+
+  it.each([
+    ['http://demo^qa@x.test/path*', 'http://demo%5Eqa@x.test/path1'],
+    [' \thttp:\n//\r/demo^qa@x.test/path*', 'http://demo%5Eqa@x.test/path1'],
+    ["http://bü'cher.test/path*", "http://xn--b'cher-3ya.test/path1"],
+  ])('normalizes the literal authority in %s', (glob, url) => {
+    expect(matches(glob, url)).toBe(true);
+  });
+
+  it('keeps host text that normalizes to a marker lookalike', () => {
+    expect(matches('http://%24_3_1_%24.test/a^b/x*', 'http://$_3_1_$.test/a%5Eb/x1')).toBe(true);
+    expect(matches('http://%24_1z.test/a^b/x*', 'http://$_1z.test/a%5Eb/x1')).toBe(true);
+  });
+
+  it.each([
+    ["/x*/../'_1_$", "'_1_$"],
+    ["/a'b/../'_1_1_$/*", "'_1_1_$/z"],
+  ])('restores only the surviving segments in %s', (glob, path) => {
+    expect(matches(glob, BASE + path)).toBe(true);
   });
 
   it('matches a string with no wildcard exactly, resolved against the base', () => {

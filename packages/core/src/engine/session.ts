@@ -24,6 +24,7 @@ import { timestamp } from '../internal/ids.ts';
 import { bound } from '../internal/text.ts';
 import { pixelsProvenMasked } from '../run/secrecy.ts';
 import type { AppLogEntry, EngineHandle, EngineSnapshot, EngineTabs } from './index.ts';
+import type { OperationContext } from './contract.ts';
 import {
   type AppEvent,
   type AppLogRoute,
@@ -213,6 +214,18 @@ const KINDS_BY_VERB: readonly (readonly [GrammarVerb, readonly LocatorActionKind
   ['drag', ['dragTo']],
   ['upload', ['setInputFiles']],
 ];
+
+/**
+ * `operation` with what is left of its budget since `startedMs`, for the
+ * second call of a step that first observes for the root ref: `timeout`
+ * bounds the whole step, so the observe's time comes out of the action's.
+ * An observe that spent all of it leaves nothing to send the action with.
+ */
+function leftSince(operation: OperationContext, startedMs: number): OperationContext {
+  const timeoutMs = operation.timeoutMs - (Date.now() - startedMs);
+  if (timeoutMs <= 0) throw new EngineError('OPERATION_TIMEOUT', 'the first observation spent the whole budget; nothing was sent', { retryable: false });
+  return { ...operation, timeoutMs };
+}
 
 /** The grammar verbs an engine declaration can honor. */
 function declaredVerbs(engine: EngineHandle | undefined): ReadonlySet<GrammarVerb> {
@@ -485,8 +498,14 @@ export function createEngineSession(options: EngineSessionOptions): TargetSessio
     },
     async swipe(direction, momentum, operation) {
       if (!actions.has('swipe')) unsupported('swipe gestures');
-      const target = root ?? (await session.observe(operation)).root;
-      await performRaw(target, { kind: 'swipe', direction, ...(momentum === undefined ? {} : { momentum }) }, operation);
+      const swipe = { kind: 'swipe', direction, ...(momentum === undefined ? {} : { momentum }) } as const;
+      if (root !== undefined) return performRaw(root, swipe, operation);
+      const startedMs = Date.now();
+      const observed = (await session.observe(operation)).root;
+      await performRaw(observed, swipe, leftSince(operation, startedMs));
+    },
+    async rootRef(operation) {
+      return root ?? (await session.observe(operation)).root;
     },
     async performAt(point, action, operation) {
       if (!pointerActions.has(action.kind)) unsupported(`the "${action.kind}" action at a point`);

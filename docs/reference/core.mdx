@@ -29,6 +29,7 @@ console.log(await session.screen.getByTestId('sale-price').textContent());
 | `web` | `@e2e-dev/web/engine` |
 | `mobile` | `@e2e-dev/mobile/engine` |
 | `desktop` | `@e2e-dev/desktop/engine` |
+| `electron` | `@e2e-dev/electron/engine` |
 | `defineEngine` | `@e2e-dev/core/engine` |
 
 `@e2e-dev/core/lib/*` is private. Its modules can change in any release.
@@ -96,7 +97,7 @@ What `app.open()` opens on a browser, or launches on a device.
 | `bundleId` | `mobile()` | The installed app to launch. |
 | `appPath` | `mobile()` | The app build the program runs against, a `.app` or an `.apk`. See [config](/reference/config#apppath). |
 | `linkBase` | `mobile()` | What `app.open(path)` joins the path to and opens as a link. See [config](/reference/config#linkbase). |
-| `identity` | both | The app's name for saved states and recordings. Default: the URL or the bundle id. |
+| `identity` | both | The app's name for saved states and recordings. Default: for an HTTP(S) `url`, its origin and base path; for a `file:` `url`, the file's URL; with no `url`, `bundleId`, else `appPath`. See [config](/reference/config#identity). |
 | `launchArguments` | `mobile()` | Arguments the app launches with, a list or an object. See [config](/reference/config#launcharguments). |
 | `permissions` | both | Permissions to grant or deny, or `'all'` to grant every one the engine can. See [config](/reference/config#permissions). |
 

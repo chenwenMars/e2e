@@ -4,15 +4,15 @@ description: Test a native desktop app on macOS through its accessibility tree.
 ---
 
 `@e2e-dev/desktop` runs tests on native desktop apps. It reads and drives
-the app through the OS accessibility tree with
-[agent-desktop](https://github.com/vercel-labs/agent-desktop). Tests use the
-same `agent`, `screen`, and `expect` APIs as browser tests.
+the app through the OS accessibility tree with a native driver that runs in
+the test process. Tests use the same `agent`, `screen`, and `expect` APIs as
+browser tests.
 
 <Note>
-  The desktop engine is a prototype, and it runs on macOS only. A config with
+  The desktop engine is a prototype, and it runs on macOS 13 or later only. A config with
   a desktop target still loads on Windows and Linux, and its other targets run
   there when you pick them with `--target`. A run that includes the desktop
-  target stops before any test starts.
+  target stops with `UNSUPPORTED_CAPABILITY` before any test starts.
 </Note>
 
 ## Set up
@@ -39,9 +39,9 @@ On macOS, the app that starts e2e needs two permissions in **System Settings
 - **Accessibility**, to read and drive the app.
 - **Screen Recording**, for screenshots.
 
-The first run downloads agent-desktop and checks its SHA-256 digest. To use
-your own install, such as a Homebrew one, set
-`desktop({ binary: '/path/to/agent-desktop' })`.
+npm installs the driver for your Mac with the engine, as
+`@e2e-dev/desktop-darwin-arm64` or `@e2e-dev/desktop-darwin-x64`. You don't
+need Rust or Xcode.
 
 Check your setup:
 
@@ -59,7 +59,7 @@ bunx e2e doctor
 ```
 </CodeGroup>
 
-It checks agent-desktop, both permissions, and the `appPath` build.
+It checks the driver, both permissions, and the `appPath` build.
 
 ## Point at your app
 
@@ -72,10 +72,12 @@ object entry becomes `-name value`, as on iOS, so
 
 The launched app gets only a minimal environment (`HOME`, `USER`, `LOGNAME`,
 `SHELL`, `PATH`, `TMPDIR`, `LANG`, `LC_*`, `__CF_USER_TEXT_ENCODING`, plus
-`E2E_DESKTOP_LAUNCH` for process tracking, or `AGENT_DESKTOP_HOME` when
-launched by `bundleId`), so your secrets, model keys, and CI tokens never
-leak into it. Built-in macOS apps and builds signed with the `restrict` flag
-must be launched by `bundleId` rather than `appPath`.
+`E2E_DESKTOP_LAUNCH` for process tracking), so your secrets, model keys, and
+CI tokens never leak into it. macOS hides that variable in its own apps,
+in Apple's App Store apps (Numbers, Pages, Xcode), and in builds signed
+with the `restrict` flag, so those also get `-E2EDesktopLaunch=<token>` as
+their last launch argument. The engine tells App Store apps by their
+signature, so every Mac App Store app gets that argument.
 
 ```ts title="e2e.config.ts"
 import type { E2EConfig } from 'e2e';
@@ -98,13 +100,14 @@ export default {
 ## Write a test
 
 Import `test` from `@e2e-dev/desktop`. By default, `app.open()` leaves the
-app in the background. Use `desktop({ headed: true })` for apps that need to
-come forward before they show a window. `e2e run --headed` also launches
-the app in the foreground, but only `desktop({ headed: true })` turns on the
-physical input described below. When the engine launched it
-before, it quits that copy first. A copy you opened yourself is left alone,
-and the engine never reads or drives it. Every test ends with the app quit,
-and no window the app saved at its last quit comes back.
+app in the background. Run with `--headed` for apps that need to come forward
+before they show a window. `desktop({ physicalInput: true })` brings the app
+forward too, and turns on the physical input described below. When the engine
+launched it before, it quits that copy first. A copy you opened yourself is left alone,
+and the engine never reads or drives it. An app that runs one copy at a time
+hands the launch to a copy that is already running, so `app.open()` fails and
+names that copy: quit it first. Every test ends with the app quit, and no
+window the app saved at its last quit comes back.
 
 ```ts title="tests/sign-in.e2e.ts"
 import { test } from '@e2e-dev/desktop';
@@ -122,64 +125,97 @@ test('signs in', async ({ app, screen }) => {
 ```
 
 Roles use the names the web uses: `textbox`, `checkbox`, `combobox`,
-`button`. Static text has the role `text`, so find it with `getByText`. A
-control's name is the one macOS accessibility gives it: its title, or its
-accessibility label. A button's title is its name and its text, so
-`getByText('Sign in')` finds the button as well as any static text that
-reads the same; `getByRole('button', 'Sign in')` finds only the button.
-`getByPlaceholder` is not supported: macOS reports no placeholder, and
-names a field with no label by its placeholder, so find that field with
+`button`. The tree lists static text as `text`, which is not a `getByRole`
+role: find it with `getByText`. A control's name is the one macOS
+accessibility gives it: its title, or its accessibility label. A button's
+title is its name and its text, so `getByText('Sign in')` finds the button
+as well as any static text that reads the same;
+`getByRole('button', 'Sign in')` finds only the button.
+`getByPlaceholder` is not supported: the engine names a field with no label
+by its placeholder, so find that field with
 `getByRole('textbox', 'Username')`. `getByTestId` finds the control's
 `AXIdentifier` (`accessibilityIdentifier` in AppKit, SwiftUI's
 `.accessibilityIdentifier`).
 
-The `desktop` fixture lists the app's windows (`desktop.windows()`), picks
-the one `screen` reads (`desktop.useWindow(window)`), and quits the app
-(`desktop.closeApp()`).
+## The desktop fixture
+
+| Method | What it does |
+| --- | --- |
+| `windows()` | The app's open windows |
+| `waitForWindow(trigger, { timeout }?)` | Runs `trigger`, waits for the window it opens, and makes that window active |
+| `window({ title }, { timeout }?)` | Waits for a window by title and returns it, without making it active |
+| `keyboard.press(key)` | Presses a key or a combo such as `ControlOrMeta+2` into the active window, for an app with no control that takes keyboard focus |
+| `keyboard.type(text)` | Types text into the focused field |
+| `closeApp()` | Quits the app. `app.open()` launches it again |
+| `platform` | The OS the app runs on, `'macos'` |
+
+## Work with several windows
+
+`screen` reads the active window. Until a test picks one, that's the app's
+focused window, so a dialog that takes focus is read without a step of its
+own. `desktop.waitForWindow()` runs the step that opens a window and makes
+that window active. It then stays active, whichever window has focus, until it
+closes. After that, `screen` reads the focused window again.
+
+```ts
+const settings = await desktop.waitForWindow(() =>
+  screen.getByRole('button', 'Settings…').tap(),
+);
+await expect(screen.getByRole('checkbox', 'Launch at login')).toBeVisible();
+
+const main = await desktop.window({ title: 'My App' });
+await main.activate();
+await settings.close();
+```
+
+A window has `title()`, `isActive()`, `isClosed()`, `activate()`, and
+`close()`. Each one asks macOS, so `await` them all. `close()` presses the
+window's close button, so it fails on a window that stays open to ask about
+unsaved changes. `title` takes an exact string or a
+`RegExp`. Use `desktop.window()` for a window the app opens by itself.
 
 ## What differs from the web
 
 | Area | On a desktop target |
 | --- | --- |
-| Input | The app runs in the background using the macOS Accessibility API, so your mouse and keyboard stay free. Apps that don't open a window in the background (like document-based apps) need `headed: true` or `--headed`. |
-| Physical input | `doubleTap`, `hover`, `press`, coordinate taps, and focused typing require `desktop({ headed: true })`, which brings the app forward and uses real pointer/keyboard input. Watch out for floating windows overlapping the target area. |
-| Keys | `press` sends keys only to the focused control in an active window (`headed: true`). It supports named keys, letters, digits, and ``, . / ; ' [ ] \ - = ` `` (other characters like `!` or `é` are rejected), and blocks system shortcuts like `ControlOrMeta+q` (use `desktop.closeApp()` instead). |
-| Select | `selectOption` matches by option label, not index. For editable combo boxes, use `fill()` instead. |
-| Windows | `screen` reads the window picked with `desktop.useWindow()`, otherwise the focused window, otherwise the first visible window. Sheets are included; window chrome (Close/Minimize/Zoom) is excluded. Minimized windows read as hidden, while windows on another macOS Space stay readable. |
-| Reading | Only an app with no open windows reads as empty. If the screen is locked or the window tree is deeper than `maxDepth`, locators keep retrying until timeout instead of returning false negatives, and `app.open()` fails on a locked screen. |
-| Menu bar | The app's menu bar isn't readable yet; trigger menu items with a key shortcut (`press` + `headed: true`). |
-| Web content | Browser windows, Electron apps, and web views aren't supported. Use `@e2e-dev/web` for those. |
-| Workers | Limited to one worker per desktop target. If you run two desktop targets with `headed: true`, set `workers: 1` so they don't fight over the cursor and keyboard. |
-| State | `app.clearState()` isn't supported yet. |
-| Secrets | Password fields never expose their value and are painted black in screenshots (a field whose states can't be read isn't painted and shows dots instead). If a screenshot can't cover a readable password field, or the window exceeds `maxDepth`, it fails instead of saving. |
+| Input | The app runs in the background. Actions use the macOS Accessibility API and keys go into the app's own event queue, so your mouse and keyboard stay free. Apps that don't open a window in the background (like document-based apps) need `--headed` or `physicalInput: true`. A tap, `doubleTap`, `secondaryTap`, `check`, `uncheck`, `fill`, `clear`, or `selectOption` on a disabled control waits within the action's timeout for the app to enable it, then fails with `ACTION_FAILED` (refused, so nothing was sent); a box that already shows the state `check` or `uncheck` asks for is left alone. |
+| Physical input | `doubleTap`, `hover`, and coordinate taps require `desktop({ physicalInput: true })`, which brings the app forward and uses the real pointer. Keys and typing then use the real keyboard. A click is refused when another window, of the app or any other, or a control inside the element (a row's button or text field) is under the pointer, before the move or after it; a tap at a point, or a hover, is refused when another window is on top there. A double-click is one gesture, as a person's is: once its first click goes, the second follows at once, whatever the first opened. Watch out for floating windows overlapping the target area. |
+| Keys | `press` and typing send keys only to the focused control in the app's key window; without `physicalInput`, a window made active with `activate()` that is not the key window gets none. It supports named keys, letters, digits, and ``, . / ; ' [ ] \ - = ` `` (other characters like `!` or `é` are rejected), and blocks system shortcuts like `ControlOrMeta+q` (use `desktop.closeApp()` instead). A shortcut's letter is the one on the Mac's keyboard layout, so `ControlOrMeta+a` is Select All on AZERTY too. A shortcut with a digit or punctuation needs a layout that types it without Shift: on AZERTY, `ControlOrMeta+2` fails as unsupported. Without `physicalInput`, a `ControlOrMeta` shortcut reaches only the app's menu bar: a menu item's shortcut works, but one that the focused control or the key window handles (Copy, Paste, Select All, a SwiftUI button's `.keyboardShortcut`) does nothing, and `press` still succeeds. Use `physicalInput: true` for those. A locator's `press` needs a control that takes keyboard focus; for an app with none (like Calculator), use `desktop.keyboard.press()`. |
+| Select | `selectOption` matches by option label, not index. A table row's label is all the text it shows, cell by cell, as its accessible name is; a label that two rows show is refused. On a pop-up button it checks that the button shows the chosen option. A disabled option waits within the action's timeout for the app to enable it, then fails with `ACTION_FAILED` naming the option, and the menu closes; of two options with one title, the select chooses an enabled one from the menu, and a pop-up that already shows the title is left as it is, since a closed pop-up shows no item to tell them apart. For editable combo boxes, use `fill()` instead; a combo box that takes no typed value is refused, so tap it and then the option. |
+| Windows | `screen` reads the [active window](#work-with-several-windows): the one a test made active, otherwise the focused window, otherwise the app's main window, otherwise the first visible window. The Siri dialog macOS 27 can put over an app is read only when a test makes it active. A window with a sheet open counts as focused. Sheets and open context or pop-up menus are included, so `getByRole('menuitem', 'Copy')` finds a menu's items; window chrome (Close/Minimize/Zoom) is excluded. Minimized windows and rows scrolled out of their list read as hidden, so `getByRole` skips them. `getByText` and `getByTestId` still match hidden nodes. Each finds the node that carries the text or the identifier, so `getByText('Item 40')` finds a row's label, not the row. A tap, secondary tap, `check`, or `uncheck` on a hidden node scrolls it into view first, or is refused, and a failure after that scroll fails with `ACTION_FAILED` as an action that may have taken effect, never retried, since the list moved. Windows on another macOS Space stay readable. |
+| Reading | Only an app with no open windows reads as empty. If the screen is locked, the window tree is deeper than `maxDepth`, or the window holds more than the 8,000 elements a read takes, locators keep retrying until timeout instead of returning false negatives, and screenshots of that window are refused. `app.open()` fails on a locked screen. |
+| Menu bar | The app's menu bar isn't readable yet; trigger menu items with a key shortcut (`press`). |
+| Web content | Browser windows, Electron apps, and web views aren't supported. Use `@e2e-dev/web` for web apps and [`@e2e-dev/electron`](/electron) for Electron apps. |
+| Workers | Limited to one worker per desktop target. If you run two desktop targets with `physicalInput: true`, set `workers: 1` so they don't fight over the cursor and keyboard. |
+| Scrolling | `scrollTo(edge)` isn't supported and fails with `UNSUPPORTED_CAPABILITY`. Use `scrollUntilVisible` instead. |
+| State | `app.clearState()` and `app.back()` aren't supported yet. A `test.setup` session and `video: 'on'` are refused when tests are collected, since the engine saves no state and records no video. |
+| Not supported | `getByPlaceholder`, `toBeInViewport`, `toBeEmpty`, `blur`, `longPress`, `dragTo`, `setInputFiles`, tap `modifiers`, and `selectOption({ index })` fail with a message that says so. |
+| Secrets | Password fields never expose their value and are painted black in screenshots. If a screenshot can't cover a password field, or the window is deeper than `maxDepth` or larger than a read takes, it fails instead of saving. |
 
-Temporary accessibility state is cleaned up when the run exits, and if an
-app or worker gets killed mid-run, the next desktop run cleans up the
-leftover app process automatically.
+Temporary state is cleaned up when the run exits, and if an app or worker
+gets killed mid-run, the next desktop run cleans up the leftover app process
+automatically.
 
 <Accordion title="Additional desktop edge cases">
 - **Unreadable windows:** a window that can't be read never reads as empty,
   so `not.toBeVisible()` can't pass on it.
-- **Large field values:** a field value over 64 KiB, or one agent-desktop
-  couldn't read, reads as empty.
-- **Pop-up menus:** choosing a missing option in a pop-up button can leave
-  its menu open; e2e tries Escape to close it, which only reaches the app in
-  `headed: true` mode.
+- **Pop-up menus:** choosing a missing option in a pop-up button closes its
+  menu again; if the menu stays open, the error says so.
 </Accordion>
 
 ## Options
 
 | Option | Type | Default |
 | --- | --- | --- |
-| `binary` | `string` | the downloaded release |
 | `snapshot` | `'full' \| 'interactive'` | `'full'` |
-| `headed` | `boolean` | `false` |
+| `physicalInput` | `boolean` | `false` |
 | `settle` | `number \| false` | `150` |
 | `maxDepth` | `number` | `24` |
 
 `snapshot: 'interactive'` makes the agent's observations read only controls,
 without static text; locators and `expect` read the whole window either way.
-`settle` is how long the engine waits after an agent action before the agent
+`physicalInput` allows the real pointer and keyboard, which move your cursor
+and bring the app forward. `settle` is how long the engine waits after an agent action before the agent
 reads the screen, in milliseconds. `maxDepth` is how many levels of a window a
 read goes down, from 1 to 50; raise it when locators on a deeply nested app
 time out on a read only in part.

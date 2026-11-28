@@ -98,6 +98,17 @@ describe('StepRecorder progress identity', () => {
     }
   });
 
+  it('tells reporters how the cache took part as the step ends: its mode and reason, nothing else', async () => {
+    const { steps, heard } = recorder();
+    await steps.run('agent', 'agent.act', 'pay', async () => {
+      steps.attachAgentDetails({ cache: { mode: 'missed', reason: 'truncated', replayedActions: 0, totalActions: 2, entry: 'abc' } });
+    });
+    await steps.run('agent', 'agent.act', 'leave', async () => undefined);
+    const ends = heard.filter((progress) => progress.phase === 'end');
+    expect(ends[0]).toHaveProperty('cache', { mode: 'missed', reason: 'truncated' });
+    expect(ends[1]).not.toHaveProperty('cache');
+  });
+
   it.each([
     { code: 'AUTH_CREDENTIAL_UNAVAILABLE', blocked: true, status: 'blocked' },
     { code: 'CANCELLED', blocked: false, status: 'cancelled' },

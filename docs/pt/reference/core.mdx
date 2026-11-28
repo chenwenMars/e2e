@@ -1,0 +1,288 @@
+---
+title: "@e2e-dev/core"
+description: launch, hosts, sessões, estado salvo e createAgent, a API de um programa que controla um navegador ou um dispositivo sem o runner de testes.
+---
+
+`@e2e-dev/core` é a API de um programa que controla um navegador ou um
+dispositivo sem um runner de testes em volta. `launch` retorna um host, um
+host abre sessões, e `createAgent` coloca um agente sobre uma sessão. O
+[guia](/core) mostra cada um deles em uso.
+
+```ts title="prices.ts"
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+await using shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+await using session = await shop.newSession();
+await session.app.open('/products/A-1001');
+console.log(await session.screen.getByTestId('sale-price').textContent());
+```
+
+## Referência
+
+### Entradas
+
+| Importação | De |
+| --- | --- |
+| [`launch`](#launch), [`SessionState`](#sessionstate), `isE2EError` | `@e2e-dev/core` |
+| [`createAgent`](#createagent), `defineTool` | `@e2e-dev/core/agent` |
+| `web` | `@e2e-dev/web/engine` |
+| `mobile` | `@e2e-dev/mobile/engine` |
+| `desktop` | `@e2e-dev/desktop/engine` |
+| `defineEngine` | `@e2e-dev/core/engine` |
+
+`@e2e-dev/core/lib/*` é privado. Os módulos dele podem mudar em qualquer versão.
+
+### Inicialização
+
+| Função | Retorna |
+| --- | --- |
+| [`launch`](#launch) | `Promise<Host>` |
+
+#### `launch`
+
+Prepara uma engine e retorna o host que abre sessões nela. A primeira
+inicialização de `web()` baixa um navegador.
+
+```ts
+const shop = await launch(web(), {
+  app: { url: 'https://shop.example.com' },
+  timeout: 10_000,
+  artifactsDir: 'artifacts',
+});
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| [`app`](#app) | `LaunchApp` | - |
+| `secrets` | `Record<string, string>` | - |
+| `headed` | `boolean` | `false` |
+| [`timeout`](#timeout) | `number` | por operação |
+| `signal` | `AbortSignal` | - |
+| `handleSignals` | `boolean` | `true` |
+| `artifactsDir` | `string` | um diretório temporário |
+| `cwd` | `string` | `process.cwd()` |
+| `env` | `NodeJS.ProcessEnv` | `process.env` |
+| `onNotice` | `(message: string) => void` | - |
+
+- `secrets`: valores por nome, cada um com 6 caracteres ou mais. Veja
+  [Passar segredos](/core#pass-secrets).
+- `headed`: mostra a janela do navegador. Um dispositivo ignora essa opção.
+- `signal`: cancela a inicialização e todas as sessões e operações no host.
+- `handleSignals`: fecha o host em SIGINT, SIGTERM e SIGHUP, depois deixa o
+  sinal encerrar o programa, a menos que o próprio programa escute esse sinal.
+- `artifactsDir`: onde ficam as capturas de tela, os downloads e as
+  gravações, resolvido a partir de `cwd`. O diretório padrão é apagado quando
+  o host fecha.
+- `cwd`: a base a partir da qual os caminhos de upload, `artifactsDir` e o
+  diretório de cache de um agente são resolvidos.
+- `onNotice`: o progresso fora das operações, como o download de um navegador
+  ou a reserva de um dispositivo.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | O primeiro argumento não é uma engine, ou uma opção ou chave de `app` é desconhecida. |
+| `INVALID_CONFIG` | A engine recusa o app: `web()` sem `app.url`, `mobile()` sem `app.bundleId` ou `app.appPath`. |
+| `WORKER_PROTOCOL` | Outro host é dono desta instância da engine. Chame a factory de novo: `launch(web())`. |
+
+<a id="app" />
+
+##### `app`
+
+O que `app.open()` abre em um navegador ou inicia em um dispositivo.
+
+| Campo | Para | Significado |
+| --- | --- | --- |
+| `url` | `web()` | A URL do app. `app.open(path)` resolve o caminho em relação a ela. |
+| `bundleId` | `mobile()` | O app instalado que será iniciado. |
+| `appPath` | `mobile()` | O build do app contra o qual o programa roda, um `.app` ou um `.apk`. Veja a [configuração](/reference/config#apppath). |
+| `linkBase` | `mobile()` | A base à qual `app.open(path)` junta o caminho, abrindo o resultado como link. Veja a [configuração](/reference/config#linkbase). |
+| `identity` | ambos | O nome do app para estados salvos e gravações. Padrão: para uma `url` HTTP(S), a origem e o caminho base dela; para um valor `file:` em `url`, a URL do arquivo; sem `url`, `bundleId`, senão `appPath`. Veja a [configuração](/reference/config#identity). |
+| `launchArguments` | `mobile()` | Os argumentos de inicialização do app, uma lista ou um objeto. Veja a [configuração](/reference/config#launcharguments). |
+| `permissions` | ambos | Permissões a conceder ou negar, ou `'all'` para conceder todas as que a engine consegue. Veja a [configuração](/reference/config#permissions). |
+
+<a id="timeout" />
+
+##### `timeout`
+
+O tempo limite padrão de uma operação, em milissegundos. Sem ele:
+
+| Operação | Padrão |
+| --- | --- |
+| Uma ação, uma espera ou uma leitura | 30000 |
+| `app.open()`, `app.restart()`, `app.clearState()` | 120000 |
+| Um passo do agente | 120000, ou o `timeout` da própria chamada |
+
+`timeout` define as duas primeiras linhas. Não há prazo de sessão.
+
+### Host
+
+| Membro | Retorna |
+| --- | --- |
+| `platform` | `string` |
+| [`newSession`](#newsession) | `Promise<Session>` |
+| [`secret`](#secret) | `Secret` |
+| [`close`](#close) | `Promise<void>` |
+
+`platform` é `web`, `ios`, `android` ou o rótulo próprio de uma engine
+personalizada.
+
+#### `newSession`
+
+Abre uma sessão: um contexto de navegador isolado, ou o app no dispositivo.
+Um host mantém uma sessão por vez.
+
+```ts
+const session = await shop.newSession({ state, signal: AbortSignal.timeout(60_000) });
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `state` | [`SessionState`](#sessionstate) | - |
+| `signal` | `AbortSignal` | - |
+
+| Lança | Quando |
+| --- | --- |
+| `WORKER_PROTOCOL` | Há uma sessão aberta no host, ou o host está fechado. |
+| `SESSION_MISMATCH` | `state` foi salvo em outra engine, plataforma ou app. |
+| `SESSION_EXPIRED` | `state` passou do prazo de validade. |
+
+#### `secret`
+
+Retorna a referência de um segredo passado para `launch`, para `fill` ou para
+os parâmetros de um agente. Um nome desconhecido lança `SECRET_UNAVAILABLE`.
+
+```ts
+await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
+```
+
+#### `close`
+
+Fecha a sessão aberta, depois a engine. Uma segunda chamada não faz nada. Um
+host também é descartável: `await using` fecha o host. Uma limpeza que falha
+lança um `AggregateError` com as falhas.
+
+### Sessão
+
+| Membro | Retorna |
+| --- | --- |
+| `screen` | [`Screen`](/reference/screen) |
+| `app` | [`App`](/reference/app) |
+| `platform` | `string` |
+| `browser` | [`Browser`](/reference/web), com `web()` |
+| `device` | [`Device`](/reference/mobile), com `mobile()` |
+| [`saveState`](#savestate) | `Promise<SessionState>` |
+| [`setDefaultTimeout`](#setdefaulttimeout) | `void` |
+| `close` | `Promise<void>` |
+
+`close` encerra a sessão, como `await using` faz. Uma chamada que ainda está
+rodando falha com `CANCELLED`. Uma ação, uma espera ou uma chamada de `app` ou
+do agente se identifica na mensagem:
+`the session closed while app.open "/" was running`. Depois de `close`, toda
+operação falha com `CANCELLED`.
+
+<Note>
+  Aguarde toda chamada. Uma chamada não aguardada é rejeitada sem
+  tratamento quando a sessão dela fecha, e o Node.js encerra o programa nesse ponto.
+</Note>
+
+#### `saveState`
+
+Captura os cookies e o armazenamento da sessão na memória. Uma engine sem
+estado para capturar, como `mobile()`, lança `UNSUPPORTED_CAPABILITY`.
+
+```ts
+const state = await session.saveState();
+```
+
+#### `setDefaultTimeout`
+
+Define o tempo limite padrão das operações que começarem a partir de agora, em
+milissegundos: ações, esperas, leituras e aberturas e reinícios do app.
+
+```ts
+session.setDefaultTimeout(5_000);
+```
+
+### SessionState
+
+| Membro | Retorna |
+| --- | --- |
+| `engine` | `string` |
+| `platform` | `string` |
+| [`export`](#export) | `Promise<Uint8Array>` |
+| [`SessionState.import`](#sessionstate-import) | `Promise<SessionState>` |
+
+#### `export`
+
+Criptografa o estado com uma chave de 32 bytes (AES-256-GCM) em bytes que
+você pode salvar em disco. Não existe exportação em texto puro.
+
+```ts
+const bytes = await state.export({ key });
+```
+
+Os bytes trazem em texto puro a engine, a plataforma e os nomes dos segredos.
+Os cookies, o armazenamento e os valores dos segredos são criptografados.
+
+#### `SessionState.import`
+
+Descriptografa bytes que `export` escreveu.
+
+```ts
+const state = await SessionState.import(bytes, { key });
+```
+
+| Lança | Quando |
+| --- | --- |
+| `SESSION_INVALID` | Outra chave, um byte alterado ou bytes que `export` não escreveu. |
+| `SESSION_EXPIRED` | O estado passou do prazo de validade. |
+| `INVALID_ARGUMENT` | A chave não tem 32 bytes. |
+
+### Agente
+
+| Função | Retorna |
+| --- | --- |
+| [`createAgent`](#createagent) | um agente |
+
+#### `createAgent`
+
+Cria um agente sobre uma sessão. `assert`, `waitFor` e `extract` são os da
+[fixture agent](/reference/agent). `act` difere em um ponto: com `cache`, ele
+recebe um `cacheKey`.
+
+```ts
+const agent = createAgent(session, {
+  model: gateway('anthropic/claude-sonnet-5-5'),
+  cache: { dir: '.shop-bot/cache' },
+});
+const step = await agent.act('Add the item to the cart', { cacheKey: 'add-to-cart' });
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `model`, `judge`, `context` e as demais | uma [entrada de `agents`](/reference/config#agents) | - |
+| [`cache`](#cache) | `AgentCacheOptions` | sem cache |
+
+<a id="cache" />
+
+##### `cache`
+
+| Campo | Tipo | Padrão |
+| --- | --- | --- |
+| `dir` | `string` | `.e2e/cache` |
+| `mode` | `'read-write' \| 'read-only'` | `'read-write'` |
+| `strict` | `boolean` | `false` |
+| `store` | [`CacheStore`](/cache) | o armazenamento em arquivos |
+
+Com `cache`, cada `act` passa `{ cacheKey: '<name>' }`, ou `{ cache: false }`
+para rodar ao vivo. [Reproduzir passos gravados](/core#replay-recorded-steps)
+diz quando uma gravação é salva.
+
+## Relacionados
+
+- [Guia do @e2e-dev/core](/core)
+- [screen](/reference/screen), [app](/reference/app) e
+  [agent](/reference/agent): o que uma sessão e um agente contêm.
+- [Erros](/reference/errors): todos os códigos de erro.
+- [Engines](/engines): escreva uma engine própria.

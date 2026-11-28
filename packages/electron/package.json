@@ -1,0 +1,76 @@
+{
+  "name": "@e2e-dev/electron",
+  "version": "0.0.0",
+  "description": "Electron engine for e2e agentic end-to-end testing: launches an Electron app and drives its windows through Chromium's accessibility tree",
+  "keywords": [
+    "e2e",
+    "end-to-end",
+    "testing",
+    "ai-testing",
+    "electron",
+    "desktop-testing",
+    "accessibility"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/e2e-inc/e2e.git",
+    "directory": "packages/electron"
+  },
+  "bugs": {
+    "url": "https://github.com/e2e-inc/e2e/issues"
+  },
+  "homepage": "https://e2e.com/docs/electron",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "latest"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./engine": {
+      "types": "./dist/engine-entry.d.ts",
+      "default": "./dist/engine-entry.js"
+    }
+  },
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --project tsconfig.build.json && node ../../scripts/stamp-dist.ts",
+    "prepublishOnly": "node ../../scripts/check-dist.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run --project integration"
+  },
+  "peerDependencies": {
+    "@e2e-dev/core": ">=0.25.1 <1",
+    "e2e": ">=0.25.1 <1",
+    "electron": "*"
+  },
+  "peerDependenciesMeta": {
+    "e2e": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@e2e-dev/core": "workspace:*",
+    "@napi-rs/image": "1.16.0",
+    "@types/node": "26.6.11",
+    "devtools-protocol": "0.0.1755318",
+    "e2e": "workspace:*",
+    "electron": "45.5.0",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
+  },
+  "engines": {
+    "node": "^22.22.3 || >=24.8.0"
+  }
+}

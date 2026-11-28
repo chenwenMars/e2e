@@ -32,14 +32,26 @@ export default {
 
 ### `defineConfig`
 
-Retorna a configuração que recebe. Use a função no lugar de `satisfies E2EConfig`.
+`defineConfig` retorna a configuração que recebe. Use a função no lugar de
+`satisfies E2EConfig` para que as opções que dependem de outras opções da
+mesma configuração sejam tipadas.
 
 ```ts title="e2e.config.ts"
 import { defineConfig } from 'e2e';
 import { web } from '@e2e-dev/web';
+import { email } from './services/email.ts';
 
 export default defineConfig({
-  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+  services: { email },
+  targets: [
+    {
+      engine: web(),
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: { executable: 'node', args: ['app/server.mjs'], env: ({ services }) => ({ PORT: '{port}', EMAIL_API_URL: services.email.url }) },
+      },
+    },
+  ],
 });
 ```
 
@@ -51,9 +63,10 @@ export default defineConfig({
   quando `defineConfig` é chamada.
 
 ```ts
-export function defineConfig<const Config extends E2EConfig>(
-  config: Config & { readonly [Key in Exclude<keyof Config, keyof E2EConfig>]: never },
-): Config;
+export function defineConfig<
+  const Config extends E2EConfig<ServiceValues<Services>>,
+  Services extends Readonly<Record<string, Service | undefined>> = {},
+>(config: Config & { readonly services?: Services } & { readonly [Key in Exclude<keyof Config, keyof E2EConfig>]: never }): Config;
 ```
 
 ### Nível superior
@@ -79,11 +92,12 @@ export function defineConfig<const Config extends E2EConfig>(
 | [`artifacts`](#artifacts) | `ArtifactsConfig` | somente local |
 | [`trace`](#trace) | `RecordingMode` | `'retain-on-failure'` |
 | [`video`](#video) | `RecordingMode` | `'off'` |
-| [`agents`](#agents) | `Record<string, AgentConfig>` | `default`, sem modelo |
+| [`agents`](#agents) | `Record<string, AgentConfig \| undefined>` | `default`, sem modelo |
 | [`filters`](#filters) | `TestFilter[]` | - |
+| [`services`](#services) | `Record<string, Service \| undefined>` | - |
 | [`cache`](#cache) | `CacheMode \| CacheConfig` | `'read-write'`, `'read-only'` na CI |
-| [`credentials`](#credentials) | `Record<string, CredentialConfig>` | - |
-| [`secrets`](#secrets) | `Record<string, SecretConfig>` | - |
+| [`credentials`](#credentials) | `Record<string, CredentialConfig \| undefined>` | - |
+| [`secrets`](#secrets) | `Record<string, SecretConfig \| undefined>` | - |
 
 A declaração completa é [`E2EConfig`](#e2econfig).
 
@@ -445,7 +459,7 @@ targets: [
 | [`identity`](#identity) | `string` | derivado do app |
 | [`environment`](#environment) | `'test' \| 'staging' \| 'production'` | `'test'` ou `'production'` |
 | [`launchArguments`](#launcharguments) | `string[] \| Record<string, LaunchArgumentValue>` | - |
-| [`permissions`](#permissions) | `Record<string, AppPermissionState> \| 'all'` | - |
+| [`permissions`](#permissions) | `Record<string, AppPermissionState \| undefined> \| 'all'` | - |
 | [`command`](#command) | `CommandConfig` | - |
 | [`readyUrl`](#readyurl) | `string` | `url` |
 
@@ -468,8 +482,7 @@ Cada engine verifica as chaves ao carregar a configuração, com um
 As grafias antigas são chaves desconhecidas e falham ao carregar a
 configuração com `INVALID_CONFIG`: `web({ url })` e as outras opções de app de
 `web()` e `mobile()`, `mobile({ app })` (agora `app.bundleId`), uma chave de
-app diretamente no alvo, `app` ou `url` no nível superior e
-[`services`](#services) em qualquer lugar.
+app diretamente no alvo e `app` ou `url` no nível superior.
 </Note>
 
 #### `url`
@@ -623,8 +636,9 @@ As permissões que o app tem, por nome.
 permissions: { camera: 'grant' },
 ```
 
-Cada uma é `'grant'`, `'deny'` ou `'reset'`. `permissions: 'all'` concede
-todas as permissões que a engine do alvo consegue conceder.
+Cada uma é `'grant'`, `'deny'` ou `'reset'`. Um valor `undefined`
+equivale a omitir a permissão. `permissions: 'all'` concede todas as
+permissões que a engine do alvo consegue conceder.
 
 - Um alvo `mobile()` define cada uma antes de toda nova inicialização. Veja
   [permissões](/reference/mobile#engine).
@@ -682,7 +696,23 @@ command: {
   valor herdado.
 - Toda entrada de `args` e todo valor de `env` é uma string. Um valor
   `undefined` em `env` é descartado.
-- `startupTimeout` é o orçamento da verificação de [`readyUrl`](#readyurl).
+- `env` pode ser uma função síncrona ou assíncrona que recebe
+  `{ services }`, os mesmos valores de [`services`](#services) disponíveis
+  nos testes (como `env: ({ services })
+  => ({ EMAIL_API_URL: services.email.url })`). A função é chamada uma vez
+  por execução, depois que os serviços iniciam e antes que qualquer comando
+  de app inicie. A função roda mesmo quando `reuseExisting` está definido e
+  um processo já está rodando. O processo que está rodando não recebe as
+  variáveis retornadas, e um aviso é impresso. Quando você usa
+  `reuseExisting`, dê portas fixas aos serviços que o app usa e inicie o app
+  com os mesmos valores.
+- `e2e mcp` chama uma função `env` uma vez por sessão, e `openHost` a chama
+  uma vez por host. Se vários alvos compartilham a mesma função, ela é
+  chamada uma vez para todos eles.
+- `{port}` se expande nos valores retornados, e esses valores são validados
+  do mesmo jeito que um objeto `env`.
+- `startupTimeout` vale tanto para a função `env` quanto para a verificação
+  de [`readyUrl`](#readyurl).
 - `shutdownTimeout` é o período de tolerância antes de forçar o encerramento.
 - Em `e2e run`, um comando que sai depois de ficar pronto faz a execução falhar com `APP_UNREACHABLE` se um alvo dependente ainda tiver trabalho pendente.
   Isso inclui o código de saída 0 e o encerramento por um sinal.
@@ -706,17 +736,19 @@ command: {
   começar, o runner usa esse processo. Ele não inicia nem encerra nada. A CI
   ignora essa opção, com um aviso, e sempre inicia o comando.
 - Alvos que declaram o mesmo comando compartilham um processo, verificado no
-  `readyUrl` do primeiro alvo que o declara.
+  `readyUrl` do primeiro alvo que o declara. Comandos com uma função `env`
+  são comparados pelas variáveis que a função retorna.
 - O runner nunca encerra um processo que ele não iniciou.
 
 | Lança | Quando |
 | --- | --- |
 | `INVALID_CONFIG` | Um `'*'` sozinho em `inheritEnv`. |
 | `INVALID_CONFIG` | Uma entrada de `args` ou um valor de `env` que não é string, incluindo um número ou uma referência de `secrets.get()`. |
+| `INVALID_CONFIG` | Uma função `env` que lança um erro sem um código de erro próprio, ou que retorna qualquer coisa que não seja um objeto de strings e valores `undefined`. |
 | `INVALID_CONFIG` | `reuseExisting` em um app cuja `url` pede a porta 0: um processo que já está rodando não consegue servir a porta que a execução atribui. |
 | `APP_URL_REQUIRED` | Um `app.command` sem `app.url` nem `app.readyUrl`, ao carregar a configuração. |
 | `APP_ALREADY_RUNNING` | Sem `reuseExisting`, um `readyUrl` que já responde. |
-| `APP_UNREACHABLE` | O comando falha ao iniciar o processo, o `log` dele não pode ser aberto, `startupTimeout` expira, o comando sai antes de ficar pronto, ou sai inesperadamente durante `e2e run`. |
+| `APP_UNREACHABLE` | O comando falha ao iniciar o processo, o `log` dele não pode ser aberto, `startupTimeout` expira, o comando sai antes de ficar pronto, sai inesperadamente durante `e2e run`, ou uma função `env` não retorna dentro de `startupTimeout`. |
 
 <Warning>
 `log` guarda a saída bruta, sem nada ocultado. Mantenha o arquivo em um
@@ -807,16 +839,6 @@ app: {
   processo.
 - A [`identity`](#identity) padrão deriva do `:0` declarado.
 - Os testes leem a URL alocada em [`app.baseUrl`](/reference/app).
-
-#### services
-
-<Note>
-Esta versão não inicia processos de dependências (um banco de dados, um mock
-de API, um servidor de desenvolvimento que vários alvos compartilham), e
-`services` é uma chave desconhecida onde quer que apareça. Inicie esses
-processos antes da execução, ou faça `app.command` iniciar um script que os
-suba e sirva o app. Uma API de serviços volta em uma versão futura.
-</Note>
 
 ### output
 
@@ -1121,14 +1143,15 @@ export default {
 | [`judge`](#judge) | `ModelInstance` | `model` |
 | [`context`](#context) | `string` | - |
 | [`system`](#system) | `string` | - |
-| [`tools`](#tools) | `Record<string, AgentTool>` | - |
+| [`tools`](#tools) | `Record<string, AgentTool \| undefined>` | - |
 | [`executor`](#executor) | `StepExecutor` | o agente embutido |
 | [`maxSteps`](#maxsteps) | `number` | `25` |
 | [`maxModelCalls`](#maxmodelcalls) | `number` | `25` |
 | [`judgmentTimeout`](#judgmenttimeout) | `number` | `30000` |
 | [`maxObservationBytes`](#maxobservationbytes) | `number` | `262144` |
 | [`maxInputTokens`](#maxinputtokens) | `number` | `64000` |
-| [`providerOptions`](#provideroptions) | `ProviderOptions` | - |
+| [`maxContextBytes`](#maxcontextbytes) | `number` | `16384` |
+| [`providerOptions`](#provideroptions) | `Record<string, ProviderOptions[string] \| undefined>` | - |
 
 - Os testes usam o agente `default`, a menos que você selecione outro: com
   `e2e run --agent <name>`, uma opção de teste ou de grupo, ou uma chamada
@@ -1139,6 +1162,7 @@ export default {
 - Toda entrada parte dos padrões embutidos. Os agentes não herdam uns dos
   outros: `ux` acima não recebe nenhum `context` de `default`. Uma chave
   omitida em uma entrada tem o valor padrão, nunca o de outra entrada.
+- Uma entrada definida como `undefined` equivale a omitir o agente.
 - Cada worker constrói os próprios agentes a partir deste módulo de
   configuração.
 - Os nomes podem conter letras ASCII, números, `_`, `-` ou `.`, e nunca são
@@ -1208,7 +1232,7 @@ faz, tanto nos turnos de act quanto nos julgamentos.
 context: 'Plans are called tiers. Billing lives under Settings.',
 ```
 
-No máximo 16384 bytes.
+No máximo [`maxContextBytes`](#maxcontextbytes).
 
 #### `system`
 
@@ -1230,7 +1254,9 @@ lado do conjunto de ferramentas embutido.
 tools: { lookupOrder },
 ```
 
-Com `executor`, é `INVALID_CONFIG`: o executor traz as próprias ferramentas.
+`tools` junto com `executor` é `INVALID_CONFIG`: o executor traz as próprias
+ferramentas. Uma entrada definida como `undefined` equivale a omitir a
+ferramenta.
 
 #### `executor`
 
@@ -1302,6 +1328,20 @@ maxInputTokens: 128_000, // default: 64000
 - De 1 a 1000000.
 - Uma tela densa é cortada para caber abaixo desse limite.
 
+#### `maxContextBytes`
+
+Bytes que [`context`](#context) pode ocupar. Um contexto mais longo faz o
+carregamento da configuração falhar.
+
+```ts
+maxContextBytes: 32_768, // default: 16384
+```
+
+- De 1024 a 65536.
+- O contexto conta para [`maxInputTokens`](#maxinputtokens) byte a byte e
+  deixa menos espaço para a tela, então aumente os dois juntos. Um contexto
+  que não deixa espaço para a tela faz o carregamento da configuração falhar.
+
 #### `providerOptions`
 
 Opções do provedor que toda chamada ao modelo leva, como um nível de esforço
@@ -1313,6 +1353,7 @@ providerOptions: { openai: { reasoningEffort: 'low' } },
 
 As chamadas à API Responses da OpenAI e do Azure OpenAI também levam
 `store: false` e uma chave de cache de prompt, a menos que você os defina aqui.
+Uma entrada definida como `undefined` equivale a omitir o provedor.
 
 #### Opções removidas
 
@@ -1326,7 +1367,8 @@ configuração falhar com `INVALID_CONFIG`:
 | `timeout` | `judgmentTimeout` |
 | `maxTurns` (na entrada ou em `createToolLoopExecutor`) | `maxModelCalls` |
 | `limits.maxModelTokensPerCall` no nível superior | `maxInputTokens` em cada agente |
-| `limits.maxAgentContextBytes`, `maxLedgerBytes`, `maxEventsPerStep` no nível superior | removidos; o runner os fixa em 16384 bytes, 8192 bytes e 1000 eventos |
+| `limits.maxAgentContextBytes` no nível superior | `maxContextBytes` em cada agente |
+| `limits.maxLedgerBytes`, `maxEventsPerStep` no nível superior | removidos; o runner os fixa em 8192 bytes e 1000 eventos |
 
 ### filters
 
@@ -1355,6 +1397,71 @@ nome de alvo, tem no máximo 256 caracteres e é único entre os `filters`.
 
 As declarações estão em [`TestFilter`](#testfilter), exportado de `e2e`.
 
+### services
+
+Dependências do app em teste (como uma API de email ou um banco de dados), por
+nome. Cada entrada é definida com `defineService`:
+
+```ts title="e2e.config.ts"
+import { defineConfig, defineService } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+const inbox = defineService({
+  startupTimeout: 180_000, // default: 60000
+  async *start({ signal }) {
+    const server = await startInbox({ signal });
+
+    yield { url: server.url };
+
+    await server.close();
+  },
+});
+
+export default defineConfig({
+  services: { inbox },
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+});
+```
+
+`start` é um gerador assíncrono. Nele, você inicia a dependência, faz yield
+uma vez com o valor que quer que os testes recebam e encerra a dependência
+depois do `yield`. O código depois do `yield` roda quando os serviços não são
+mais necessários. `{ signal }` é passado para `start`. O sinal é abortado
+quando a inicialização ou o encerramento demora demais (veja
+[`ServiceStartContext`](#service)).
+
+Em um serviço, `startupTimeout` e `shutdownTimeout` são os tempos limite em
+milissegundos para iniciar (padrão 60000) e para encerrar (padrão 10000).
+
+Ciclo de vida dos serviços:
+
+- `e2e run` e `e2e explore`: os serviços iniciam na ordem das chaves antes de
+  qualquer comando de app e são encerrados na ordem inversa depois que os
+  comandos de app são encerrados.
+- `e2e mcp`: os serviços iniciam com a primeira sessão em um arquivo de
+  configuração e são encerrados quando a última sessão nesse arquivo fecha.
+- `openHost`: os serviços iniciam quando o host abre e são encerrados em
+  `host.close()`.
+
+Se um serviço falha ao iniciar, os serviços que já iniciaram são encerrados.
+Uma entrada definida como `undefined` não inicia nada, e o valor dela nos
+testes é `undefined`.
+
+Uma instância de cada serviço é compartilhada entre todos os workers. Os
+valores ficam disponíveis nos testes pela
+[fixture `services`](/reference/test#services) e no argumento de uma
+[função `env`](#command) em `app.command`. Veja [Serviços](/services) para um
+exemplo completo.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Ao carregar a configuração, `services` não é um objeto simples, uma entrada não é um objeto simples com uma função `start`, ou uma entrada tem uma chave desconhecida. |
+| `SERVICE_START_FAILED` | `start` lança um erro, termina sem fazer yield, não é um gerador assíncrono, ou não faz yield dentro do próprio `startupTimeout`. |
+| `INVALID_SERVICE_VALUE` | O valor do yield não é um objeto simples, contém um valor que não pode ser copiado, como uma instância de uma classe personalizada, ou contém uma função dentro de um map ou de um set. Veja [O que um serviço pode entregar no yield](/services#what-a-service-can-yield). |
+| `SERVICE_STOP_FAILED` | O código depois do `yield` lança um erro, faz yield uma segunda vez, ou não termina dentro do `shutdownTimeout` do serviço. |
+
+As declarações estão em [`Service`](#service), exportado de `e2e`.
+
 ### credentials
 
 Contas nomeadas. Cada entrada é um nome de usuário e uma senha que o modelo
@@ -1377,6 +1484,8 @@ credentials: {
 - O agente, o cache de replay e os relatórios conhecem essa senha como um
   segredo chamado `<name>.password` (`<secret:admin.password>`). Assim,
   `credentials.admin` e `secrets.admin` podem existir ao mesmo tempo.
+- Uma entrada definida como `undefined` recebe o nome de usuário e a senha de
+  `E2E_USER_<NAME>_USERNAME` e `E2E_USER_<NAME>_PASSWORD`.
 
 | Lança | Quando |
 | --- | --- |
@@ -1445,7 +1554,9 @@ secrets: {
 - Um provedor roda a cada preenchimento autorizado (uma consulta a um cofre de
   segredos, um TOTP recém-calculado). O digest da configuração registra esse
   provedor só pelo nome.
-- Uma substituição por `E2E_SECRET_<NAME>` prevalece sobre os dois.
+- Uma substituição por `E2E_SECRET_<NAME>` prevalece sobre os dois. Ela é o
+  único valor de uma entrada definida como `undefined`, como
+  `process.env.STRIPE_KEY` quando a variável não está definida.
 - Toda entrada precisa resolver para uma string de pelo menos 6 caracteres
   (pontos de código) ou para uma função; qualquer outra coisa é `INVALID_CONFIG`.
   O valor de um provedor segue o mesmo mínimo no momento do preenchimento, com
@@ -1592,12 +1703,12 @@ esteja definido. Veja [Cache](/cache#commit-the-replay-cache).
 ## Limites da execução
 
 O bloco `run.limits` do relatório registra os tetos que uma execução aplicou.
-Não existe uma chave `limits`: dois campos vêm dos agentes, e o runner fixa o
+Não existe uma chave `limits`: três campos vêm dos agentes, e o runner fixa o
 resto.
 
 | Campo do relatório | Valor |
 | --- | --- |
-| `maxAgentContextBytes` | 16384: o `context` de um agente e o `agentContext` de um teste |
+| `maxAgentContextBytes` | o maior `agents.<name>.maxContextBytes` |
 | `maxLedgerBytes` | 8192: o registro dos passos anteriores que um passo act lê |
 | `maxEventsPerStep` | 1000: eventos registrados por passo |
 | `maxObservationBytes` | o maior `agents.<name>.maxObservationBytes` |
@@ -1616,9 +1727,9 @@ um segredo, e `CI` troca os padrões abaixo.
 
 | Configuração | Ordem |
 | --- | --- |
-| URL base | o `app.url` do alvo, senão `APP_URL_REQUIRED` na primeira navegação. O runner não lê nenhum `APP_URL`; a configuração gerada ao criar a estrutura do projeto lê essa variável por conta própria |
+| URL base | o `app.url` do alvo, caso contrário `APP_URL_REQUIRED` na primeira navegação. O runner não lê nenhum `APP_URL`; a configuração gerada ao criar a estrutura do projeto lê essa variável por conta própria |
 | Modelo do agente embutido | `agents.<name>.model`, depois `MODEL_UNAVAILABLE` na aquisição de `agent`; um agente nunca recorre ao modelo de `default` |
-| Modelo do executor personalizado | `agents.<name>.model`, senão o modelo que o executor trouxe; dois valores diferentes são `INVALID_CONFIG` |
+| Modelo do executor personalizado | `agents.<name>.model`, ou o modelo que o executor trouxe; dois valores diferentes são `INVALID_CONFIG` |
 | Credencial do modelo | a variável do próprio pacote do provedor ou a chave passada na construção, lida pelo provedor na primeira chamada ao modelo |
 | Nome de usuário e senha da credencial | a variável `E2E_USER_*`, depois o valor da configuração |
 
@@ -1780,12 +1891,15 @@ desses é resolvido da mesma forma que o TypeScript o resolve:
 
 ### `E2EConfig`
 
+`Services` é o tipo de `services` passado para uma função `env`, inferido
+por `defineConfig`.
+
 ```ts
-export interface E2EConfig {
+export interface E2EConfig<Services = Readonly<Record<string, unknown>>> {
   /** Stable project id, 1 through 256 characters; defaults to the root `package.json` name. */
   projectId?: string;
   /** The surfaces tests run on; required, at least one, each naming its engine. */
-  targets: readonly Target[];
+  targets: readonly Target<Services>[];
   /** Test file globs relative to the project root (`*`, `?`, and a whole `**` segment; a leading `!` excludes); default every `*.e2e.ts` under `tests/`. */
   tests?: string | readonly string[];
   /** Test attempt deadline in milliseconds; default 120000. */
@@ -1821,15 +1935,17 @@ export interface E2EConfig {
   /** Output renderers and reporter objects; default `['list']`. */
   reporters?: readonly (BuiltinReporter | Reporter)[];
   /** Named agents: the built-in agent's options, or `{ executor }` for a custom brain. */
-  agents?: Readonly<Record<string, AgentConfig>>;
+  agents?: Readonly<Record<string, AgentConfig | undefined>>;
   /** Test filters, in order, run with `--changed-since`: each judges the tests the one before it kept. */
   filters?: readonly TestFilter[];
+  /** Dependencies of the app under test, keyed by name and defined with `defineService`, started before the app commands. */
+  services?: Readonly<Record<string, Service | undefined>>;
   /** Replay cache mode or options; default `read-write`, `read-only` in CI. */
   cache?: CacheMode | CacheConfig;
   /** Named accounts: a username and a password the model never sees. */
-  credentials?: Readonly<Record<string, CredentialConfig>>;
+  credentials?: Readonly<Record<string, CredentialConfig | undefined>>;
   /** Named values the model must never see: API keys, tokens, anything sourced from the environment. */
-  secrets?: Readonly<Record<string, SecretConfig>>;
+  secrets?: Readonly<Record<string, SecretConfig | undefined>>;
 }
 ```
 
@@ -1840,7 +1956,7 @@ export interface E2EConfig {
  * One named test target: the app under test and the engine that drives it.
  * Without an engine, the target supports agent tools and `request` calls to absolute URLs.
  */
-export interface Target {
+export interface Target<Services = Readonly<Record<string, unknown>>> {
   /** Label in reports and for `--target`; defaults to the platform. */
   name?: string;
   /** Platform label; inherited from the engine when omitted. */
@@ -1848,7 +1964,7 @@ export interface Target {
   /** The engine driving the surface. */
   engine?: EngineHandle;
   /** The app under test: what it is, where it is served, and the command that starts it. */
-  app?: TargetApp;
+  app?: TargetApp<Services>;
   /** Which tests on this target keep a trace page, in place of the config's `trace`. */
   trace?: RecordingMode;
   /** Which attempts on this target record a video, in place of the config's `video`. */
@@ -1861,18 +1977,30 @@ export interface Target {
 ### `CommandConfig`
 
 ```ts
-export interface CommandConfig {
+export interface CommandConfig<Services = Readonly<Record<string, unknown>>> {
   /** Resolved with `PATH`; never shell-interpreted. */
   executable: string;
   /** Passed verbatim; `{port}` expands to the app's port. */
   args?: readonly string[];
   /** Working directory, resolved from the project root. */
   cwd?: string;
-  /** Added to the inherited set; `{port}` expands in values. */
-  env?: Readonly<Record<string, string>>;
+  /**
+   * Added to the inherited set, with `{port}` expanded in values. An `env`
+   * function is called after services start and before any app commands start.
+   * The call happens one time per run in `e2e run` and `e2e explore`, one time
+   * per session in `e2e mcp`, and one time per host in `openHost`. The function
+   * still runs when `reuseExisting` is set and a process is already running.
+   * The running process doesn't get the returned variables, and a notice is
+   * printed. The function receives the same `services` object tests get. The
+   * returned variables are validated the same way as an `env` object. Targets
+   * with the same command and the same variables share one process.
+   */
+  env?:
+    | Readonly<Record<string, string>>
+    | ((context: { readonly services: Services }) => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>);
   /** Variables copied from the runner's environment when set: exact names, or prefixes ending in `*`. */
   inheritEnv?: readonly string[];
-  /** Ready-probe budget in milliseconds; default 60000. */
+  /** Milliseconds the `env` function gets to return, and then the ready probe gets; default 60000 each. */
   startupTimeout?: number;
   /** Grace period before force-kill in milliseconds; default 10000. */
   shutdownTimeout?: number;
@@ -1882,6 +2010,62 @@ export interface CommandConfig {
   reuseExisting?: boolean;
 }
 ```
+
+### `Service`
+
+```ts
+/**
+ * A dependency of the app under test (like an email API, an OAuth provider,
+ * or a database) started before the app commands and stopped at the end of
+ * the run. One instance is shared across all workers.
+ */
+export type Service<Value extends object = object> = {
+  /**
+   * Milliseconds the service gets to yield (default 60000). When the timeout
+   * passes, the service's signal aborts and startup fails with
+   * `SERVICE_START_FAILED`.
+   */
+  startupTimeout?: number;
+  /**
+   * Milliseconds the code after `yield` gets to finish (default 10000). When
+   * the timeout passes, the signal aborts and the runner stops waiting.
+   */
+  shutdownTimeout?: number;
+  /**
+   * Starts the dependency and stops it when it's no longer needed. This async
+   * generator yields the service value once, and the config and tests receive
+   * it.
+   */
+  start(context: ServiceStartContext): AsyncGenerator<Value, void, undefined>;
+};
+
+/** Context passed to a service's `start` function. */
+export type ServiceStartContext = {
+  /**
+   * Aborts in these cases:
+   *
+   * - Startup is cancelled, or the service doesn't yield within
+   *   `startupTimeout` (60 seconds by default).
+   * - When the services are no longer needed, the code after `yield` doesn't
+   *   finish within `shutdownTimeout` (10 seconds by default).
+   * - Ctrl+C is pressed a second time in `e2e run` or `e2e explore`, either
+   *   during the tests or while services are stopping.
+   */
+  readonly signal: AbortSignal;
+};
+
+/**
+ * Returns `service` unchanged, preserving the inferred type that `start`
+ * yields for both the config and tests. A yielded value that can't be copied
+ * to tests is a type error.
+ */
+export function defineService<Value extends object>(
+  service: Service<Value> & { start(context: ServiceStartContext): AsyncGenerator<NoInfer<CopyableServiceValue<Value>>, void, undefined> },
+): Service<Value>;
+```
+
+Cada função em um valor do yield vira uma função assíncrona nos testes e nas
+funções `env` (`ServiceValue<Value>`), e qualquer outro valor é copiado.
 
 ### `ArtifactsConfig`
 
@@ -1950,7 +2134,7 @@ export interface AgentOptions {
   model?: ModelInstance;
   /** Model for `assert`, `waitFor`, and `extract`; defaults to `model`. */
   judge?: ModelInstance;
-  /** What the app calls things, told to every model call; at most 16384 bytes. */
+  /** What the app calls things, told to every model call; at most `maxContextBytes`. */
   context?: string;
   /** Committed actions per agent call, 1 through 100; default 25. */
   maxSteps?: number;
@@ -1962,8 +2146,10 @@ export interface AgentOptions {
   maxObservationBytes?: number;
   /** Input tokens per model request, 1 through 1000000; default 64000. */
   maxInputTokens?: number;
+  /** Bytes `context` may take, 1024 through 65536; default 16384. */
+  maxContextBytes?: number;
   /** Provider options every model call carries, such as a reasoning effort. */
-  providerOptions?: ProviderOptions;
+  providerOptions?: Readonly<Record<string, ProviderOptions[string] | undefined>>;
 }
 
 /** One entry of `agents`: the built-in agent with its options, or a custom brain under `executor`. */
@@ -1973,7 +2159,7 @@ export type AgentConfig = AgentOptions &
         /** How the acting agent should work, appended to the built-in rules. */
         system?: string;
         /** Project tools from `defineTool`, offered beside the built-in toolset. */
-        tools?: Readonly<Record<string, AgentTool>>;
+        tools?: Readonly<Record<string, AgentTool | undefined>>;
       }
     | {
         /** A custom brain `agent.act()` dispatches to instead of the built-in agent. */

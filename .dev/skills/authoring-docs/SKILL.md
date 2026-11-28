@@ -473,7 +473,8 @@ Each group opens with one table, one row per entry. Keep it to the minimum:
 
 `docs/<language>/<path>.mdx` translates `docs/<path>.mdx`: `docs/ja/` is
 Japanese, `docs/zh/` Simplified Chinese, `docs/cs/` Czech, `docs/es/` Spanish,
-`docs/pt/` Brazilian Portuguese, `docs/hi/` Hindi, `docs/fr/` French, `docs/pl/` Polish. Each language's
+`docs/pt/` Brazilian Portuguese, `docs/hi/` Hindi, `docs/fr/` French,
+`docs/pl/` Polish, and `docs/id/` Indonesian. Each language's
 README ([`docs/ja/README.md`](../../../docs/ja/README.md),
 [`docs/zh/README.md`](../../../docs/zh/README.md),
 [`docs/cs/README.md`](../../../docs/cs/README.md),
@@ -481,7 +482,8 @@ README ([`docs/ja/README.md`](../../../docs/ja/README.md),
 [`docs/pt/README.md`](../../../docs/pt/README.md),
 [`docs/hi/README.md`](../../../docs/hi/README.md),
 [`docs/fr/README.md`](../../../docs/fr/README.md),
-[`docs/pl/README.md`](../../../docs/pl/README.md)) has its rules, style,
+[`docs/pl/README.md`](../../../docs/pl/README.md),
+[`docs/id/README.md`](../../../docs/id/README.md)) has its rules, style,
 and glossary.
 
 Translations are best effort. English is the source of truth and every

@@ -75,14 +75,8 @@
               "web",
               "mobile",
               "desktop",
-              "api-testing",
-              "core"
-            ]
-          },
-          {
-            "group": "Frameworks",
-            "pages": [
-              "frameworks/nextjs"
+              "electron",
+              "api-testing"
             ]
           },
           {
@@ -93,7 +87,8 @@
               "visual-testing",
               "authentication",
               "bug-bash",
-              "agents"
+              "agents",
+              "core"
             ]
           },
           {
@@ -115,6 +110,12 @@
               "ci/codemagic",
               "ci/norrix",
               "github"
+            ]
+          },
+          {
+            "group": "Frameworks",
+            "pages": [
+              "frameworks/nextjs"
             ]
           },
           {
@@ -193,8 +194,7 @@
               "reference/screen",
               "reference/app",
               "reference/request",
-              "reference/agent",
-              "reference/core"
+              "reference/agent"
             ]
           },
           {
@@ -204,6 +204,7 @@
               "reference/cli",
               "reference/runner",
               "reference/mcp",
+              "reference/core",
               "reference/reporters",
               "reference/environment",
               "reference/errors",

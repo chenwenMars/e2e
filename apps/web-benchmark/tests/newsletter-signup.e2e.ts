@@ -30,10 +30,11 @@ test('subscribe renders no feedback and logs a TypeError (planted bug)', async (
   await email.fill('maria.novak@example.com');
   await screen.getByRole('button', 'Subscribe').tap();
 
-  await expect(screen.getByTestId('success-message')).not.toBeVisible();
-  await expect(screen.getByTestId('error-message')).not.toBeVisible();
-  await expect(email).toHaveValue('maria.novak@example.com');
   await expect.poll(async () => (await consoleErrors()).join('\n')).toContain(
     "Cannot read properties of undefined (reading 'subscribe')",
   );
+  // Read once the handler has run: a negation passes on the first read.
+  await expect(screen.getByTestId('success-message')).not.toBeVisible();
+  await expect(screen.getByTestId('error-message')).not.toBeVisible();
+  await expect(email).toHaveValue('maria.novak@example.com');
 });

@@ -187,7 +187,12 @@ Each `act` step includes cache details in the
 | `missed` | `missed` | Ran live from the start. |
 
 When a step misses or hands off, the trace shows the reason and which action
-stopped:
+stopped. A `truncated` recording never replays, so the default reporter
+also says so on the step's line, on every run until the step changes:
+
+```text
+   ✓ adds a note > agent.act "Add a note to the first row" 9.41s · 3 model calls · not replayed: truncated
+```
 
 | Reason | What happened | What to do |
 | --- | --- | --- |

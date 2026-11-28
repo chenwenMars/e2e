@@ -1,5 +1,6 @@
 ---
 title: "@e2e-dev/core"
+sidebarTitle: 自动化
 description: 通过普通代码操作浏览器或原生应用，可选用智能体，无需测试运行器。
 ---
 
@@ -51,7 +52,8 @@ await using shop = await launch(web(), { app: { url: 'https://shop.example.com' 
 for (const sku of ['A-1001', 'B-2040']) {
   await using session = await shop.newSession();
   await session.app.open(`/products/${sku}`);
-  if (await session.screen.getByText('Sold out', { exact: false, visible: true }).isVisible()) continue;
+  const soldOut = session.screen.getByText('Sold out', { exact: false, visible: true });
+  if (await soldOut.isVisible()) continue;
   const price = await session.screen.getByTestId('sale-price').textContent();
   console.log(sku, price);
 }
@@ -199,7 +201,8 @@ if (order.total <= 39_000) {
   try {
     await session.screen.getByRole('button', /pay now/i).tap();
   } catch (error) {
-    // A failed tap may still have reached the server: check the order list, never retry the payment.
+    // A failed tap may still have reached the server:
+    // check the order list, never retry the payment.
     console.error('check /my/orders');
     throw error;
   }

@@ -22,7 +22,7 @@ import picocolors from 'picocolors';
 import { z } from 'zod';
 import { classifyError, codedMessage, ConfigurationError, errorMessage, exitCodeForCategory } from '@e2e-dev/core/lib/internal/errors';
 import { bounded } from '../report/format.ts';
-import { printsAtEnd } from '../report/list-model.ts';
+import { printsAtEnd, stepOutcome } from '../report/list-model.ts';
 import { stepLine, stepPromptText } from '../report/list-steps.ts';
 import type { RunEventSink } from '../run/events.ts';
 import { writeTerminal } from '../run/process-output.ts';
@@ -687,8 +687,8 @@ export async function serveSteps(options: RunOptions, version: string, signals: 
    */
   const onEvent: RunEventSink = (event) => {
     if (event.type === 'step' && event.progress.phase === 'end' && !printsAtEnd(event.progress.kind)) {
-      const { api, label, kind, status, durationMs, modelCalls, error, identity } = event.progress;
-      print(stepLine(plain, { api, label, kind, actor: identity?.actor, outcome: { status, durationMs, modelCalls } }));
+      const { api, label, kind, error, identity } = event.progress;
+      print(stepLine(plain, { api, label, kind, actor: identity?.actor, outcome: stepOutcome(event.progress) }));
       if (error !== undefined) print(bounded(`${error.code}: ${error.message}`).replace(/^/gm, '  '));
     }
     return options.onEvent?.(event);

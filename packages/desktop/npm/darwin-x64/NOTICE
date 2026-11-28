@@ -1,0 +1,10 @@
+@e2e-dev/desktop-darwin-x64
+Copyright 2026 TesterArmy, Inc.
+
+This product includes software developed at TesterArmy, Inc.
+(https://e2e.com).
+
+The native driver's role and action vocabulary (crates/e2e-desktop-napi/src/roles.rs, and the
+snapshot shape src/nodes.ts reads) follows agent-desktop
+(https://github.com/vercel-labs/agent-desktop), Copyright Vercel, Inc.,
+licensed under the Apache License, Version 2.0.

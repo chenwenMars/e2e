@@ -1,0 +1,2 @@
+# The native driver a checkout builds (`pnpm build:native`), which the loader takes before the platform package.
+*.node

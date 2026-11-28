@@ -130,6 +130,43 @@ describe('agent presets', () => {
     expect(config.mcp_servers).toEqual({ playwright: { enabled: false }, executor: { enabled: false } });
   });
 
+  it('disables CODEX_FEATURES_OFF when listing Codex MCP servers so plugin servers are omitted', async () => {
+    vi.stubEnv('CODEX_PATH', undefined);
+    const directory = project(['@agentclientprotocol/codex-acp']);
+    const fakeCodex = join(directory, 'node_modules', '@openai', 'codex');
+    mkdirSync(join(fakeCodex, 'bin'), { recursive: true });
+    writeFileSync(join(fakeCodex, 'package.json'), JSON.stringify({ name: '@openai/codex', type: 'module' }));
+    const argsLog = join(directory, 'codex-args.json');
+    // Mimics Codex's `--disable <feature>` filtering: `codex_app` only exists when `plugins` stays enabled.
+    writeFileSync(
+      join(fakeCodex, 'bin', 'codex.js'),
+      `import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(argsLog)}, JSON.stringify(args));
+const disabled = new Set();
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === '--disable' && args[i + 1] !== undefined) disabled.add(args[i + 1]);
+}
+const servers = [{ name: 'playwright' }];
+if (!disabled.has('plugins')) servers.push({ name: 'codex_app' });
+process.stdout.write(JSON.stringify(servers));
+`,
+    );
+    const launch = await inProject(directory, () => codexLaunch({}))();
+    const config = JSON.parse(launch.env?.['CODEX_CONFIG'] as string) as {
+      features: Record<string, boolean>;
+      mcp_servers: Record<string, { enabled: boolean }>;
+    };
+    const recordedArgs = JSON.parse(readFileSync(argsLog, 'utf8')) as string[];
+    expect(recordedArgs.slice(0, 3)).toEqual(['mcp', 'list', '--json']);
+    for (const feature of Object.keys(config.features)) {
+      const flagIndex = recordedArgs.indexOf(feature);
+      expect(flagIndex).toBeGreaterThan(2);
+      expect(recordedArgs[flagIndex - 1]).toBe('--disable');
+    }
+    expect(config.mcp_servers).toEqual({ playwright: { enabled: false } });
+  });
+
   /** A Codex executor on the scripted agent, with a stand-in `codex` that lists no MCP servers, and the log it writes. */
   function codexProject(env: Record<string, string> = {}): { executor: StepExecutor; log: string } {
     const directory = project(['@agentclientprotocol/codex-acp']);

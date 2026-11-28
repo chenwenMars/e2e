@@ -1,0 +1,1922 @@
+---
+title: Navegador
+description: A engine de navegador, suas opções e a fixture browser que ela fornece.
+"og:image": "https://e2e.com/docs/images/og/reference/web.png?v=66fee465a4"
+"twitter:image": "https://e2e.com/docs/images/og/reference/web.png?v=66fee465a4"
+---
+
+`@e2e-dev/web` é a engine de navegador. Ela controla o Chromium, o Firefox e o
+WebKit pelo Playwright. Um alvo web a indica como engine com `web()`, e ela
+fornece a fixture embutida `browser` para o trabalho exclusivo do
+navegador.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+Importe `test` do pacote para ter `browser` tipado:
+
+```ts title="tests/orders.e2e.ts"
+import { expect } from 'e2e';
+import { test } from '@e2e-dev/web';
+
+test('orders in dark mode', async ({ app, browser, screen }) => {
+  await browser.emulateMedia({ colorScheme: 'dark' });
+  await app.open('/orders');
+  await expect(browser).toHaveURL('/orders');
+  await expect(screen.getByRole('heading', { name: 'Orders' })).toBeVisible();
+});
+```
+
+## Referência
+
+### Opções
+
+`web(options)` define como a engine controla o app. O próprio app (a `url`,
+o `environment`, a `identity` e o comando que o inicia) é o `app` do alvo,
+documentado em
+[O app em teste](/reference/config#the-app-under-test).
+
+```ts
+web({ viewport: { width: 390, height: 844 }, locale: 'de-DE' });
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| [`browser`](#browser) | `BrowserName \| BrowserProvider` | `'chromium'` |
+| [`chromiumSandbox`](#chromiumsandbox) | `boolean` | `true`, `false` no Linux |
+| [`viewport`](#viewport) | `ViewportSize \| null` | 1280 por 720 |
+| [`deviceScaleFactor`](#devicescalefactor) | `number` | `1` |
+| [`screencast`](#screencast) | `WebScreencastOptions` | o tamanho do viewport |
+| [`connect`](#connect) | `WebConnectOptions` | inicia localmente |
+| [`headers`](#headers) | `Record<string, string>` | - |
+| [`basicAuth`](#basicauth) | `WebBasicAuth` | - |
+| [`credentialOrigins`](#credentialorigins) | `string[]` | - |
+| [`testIdAttribute`](#testidattribute) | `string` | `'data-testid'` |
+| [`userAgent`](#useragent) | `string` | padrão do navegador |
+| [`locale`](#locale) | `string` | padrão do navegador |
+| [`timezoneId`](#timezoneid) | `string` | o da máquina |
+| [`colorScheme`](#media-emulation) | `'light' \| 'dark' \| 'no-preference'` | padrão do navegador |
+| [`reducedMotion`](#media-emulation) | `'reduce' \| 'no-preference'` | padrão do navegador |
+| [`initScripts`](#init-scripts) | `WebInitScript[]` | - |
+| [`webmcp`](#webmcp) | `boolean` | `false` |
+
+- Um alvo `web()` precisa de `app.url` e recusa as chaves de dispositivo
+  (`bundleId`, `appPath`, `launchArguments`). O `app.permissions` dele aceita
+  apenas `'grant'`, para nomes que o navegador do alvo concede, ou `'all'` para
+  todos; veja [`permissions`](/reference/config#permissions).
+- A declaração completa, com o JSDoc, é [`WebOptions`](#weboptions) em
+  Tipos.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Uma opção que `web()` não aceita (incluindo `url` ou qualquer outra chave do app), ou uma chave desconhecida dentro de `connect` ou `basicAuth`. A mensagem nomeia a chave conhecida mais próxima de um provável erro de digitação (`viewprt` é `viewport`), ou lista todas as chaves. |
+| `INVALID_CONFIG` | Um provedor de navegadores, `connect`, `headers` ou `basicAuth` em um alvo cujo [`app.url` é um arquivo](/reference/config#a-file-as-the-app). |
+| `INVALID_CONFIG` | `headers`, `basicAuth`, `userAgent`, `locale`, `timezoneId` ou `deviceScaleFactor` em um [contexto persistente](#recovering-a-cdp-transport) (`connect.reconnectEndpoint`, ou um provedor com `scope: 'attempt'`). |
+
+#### `browser`
+
+O navegador a iniciar, ou um provedor que reserva navegadores hospedados.
+
+```ts
+web({ browser: 'firefox' }); // default: 'chromium'
+```
+
+- `'chromium'`, `'firefox'` ou `'webkit'`.
+- Um `BrowserProvider` reserva navegadores hospedados em vez disso: um por
+  slot de worker durante a execução, ou um por tentativa
+  ([`WebOptions`](#weboptions)). A engine controla cada um como chromium por
+  CDP, seja ele o Chromium ou outro servidor CDP, como o
+  [Lightpanda](/integrations/lightpanda) ou o [Moli](/integrations/moli).
+- Um provedor com `scope: 'attempt'` usa um contexto persistente, com os
+  limites descritos em [Recuperar um transporte CDP](#recovering-a-cdp-transport).
+- [Navegadores hospedados](/browser#hosted-browsers) traz o contrato de
+  `BrowserProvider` e um provedor de exemplo.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | `browser: provider` junto com `connect`. |
+| `INVALID_CONFIG` | Um nome diferente de `'chromium'`, `'firefox'` ou `'webkit'`, ou um valor que não é nem um nome nem um provedor. |
+
+#### `chromiumSandbox`
+
+Se um Chromium iniciado localmente roda com o sandbox do sistema operacional
+ativado.
+
+```ts
+web({ chromiumSandbox: true }); // default: true on macOS and Windows, false on Linux
+```
+
+- O sandbox ajuda a conter um exploit do renderizador em uma página que o
+  agente alcança; veja [Segurança](/security).
+- No Linux, o sandbox precisa de user namespaces sem privilégios, que o root,
+  a maioria dos contêineres e o Ubuntu 23.10+ bloqueiam. Defina `true` em um
+  host que os permita.
+- Um navegador acessado por `connect` ou por um provedor é iniciado pelo
+  próprio host, e o Firefox e o WebKit não têm essa opção, então nenhum deles
+  a lê.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Qualquer valor que não seja booleano, ao carregar a configuração. |
+| `ENGINE_FAILURE` | O sandbox está ativado e não consegue iniciar neste host. |
+
+#### `viewport`
+
+O viewport inicial da página de cada tentativa.
+
+```ts
+web({ viewport: { width: 390, height: 844 } }); // default: { width: 1280, height: 720 }
+```
+
+`null` não emula nenhum tamanho, então a página preenche a janela do navegador
+([`WebOptions`](#weboptions)). [`browser.setViewport`](#setviewport) mesmo
+assim define um tamanho.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Um valor que não seja `null` nem `{ width, height }` em pixels inteiros, cada um com pelo menos 1, ou um tamanho com qualquer outra chave. |
+
+#### `deviceScaleFactor`
+
+Pixels do dispositivo por pixel CSS na página de cada tentativa, como
+`window.devicePixelRatio` o informa.
+
+```ts
+web({ deviceScaleFactor: 2 }); // default: 1
+```
+
+- As capturas de tela salvas ficam em pixels do dispositivo:
+  [`app.screenshot()`](/reference/app#screenshot), a de uma falha e a de um
+  `agent.assert`. Com 2, um viewport de 1280 por 720 gera um arquivo de 2560
+  por 1440.
+- O fator não muda a imagem que o modelo lê nem a que
+  [`toHaveScreenshot`](/reference/expect#tohavescreenshot) compara.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Um valor que não seja um número acima de 0, ou um valor ao lado de `viewport: null`. |
+
+#### `screencast`
+
+Como o screencast da própria engine grava uma tentativa que grava vídeo.
+
+```ts
+web({ screencast: { size: { width: 800, height: 450 }, quality: 60 } });
+```
+
+- `size` aceita pixels inteiros, cada lado com pelo menos 1. `quality` é um
+  inteiro.
+- Quais tentativas gravam é definido pelo modo [`video`](/reference/config#video)
+  da configuração.
+
+```ts
+/** The engine's screencast of the page: the frame size and the JPEG quality of the frames it encodes. */
+export interface WebScreencastOptions {
+  /** Frame size in pixels; default the viewport's, or the window's under `viewport: null`. A smaller size makes a smaller file. */
+  readonly size?: ViewportSize;
+  /** JPEG quality of each captured frame, 0 through 100; Playwright's default when unset. */
+  readonly quality?: number;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Qualquer outro valor de `size` ou `quality`, ou outra chave, ao carregar a configuração. A grafia antiga `web({ video })` também é recusada, com um erro que nomeia `screencast`. |
+
+#### `connect`
+
+Conecta-se a um navegador remoto por CDP em vez de iniciar um localmente.
+
+```ts
+web({ connect: { cdpEndpoint: async () => 'ws://127.0.0.1:9222' } });
+```
+
+`reconnectEndpoint` ativa um contexto persistente; veja
+[Recuperar um transporte CDP](#recovering-a-cdp-transport).
+
+Qualquer uma das duas funções pode retornar `{ endpoint, headers }` como um `CdpTarget` para autenticar o handshake do CDP. Esses cabeçalhos são separados de `web({ headers })`, que envia cabeçalhos ao app.
+
+```ts
+interface WebConnectOptions {
+  cdpEndpoint(signal: AbortSignal): string | CdpTarget | Promise<string | CdpTarget>;
+  reconnectEndpoint?(signal: AbortSignal): string | CdpTarget | Promise<string | CdpTarget>;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Um `connect` sem `cdpEndpoint`, ou com esse valor passado como string, ao carregar a configuração. Também `connect` ao lado de um provedor em `browser`. |
+
+<a id="recovering-a-cdp-transport" />
+
+##### Recuperar um transporte CDP
+
+`connect.reconnectEndpoint(signal)` ativa a recuperação do mesmo navegador
+remoto depois que o transporte CDP desse navegador se desconecta. Omita essa
+opção para manter contextos isolados.
+
+O navegador remoto:
+
+- Cada tentativa, incluindo as novas tentativas, precisa de um navegador novo
+  só dela, vindo de `cdpEndpoint`. Um único navegador de longa duração não
+  consegue atender uma suíte.
+- O navegador remoto precisa ter apenas o próprio contexto padrão.
+- O host precisa excluir o navegador quando a tentativa termina. Na limpeza,
+  a engine desfaz a própria conexão e não encerra o navegador do host.
+- A primeira página da tentativa é a primeira aba do próprio navegador,
+  navegada para `about:blank`, e não uma segunda aba ao lado da primeira. Uma
+  página aberta depois, como a que `app.restart` abre, é uma nova aba.
+
+Como a recuperação funciona:
+
+- Depois de uma desconexão, a próxima operação chama `reconnectEndpoint` uma
+  vez, dentro do tempo limite e do sinal de cancelamento dessa operação. A
+  função precisa retornar o endpoint do navegador existente.
+- A engine verifica o ID do contexto padrão persistente e o ID de target da
+  aba ativa. Ela recusa um navegador que não expõe o ID do contexto padrão.
+  Uma aba ativa ausente ou um contexto diferente faz a tentativa falhar. Uma
+  URL correspondente não seleciona uma aba substituta. As outras abas da
+  tentativa são encontradas pelos IDs de target; uma aba que sumiu é descartada.
+- A engine instala o mascaramento de campos seguros antes de publicar cada
+  binding do CDP. Uma versão incompatível do Playwright faz a conexão falhar
+  em vez de expor pixels.
+- Os frames da página original precisam manter os hooks de rastreamento de
+  shadow DOM fechado. Os shadow roots fechados existentes não se recuperam sem
+  recarregar o app. As consultas de máscara rejeitam qualquer documento não
+  rastreado.
+- A resolução do endpoint, a conexão por CDP, a preparação e o despacho
+  compartilham um único tempo limite. Cancelar uma espera concorrente não
+  cancela a operação que iniciou a recuperação. Cancelar essa operação, dona
+  da recuperação, faz a recuperação compartilhada falhar.
+
+| Lança | Quando |
+| --- | --- |
+| `ENGINE_FAILURE` | Um documento carregou sem o hook de shadow DOM fechado durante a desconexão, ou a tentativa usou [`browser.clock`](#clock), que a recuperação não consegue manter. |
+| `OPERATION_TIMEOUT` | A resolução do endpoint, a conexão, a preparação e o despacho esgotaram o tempo limite compartilhado. |
+| `CANCELLED` | Quem chamou ou a tentativa cancelou a operação. |
+
+O que sobrevive:
+
+- A recuperação mantém o estado não salvo da página, o armazenamento e o registro de passos do agente. Os handlers de diálogo e de rota são anexados de novo.
+- A gravação de vídeo é retomada. Um trecho perdido durante a desconexão não volta.
+- Operações já despachadas nunca são tentadas novamente.
+- A recuperação limpa as referências antigas a nós. Chamadas `tapAt` e
+  `doubleTapAt` derivadas de uma observação, gestos de deslizar na raiz da observação e a digitação da engine no elemento em foco precisam de uma nova
+  observação da engine antes de serem retomados.
+- Uma observação ou leitura de localizador iniciada antes da recuperação não
+  pode publicar referências depois que a conexão muda. Cada tentativa é dona
+  do próprio binding e das próprias gravações, então uma limpeza tardia não
+  consegue alterar uma tentativa posterior.
+- As fixtures determinísticas `browser.mouse` e `browser.keyboard` continuam
+  disponíveis sem uma observação do agente. O código de teste controla a
+  própria entrada e pode ler a geometria e o foco atuais com
+  `browser.evaluate` antes de agir.
+- Um código que usa `surfaceOf(engine)` precisa ler os acessores de novo
+  depois da recuperação. Os objetos do Playwright que esse código guardou
+  pertencem ao transporte desconectado.
+
+Um provedor em `browser` com `scope: 'attempt'` usa o mesmo contexto
+persistente, com os mesmos limites. O `cdpEndpoint` da reserva provisiona o
+navegador da tentativa, e o `reconnectEndpoint` da reserva (ou `cdpEndpoint`
+de novo) se reconecta a esse navegador. Uma reserva é nova pelo contrato do
+provedor, então a engine não compara o contexto da reserva com o das
+tentativas anteriores. Um serviço hospedado pode restaurar navegadores a
+partir de um snapshot, o que dá aos navegadores novos o mesmo id de contexto.
+
+Para reutilizar um login entre arquivos, mantenha contextos isolados (sem
+`reconnectEndpoint`, sem provedor com `scope: 'attempt'`) e
+[faça login uma vez em um teste de preparação](/authentication#reuse-authenticated-sessions).
+Quem leva o login é uma sessão salva, não um navegador compartilhado.
+
+<Note>
+Um contexto persistente não aceita `headers`, `basicAuth`, `userAgent`,
+`locale`, `timezoneId`, `deviceScaleFactor` (veja [Opções](#options)),
+`app.clearState`, nem
+a captura e a restauração do estado da sessão. `app.clearState` falha com
+`UNSUPPORTED_CAPABILITY`. `app.restart` continua disponível.
+</Note>
+
+#### `headers`
+
+Cabeçalhos adicionados a toda requisição que começa na origem do app: o
+esquema, o host e a porta de `app.url`. Uma requisição que começa em outra
+porta, em um subdomínio ou em qualquer outro host não recebe nenhum. Um
+redirecionamento mantém os cabeçalhos com que a requisição começou, para
+qualquer origem.
+
+```ts
+web({ headers: { 'x-preview-token': process.env.PREVIEW_TOKEN ?? '' } });
+```
+
+- Uma requisição [continuada](#route) com destino a uma origem permitida
+  continua levando esses cabeçalhos.
+- `headers` e `basicAuth` são a forma de um teste acessar um
+  [preview protegido](/web#protected-previews).
+- Veja [credenciais de requisição](/reference/security#request-credentials).
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Uma entrada `user-agent` ao lado de [`userAgent`](#useragent), ou uma entrada `accept-language` ao lado de [`locale`](#locale). |
+
+<Note>
+`headers` ativa o roteamento de requisições, o que desativa o cache HTTP do
+navegador e bloqueia service workers.
+</Note>
+
+#### `basicAuth`
+
+Autenticação HTTP básica. O navegador responde a um desafio `401` da origem do
+app com essas credenciais. Um desafio de qualquer outra origem fica sem
+resposta, a menos que [`credentialOrigins`](#credentialorigins) liste essa
+origem.
+
+```ts
+import { secrets } from 'e2e';
+
+web({ basicAuth: { username: 'staging', password: secrets.get('staging-password') } });
+```
+
+Uma senha de `secrets.get(name)` é resolvida quando cada tentativa começa e é
+ocultada como qualquer segredo configurado. O mesmo vale para a credencial
+base64 do cabeçalho `Authorization` em que essa senha se transforma.
+
+```ts
+/** HTTP basic authentication the browser answers a `401` challenge from the app's origin with. */
+export interface WebBasicAuth {
+  /** The user name; `:` is not allowed in one (RFC 7617). */
+  readonly username: string;
+  /** The password, or `secrets.get(name)` for one in `config.secrets`. */
+  readonly password: string | Secret;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Um `:` no nome de usuário, ou uma chave desconhecida. |
+
+<Note>
+O WebKit não consegue restringir uma credencial a uma origem na porta padrão
+do esquema (`https://staging.example.com`) nem com um host IPv6. Quando a
+origem do app ou uma em `credentialOrigins` é uma origem assim, o WebKit
+responde a um `401` de qualquer origem, como o Playwright faz por padrão.
+</Note>
+
+<Warning>
+A proteção do segredo vale só para texto. Uma página que renderiza a senha na
+tela não é mascarada nas capturas de tela nem nos pixels do modelo
+([Regras de segurança](/reference/security#secrets-in-engine-options)).
+</Warning>
+
+#### `credentialOrigins`
+
+Outras origens que recebem [`headers`](#headers) e
+[`basicAuth`](#basicauth), além da origem do próprio app, como uma API em
+outro host atrás da mesma proteção.
+
+```ts
+web({
+  headers: { 'x-preview-token': process.env.PREVIEW_TOKEN ?? '' },
+  credentialOrigins: ['https://api.staging.example.com'],
+});
+```
+
+Liste cada origem exatamente. Um `*` no host e a porta `0` não correspondem a
+nenhuma requisição.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Sem `headers` nem `basicAuth`, uma entrada que não é uma origem `http:` ou `https:` sem caminho, query string ou fragmento, um `*` no host, ou a porta `0`. |
+
+#### `testIdAttribute`
+
+O atributo que carrega o test id de um elemento: o que a consulta `testId`
+(`screen.getByTestId`) resolve e o que `SemanticNode.testId` informa.
+
+```ts
+web({ testIdAttribute: 'data-test' }); // default: 'data-testid'
+```
+
+#### `userAgent`
+
+O `User-Agent` que o contexto de cada tentativa envia e que
+`navigator.userAgent` informa, para um app que entra em um modo de teste ao
+encontrar um marcador na string de user agent.
+
+```ts
+web({ userAgent: 'Mozilla/5.0 e2e' }); // default: the browser's own
+```
+
+#### `locale`
+
+A localidade do contexto de cada tentativa, uma tag BCP 47: o que
+`navigator.language`, a formatação de `Intl` e o cabeçalho `Accept-Language`
+informam.
+
+```ts
+web({ locale: 'de-DE' }); // default: the browser's own
+```
+
+#### `timezoneId`
+
+O fuso horário IANA do contexto de cada tentativa: o fuso em relação ao qual
+`Date` e `Intl` resolvem a hora local.
+
+```ts
+web({ timezoneId: 'Europe/Berlin' }); // default: the machine's
+```
+
+#### Emulação de mídia
+
+`web({ colorScheme, reducedMotion })` define os recursos de mídia que toda
+página de toda tentativa informa, como fazem as opções de contexto do
+Playwright com os mesmos nomes. `browser.emulateMedia(media)` os muda em uma
+tentativa.
+
+```ts
+web({ colorScheme: 'dark', reducedMotion: 'reduce' }); // default: the browser's own
+await browser.emulateMedia({ colorScheme: 'light' });
+```
+
+- As regras `@media` da página e `matchMedia` os leem desde a primeira pintura.
+- Um contexto persistente também aceita as opções: a engine as define em cada
+  página que abre.
+- `emulateMedia` vale pelo resto da tentativa, em todas as abas abertas e nas
+  que abrirem depois, inclusive depois de `app.restart()` e `app.clearState()`.
+- Funciona antes da primeira navegação, então o próximo `app.open` já carrega
+  com esses valores.
+- Um recurso que a chamada omite mantém o valor atual.
+- Uma aba que o próprio app abre recebe a mudança de um teste assim que
+  aparece, também em um contexto persistente, então um script que essa aba
+  roda no carregamento pode acabar lendo os valores configurados.
+
+```ts
+/** User preferences a page reads through `@media` rules and `matchMedia`. */
+export interface WebMedia {
+  /** `prefers-color-scheme`. */
+  readonly colorScheme?: 'light' | 'dark' | 'no-preference';
+  /** `prefers-reduced-motion`. */
+  readonly reducedMotion?: 'reduce' | 'no-preference';
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Um recurso ou valor fora de `WebMedia`, em `web()`. |
+| `INVALID_ARGUMENT` | Um recurso ou valor fora de `WebMedia`, em `emulateMedia`. |
+
+#### Scripts de inicialização
+
+Um script de inicialização roda em todo documento antes dos scripts da própria
+página, em toda aba e todo frame. `web({ initScripts })` vale para todo teste;
+`browser.addInitScript` adiciona um pelo resto do teste.
+
+```ts
+await browser.addInitScript((value) => { Math.random = () => value; }, 0.5);
+await app.open('/raffle');
+```
+
+- Uma função não pode capturar variáveis do teste. Passe um `arg` JSON em vez
+  disso.
+- Um script adicionado depois que a página abriu roda a partir da próxima
+  navegação ou recarga.
+- `browser.addInitScript` aceita as mesmas três formas, ou uma função com o
+  próprio `arg` JSON. As sobrecargas estão em [`Browser`](#browser-interface).
+
+```ts
+/** JavaScript source, a file relative to the project root, or a function. */
+export type WebInitScript = string | { readonly path: string } | (() => unknown);
+```
+
+### A fixture browser
+
+`browser` é o navegador inteiro, mostrando uma aba ativa.
+
+- O que lê ou age sobre uma página age na aba ativa: `goto`, `reload`,
+  `back`, `forward`, `url`, `title`, `waitForURL`, `locator`, `frameLocator`,
+  `evaluate`, `waitForResponse`, `waitForRequest`, `waitForDownload`,
+  `keyboard`, `mouse`, os matchers de `expect(browser)` e toda consulta de
+  `screen`.
+- O que pertence ao navegador cobre todas as abas: `cookies`, `setCookies`,
+  `clearCookies`, `route`, `unroute`, `unrouteAll`, `onDialog`,
+  `addInitScript` e [`clock`](#clock).
+- `setViewport` dimensiona a aba ativa e toda aba aberta depois da chamada.
+- [`emulateMedia`](#media-emulation) muda a mídia em todas as abas abertas e
+  futuras.
+- [`setNetwork`](#setnetwork) deixa offline toda aba e todo service worker.
+- Uma aba que o app abre, por um link `target="_blank"` ou por `window.open`,
+  abre em segundo plano: a aba ativa fica onde estava até que `waitForPopup`
+  ou `activate` torne outra aba ativa. Veja [Abas](#tabs).
+- Toda chamada de `browser` é um passo `browser.<method>` registrado, exceto
+  `locator` e `frameLocator`. Esses dois constroem um localizador sem tocar na
+  página, e o passo é a ação ou a asserção sobre o localizador.
+- Uma URL relativa é resolvida em relação ao `app.url` do alvo; sem ele, o
+  erro é `APP_URL_REQUIRED`.
+- Declare `platforms: ['web']` em uma suíte que também roda em outras
+  plataformas.
+- `expect(browser)` retorna o `BrowserExpectation` que a engine anexa:
+  `toHaveURL`, `toHaveTitle` e `toHaveClass`. Veja os
+  [matchers de navegador](/reference/expect#browser-matchers).
+
+| Membro | Retorna |
+| --- | --- |
+| [`name`](#name-version) | `BrowserName` |
+| [`version`](#name-version) | `string` |
+| [`goto`](#goto) | `Promise<void>` |
+| [`reload`](#reload-back-forward) | `Promise<void>` |
+| [`back`](#reload-back-forward) | `Promise<void>` |
+| [`forward`](#reload-back-forward) | `Promise<void>` |
+| [`url`](#url-title) | `Promise<string>` |
+| [`title`](#url-title) | `Promise<string>` |
+| [`waitForURL`](#waitforurl) | `Promise<void>` |
+| [`locator`](#locator) | `Locator` |
+| [`frameLocator`](#framelocator) | `FrameScreen` |
+| [`evaluate`](#evaluate) | `Promise<T>` |
+| [`addInitScript`](#init-scripts) | `Promise<void>` |
+| [`route`](#route) | `Promise<void>` |
+| [`unroute`](#unroute) | `Promise<void>` |
+| [`unrouteAll`](#unrouteall) | `Promise<void>` |
+| [`waitForResponse`](#waitforresponse) | `Promise<PageResponse>` |
+| [`waitForRequest`](#waitforrequest) | `Promise<WebRequest>` |
+| [`cookies`](#cookies) | `Promise<Cookie[]>` |
+| [`setCookies`](#setcookies) | `Promise<void>` |
+| [`clearCookies`](#clearcookies) | `Promise<void>` |
+| [`setViewport`](#setviewport) | `Promise<void>` |
+| [`emulateMedia`](#media-emulation) | `Promise<void>` |
+| [`setNetwork`](#setnetwork) | `Promise<void>` |
+| [`onDialog`](#ondialog) | `Promise<() => Promise<void>>` |
+| [`tabs`](#tabs) | `readonly BrowserTab[]` |
+| [`waitForPopup`](#tabs) | `Promise<BrowserTab>` |
+| [`newTab`](#tabs) | `Promise<BrowserTab>` |
+| [`waitForDownload`](#waitfordownload) | `Promise<{ path, absolutePath, … }>` |
+| [`waitForDownloads`](#waitfordownloads) | `Promise<{ path, absolutePath, … }[]>` |
+| [`keyboard`](#keyboard) | `{ press, down, up, type }` |
+| [`mouse`](#mouse) | `{ move, wheel, down, up }` |
+| [`webmcp`](#webmcp) | `{ tools, callTool }` |
+| [`clock`](#clock) | `BrowserClock` |
+
+A [configuração](/reference/config) define o orçamento de cada membro:
+
+- `goto`, `reload`, `back` e `forward`: [`timeout`](/reference/config#timeout),
+  o mesmo orçamento que `app.open()` usa.
+- `waitForURL`: [`assertionTimeout`](/reference/config#assertiontimeout).
+- Todos os outros membros: [`actionTimeout`](/reference/config#actiontimeout).
+  `name`, `version`, `locator` e `frameLocator` não tocam em nenhuma página e
+  não têm orçamento.
+
+Uma opção `{ timeout }` substitui o orçamento em `goto`, `reload`, `back`,
+`forward`, `waitForResponse`, `waitForRequest`, `waitForPopup`, `waitForDownload` e `waitForDownloads`, limitada
+pelo prazo do teste (`cleanupTimeout` em `afterEach`); `0` espera até esse prazo. `url`, `title`, `evaluate`, `addInitScript`, `route`,
+`unroute`, `unrouteAll`, `cookies`, `setCookies`, `clearCookies`, `setViewport`,
+`emulateMedia`, `setNetwork`, `onDialog`, `newTab`, os métodos de `BrowserTab`, `keyboard.*`, `mouse.*`, `webmcp.*` e `clock.*` não aceitam substituição.
+
+#### `name`, `version`
+
+O navegador em que o teste roda e a versão que esse navegador informa.
+
+```ts
+test('exports a PDF', async ({ app, browser }) => {
+  test.skip(browser.name !== 'chromium', 'PDF export is Chromium only');
+  console.log(browser.version); // 159.0.8154.6
+  await app.open('/invoice');
+});
+```
+
+- `name` é `'chromium'`, `'firefox'` ou `'webkit'`, o valor da opção
+  [`browser`](#browser).
+- Um navegador conectado com [`connect`](#connect) ou reservado de um provedor
+  é sempre `'chromium'`, porque a engine o controla por CDP. Isso vale para o
+  Chrome e o Edge, e para um servidor CDP que não é Chromium, como o
+  [Lightpanda](/integrations/lightpanda).
+- `version` é lido do navegador em execução. Para um navegador conectado ou
+  hospedado, é o que o endpoint CDP desse navegador informa. A opção
+  [`userAgent`](#useragent) não muda esse valor.
+- Os dois são propriedades, não passos, e podem ser lidos antes da primeira
+  navegação.
+- Para o sistema operacional, use `process.platform` quando o navegador roda
+  na máquina do runner. Para um navegador hospedado, leia `navigator.platform`
+  com [`evaluate`](#evaluate).
+- Para distinguir o Chrome do Edge, leia `navigator.userAgentData.brands` com
+  [`evaluate`](#evaluate). O Chromium só expõe esse valor em um contexto seguro: uma página HTTPS, de loopback ou `file:`.
+
+#### `goto`
+
+Navega a aba ativa para uma URL.
+
+```ts
+await browser.goto('/dashboard', { waitUntil: 'networkidle' }); // default: 'load'
+```
+
+`waitUntil` é `'load'`, `'domcontentloaded'` ou `'networkidle'`.
+
+| Lança | Quando |
+| --- | --- |
+| `POLICY_DENIED` | Uma URL cujo esquema não é `http:` nem `https:`. `about:blank` é aceito. Em um alvo cujo [`app.url` é um arquivo](/reference/config#a-file-as-the-app), uma URL `file:` fora do diretório desse arquivo, ou de um diretório. |
+| `APP_URL_REQUIRED` | Uma URL relativa, em um alvo que não declara `app.url`. |
+| `ACTION_FAILED` | A navegação falhou. |
+
+#### `reload`, `back`, `forward`
+
+`reload` recarrega o documento atual. `back` e `forward` navegam uma vez pelo
+histórico do navegador. Os três esperam o carregamento do documento. Uma restauração do back/forward cache pode reutilizar um documento já carregado.
+Use localizadores e asserções para esperar o conteúdo do app.
+
+```ts
+await browser.reload();
+await browser.back({ timeout: 10_000 });
+```
+
+| Lança | Quando |
+| --- | --- |
+| `ACTION_FAILED` | A navegação falhou. |
+
+#### `url`, `title`
+
+Retornam a URL e o título atuais da aba ativa.
+
+```ts
+const url = await browser.url();
+const title = await browser.title();
+```
+
+#### `waitForURL`
+
+Espera até que a URL atual corresponda. Lê a URL em 0, 20 e 50 ms, depois a
+cada 100 ms contados desde o início, o mesmo polling de
+`expect(browser).toHaveURL`.
+
+```ts
+await browser.waitForURL('**/checkout');
+await browser.waitForURL(/\/orders\/\d+$/, { timeout: 15_000 });
+```
+
+- Uma string é um glob, lido como o Playwright lê um glob de URL: `*`
+  corresponde dentro de um segmento do caminho, `**` atravessa `/`, `{a,b}`
+  corresponde a qualquer um dos dois, e `\` escapa o próximo caractere. `?` é
+  literal, então uma query string é lida como escrita, e uma string sem curinga
+  corresponde exatamente àquela URL. Um glob é resolvido em relação à URL base,
+  a menos que comece com `*` ou seja uma URL absoluta, como
+  `https://x.test/**` ou `about:blank`, e o esquema e o host de um glob
+  resolvido correspondem sem diferenciar maiúsculas de minúsculas. Texto não ASCII e
+  espaços no caminho e na query string de um glob correspondem à URL como o navegador a codifica. A string vazia
+  corresponde a qualquer URL.
+- `expect(browser).toHaveURL` lê `*` e `{` literalmente, como o do Playwright;
+  [`route`](#route), `unroute`, `waitForResponse` e `waitForRequest` leem os
+  mesmos globs que esta espera.
+- Uma `RegExp` testa a URL inteira.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um padrão que não é string nem `RegExp` (uma função predicado, por exemplo), um glob que aninha um `{` ou deixa um `{` ou `}` sem par, ou uma opção diferente de `timeout`, como o `waitUntil` do Playwright. |
+| `ASSERTION_FAILED` | A URL não correspondeu antes do tempo limite. |
+| `APP_URL_REQUIRED` | Um padrão relativo em um alvo sem `app.url`. |
+
+#### `locator`
+
+Cria um localizador exclusivo da web a partir de um seletor do Playwright.
+
+```ts
+const conditions = browser.locator(
+  '[data-testid="row"] >> nth=2 >> [data-testid="conditions"] > div',
+);
+```
+
+- O seletor é CSS por padrão, XPath com `xpath=` ou um `//` no início, e
+  aceita cadeias `>>`, então o exemplo restringe o CSS a uma linha.
+- Use `filter({ has })` para um elemento que contém outro.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_LOCATOR` | Um seletor vazio, ou uma captura `*` antes da última parte (`*css=article >> text=Hello`). |
+
+<Note>
+Toda consulta de `screen` busca no próprio escopo e em cada shadow root
+fechado que a página anexou sob esse escopo, com a correspondência de papel,
+nome, texto, rótulo e atributo do próprio Playwright, e cada nó é encontrado
+uma vez. Um controle que a árvore observada lista dentro de um root fechado é
+resolvido e aceita ações e leituras. `locator`, `frameLocator` e
+`filter({ hasText })` mantêm o alcance do Playwright e não passam de um root
+fechado; o [guia do navegador](/browser#shadow-dom) tem os detalhes.
+</Note>
+
+#### `frameLocator`
+
+Cria um escopo de consultas de tela dentro de um iframe.
+
+```ts
+const payment = browser.frameLocator('#payment-frame');
+await payment.getByLabel('Card number').fill('4242424242424242');
+```
+
+Retorna um `FrameScreen`, um `Screen` cujas consultas respondem de dentro do
+frame. Use o `locator` do frame só quando o controle não tem nome acessível,
+rótulo, placeholder nem test id. O
+[guia do navegador](/browser#reach-into-an-iframe) mostra quando isso se aplica.
+
+```ts
+export interface FrameScreen extends Screen {
+  /** Creates a web-only CSS or XPath locator inside this frame. */
+  locator(selector: string): Locator;
+  /** Creates a screen query scope inside an iframe nested in this frame. */
+  frameLocator(selector: string): FrameScreen;
+}
+```
+
+Os erros são os mesmos na página e dentro de um frame:
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_LOCATOR` | Um seletor vazio, aqui ou no `locator` do frame. |
+| `LOCATOR_NOT_FOUND` | Nenhum frame corresponde. |
+| `LOCATOR_AMBIGUOUS` | Vários frames correspondem. |
+
+#### `evaluate`
+
+Avalia código de teste confiável na página e retorna o resultado.
+
+```ts
+const count = await browser.evaluate(() => document.querySelectorAll('li').length);
+const flag = await browser.evaluate(
+  (name: string) => window.localStorage.getItem(name),
+  'featureFlags',
+);
+const title = await browser.evaluate<string>('document.title');
+```
+
+- A função roda na página e não consegue acessar variáveis do teste. O e2e a
+  serializa pelo código-fonte e a insere na página, então ela não pode
+  capturar nada de fora do próprio corpo. Funções auxiliares declaradas
+  dentro do corpo funcionam. Passe valores externos por `arg`.
+- Uma string é avaliada como uma única expressão, não como instruções. Se a
+  expressão resultar em uma função, essa função é chamada com `arg`; caso
+  contrário, o valor da expressão é o resultado.
+- Uma promise, vinda de qualquer uma das duas formas, é aguardada.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | `arg` ou o valor de retorno não é um [`JsonValue`](#jsonvalue). Uma instância de classe, como um `DOMRect` ou um elemento, não é: retorne `rect.toJSON()` ou os campos de que você precisa. |
+| `EVALUATE_FAILED` | O código avaliado lançou um erro, ou a página substituiu um objeto nativo do JavaScript, como `Map`, de que a engine precisa. O erro traz a mensagem. |
+| `ACTION_FAILED` | O Playwright atingiu o tempo limite. |
+| `ENGINE_FAILURE` | A página fechou ou o contexto foi perdido. |
+
+#### `route`
+
+Adiciona uma rota de rede com escopo de tentativa.
+
+```ts
+await browser.route('**/api/quote', async (route) => {
+  await route.fulfill({ json: { cents: 4200 } });
+});
+
+await browser.route({ method: 'POST', url: '**/api/orders' }, async (route) => {
+  await route.fulfill({ json: { id: 7 } });
+});
+```
+
+`route.fetch()` retorna a resposta do upstream,
+`{ url, status, headers, body(), text(), json() }`, com os cabeçalhos configurados
+quando a origem da requisição os recebe, dentro do tempo limite de ação e sem
+decidir a rota. A busca não segue redirecionamentos, que poderiam levá-la a
+contornar a regra de navegação.
+
+- O padrão é uma string ou uma `RegExp`, lida como [`waitForURL`](#waitforurl)
+  lê um padrão: uma string é um glob na gramática do Playwright (`?` literal,
+  `{a,b}` uma ou outra) resolvido em relação à URL base, então uma string sem
+  curinga é uma URL exata. `unroute`, `waitForResponse` e `waitForRequest`
+  aceitam os mesmos padrões.
+- `{ method, url }` também restringe o padrão a um método HTTP. `method` não
+  diferencia maiúsculas de minúsculas, `url` mantém a gramática de string ou
+  `RegExp` acima, e `unroute`, `waitForResponse` e `waitForRequest` aceitam a
+  mesma forma.
+- Uma rota cujo método não corresponde cede a vez às rotas registradas antes
+  dela e depois à rede, como se a URL da rota não tivesse correspondido.
+- Um padrão com método corresponde exatamente a esse método: uma rota `GET` não
+  responde a `HEAD`.
+- Uma rota sobrevive a `app.restart()`, `app.clearState()` e à restauração de
+  sessão.
+- As rotas rodam da mais nova para a mais antiga.
+- O handler precisa decidir exatamente uma vez, com `fulfill`, `continue`,
+  `fallback` ou `abort`, cada um descrito em `WebRoute` abaixo.
+- Uma URL de `continue` passa pela mesma regra de `goto`. Um cabeçalho de `continue`
+  definido como `undefined` é descartado, também nos redirecionamentos.
+- Um corpo de `fulfill` é uma string ou bytes (`Buffer`, `Uint8Array`), enviado
+  como está.
+- Para definir vários cookies, junte-os com `\n` em um único cabeçalho
+  `set-cookie`, como os cabeçalhos de `route.fetch()` os informam. Qualquer outra
+  quebra de linha em um cabeçalho é recusada.
+- Um handler que lança um erro (uma falha de `expect` sobre a requisição, por
+  exemplo) faz o próximo passo falhar com esse erro ou, quando nenhum passo vem
+  depois, faz a tentativa falhar no final. Um passo que o handler fez falhar,
+  como o `goto` cuja requisição ele deixou abortada, falha com o erro do
+  handler. Um `goto` cuja requisição um handler abortou de propósito falha com
+  `ACTION_FAILED`.
+  Um handler que ainda estiver rodando recebe então o orçamento de limpeza para
+  terminar. O que ele lançar depois do fim desse orçamento é descartado.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um padrão que não é uma string, uma `RegExp` ou `{ method, url }`; um glob que aninha um `{` ou deixa um `{` ou `}` sem par; um padrão `{ method, url }` com uma chave faltando ou sobrando, um método que não é um método HTTP, ou uma `url` que não é uma string ou `RegExp`. À parte, uma opção que uma decisão não aceita (o `abort(errorCode)` do Playwright, uma chave com erro de digitação como `bodyy`) aborta a requisição e faz o próximo passo falhar. |
+| `APP_URL_REQUIRED` | Um padrão relativo em um alvo sem `app.url`. |
+| `ACTION_FAILED` | O handler decidiu duas vezes ou nenhuma. |
+| `POLICY_DENIED` | Uma URL de `continue` com um esquema proibido. |
+| `CLEANUP_TIMEOUT` | Um handler passou do orçamento de limpeza. Isso faz a tentativa falhar. |
+
+```ts
+/**
+ * One of `json`, `body`, or `path`, or none for an empty body. `path` names a
+ * file relative to the project root; its `Content-Type` follows its
+ * extension unless `contentType` or a `content-type` header sets one.
+ */
+export type RouteFulfillResponse = {
+  status?: number;
+  /** Response headers; `set-cookie` may join several cookies with `\n`, as `route.fetch()` reports them. */
+  headers?: Record<string, string>;
+  /** Sets the `Content-Type` response header. */
+  contentType?: string;
+} & (
+  | { json: JsonValue; body?: never; path?: never }
+  | { body: string | Uint8Array; json?: never; path?: never }
+  | { path: string; json?: never; body?: never }
+  | { body?: never; json?: never; path?: never }
+);
+
+/** What `continue` changes about the request before it goes to the network. */
+export interface RouteContinueOverrides {
+  /** Resolved against the base URL like `goto`; must keep the request's scheme. */
+  url?: string;
+  /** Request method. */
+  method?: string;
+  /** Replaces every request header; `undefined` drops one, and the configured `headers` for an allowed origin are added on top. */
+  headers?: Record<string, string | undefined>;
+  /** Request body. */
+  postData?: string;
+}
+
+/** A URL pattern narrowed to one HTTP method. */
+export interface RouteMatcher {
+  /** The HTTP method to match, case-insensitive: `'POST'` and `'post'` are the same. */
+  readonly method: string;
+  /**
+   * The URL pattern: a string using the same grammar as a plain `route`
+   * pattern, or a `RegExp`. `route`, `waitForResponse`, and `waitForRequest`
+   * match requests against it; `unroute` compares it structurally.
+   */
+  readonly url: string | RegExp;
+}
+
+/** A request the page made: what a route handler reads as `route.request` and `waitForRequest` returns. */
+export interface WebRequest {
+  /** Request URL. */
+  readonly url: string;
+  /** HTTP method, as the page sent it. */
+  readonly method: string;
+  /**
+   * Request headers, lower-cased names. The cookie headers the browser adds
+   * on its own are there only when a route intercepts the request, so always
+   * in `route.request`.
+   */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Request body as text; absent when the request has none. */
+  readonly postData?: string;
+}
+
+export interface WebRoute {
+  /** The intercepted request. */
+  readonly request: WebRequest;
+  /** Reads upstream without deciding the route or following redirects. */
+  fetch(): Promise<WebResponse>;
+  /** Fulfills the intercepted request once. */
+  fulfill(response: RouteFulfillResponse): Promise<void>;
+  /** Sends the intercepted request to the network once, skipping every other route. */
+  continue(overrides?: RouteContinueOverrides): Promise<void>;
+  /** Hands the intercepted request to the route registered before this one, or the network when none matches. */
+  fallback(): Promise<void>;
+  /** Aborts the intercepted request once. */
+  abort(): Promise<void>;
+}
+```
+
+#### `unroute`
+
+Remove as rotas registradas com o mesmo padrão: a mesma string, a mesma fonte
+e as mesmas flags da `RegExp`, ou o mesmo método e a mesma URL. Compara os
+padrões em vez de testá-los contra URLs, então `unroute('**/api/*')` não remove
+uma rota registrada para `'**/api/orders'`.
+
+```ts
+await browser.unroute('**/api/quote');
+await browser.unroute({ method: 'POST', url: '**/api/orders' });
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um padrão que não é uma string, uma `RegExp` ou `{ method, url }`; um padrão `{ method, url }` com uma chave faltando ou sobrando, um método que não é um método HTTP, ou uma `url` que não é uma string ou `RegExp`. |
+
+#### `unrouteAll`
+
+Remove todas as rotas registradas pela fixture browser, mantendo os cabeçalhos
+configurados.
+
+```ts
+await browser.unrouteAll();
+```
+
+#### `waitForResponse`
+
+Espera na aba ativa uma resposta que corresponda a um padrão de [`route`](#route)
+ou a um predicado.
+
+```ts
+const [created] = await Promise.all([
+  browser.waitForResponse({ method: 'POST', url: '**/api/orders' }),
+  screen.getByRole('button', 'Place order').tap(),
+]);
+expect(created.status).toBe(201);
+
+const [ready] = await Promise.all([
+  browser.waitForResponse(
+    async (response) =>
+      response.url.endsWith('/api/jobs/42') &&
+      response.status === 200 &&
+      (await response.json<{ state: string }>()).state === 'done',
+    { timeout: 15_000 }, // default: actionTimeout
+  ),
+  screen.getByRole('button', 'Run job').tap(),
+]);
+expect(ready.request.method).toBe('GET');
+```
+
+- Inicie a espera antes da ação que dispara a requisição, normalmente em
+  `Promise.all`. Ela também funciona antes do primeiro `browser.goto` ou
+  `app.open`.
+- Passe uma string de glob de URL, uma `RegExp`, `{ method, url }` ou uma função
+  predicado. Os padrões seguem as mesmas regras de [`route`](#route).
+- Um predicado roda uma vez por resposta, com um `PageResponse`, e retorna
+  `boolean | Promise<boolean>`. Em tempo de execução, qualquer valor truthy
+  corresponde. Predicados assíncronos podem rodar ao mesmo tempo em várias
+  respostas, e o primeiro a corresponder prevalece, como no Playwright.
+- Se um predicado lança um erro ou rejeita, o passo falha com esse erro sem
+  alteração. Um erro do e2e mantém seu código, então um `expect` que falha lança
+  `ASSERTION_FAILED` e um corpo ilegível lança `ACTION_FAILED`. Qualquer outro
+  erro lançado falha com `ERROR`.
+- Com um padrão, ou com um predicado que não lê o corpo, a espera resolve assim
+  que os cabeçalhos da resposta chegam.
+- Dentro de um predicado, `body()`, `text()` e `json()` compartilham o tempo
+  limite da espera. Um corpo que a página nunca termina de ler, como um stream
+  ou uma resposta não encerrada, pode segurar o predicado até o tempo limite,
+  como no Playwright. Quando a espera termina, o e2e cancela as leituras de
+  corpo ainda pendentes nas respostas que ela deixou passar.
+- No `PageResponse` retornado, `body()`, `text()` e `json()` usam cada um
+  `config.actionTimeout`, limitado pelo prazo do teste.
+- `url`, `status`, `headers` e `request` são propriedades, não métodos, e
+  sempre podem ser lidas sem esperar o corpo. Só `body()`, `text()`
+  e `json()` são métodos.
+- Com um corpo vazio, `body()` retorna um `Buffer` vazio, `text()` retorna `''`
+  e `json()` rejeita.
+- Os traces rotulam o passo com o padrão, ou com `predicate` para uma função.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um padrão que não é uma string, uma `RegExp`, `{ method, url }` ou uma função; um glob que aninha um `{` ou deixa um `{` ou `}` sem par; um padrão `{ method, url }` com uma chave faltando ou sobrando, um método que não é um método HTTP, ou uma `url` que não é uma string ou `RegExp`; uma opção diferente de `timeout`, como o `signal` do Playwright. |
+| `APP_URL_REQUIRED` | Um padrão relativo em um alvo sem `app.url`. |
+| `ACTION_FAILED` | Nenhuma resposta corresponde antes do tempo limite. De `body()`, `text()` ou `json()`: um corpo que não termina dentro do orçamento desses métodos, ou um corpo que o navegador não consegue ler, como uma conexão cortada antes do `Content-Length`, uma requisição abortada ou um redirecionamento cujo corpo o navegador nunca guarda, em vez de retornar uma string vazia. |
+
+```ts
+/**
+ * An HTTP response: what `request` calls, the web engine's
+ * `browser.waitForResponse`, and `route.fetch()` return.
+ */
+export interface WebResponse {
+  /** Response URL. */
+  readonly url: string;
+  /** HTTP status. */
+  readonly status: number;
+  /** Response headers, lower-cased names; `request` and `route.fetch()` join several `set-cookie` values with `\n`, `waitForResponse` leaves cookie headers out. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Waits for the body and returns its bytes; rejects with `ACTION_FAILED` when the body could not be read. */
+  body(): Promise<Buffer>;
+  /** Waits for the body and parses it as JSON; rejects with `ACTION_FAILED` when the body could not be read. */
+  json<T = unknown>(): Promise<T>;
+  /** Waits for the body and reads it as text; rejects with `ACTION_FAILED` when the body could not be read. */
+  text(): Promise<string>;
+}
+
+/** What `waitForResponse` returns and its predicate reads: a `WebResponse` and the request it answers. */
+export interface PageResponse extends WebResponse {
+  /** The request this response answers. */
+  readonly request: WebRequest;
+}
+```
+
+#### `waitForRequest`
+
+Espera na aba ativa uma requisição que corresponda a um padrão de
+[`route`](#route) ou a um predicado. A espera resolve quando a página envia a
+requisição, antes de qualquer resposta chegar.
+
+```ts
+const [order] = await Promise.all([
+  browser.waitForRequest({ method: 'POST', url: '**/api/orders' }),
+  screen.getByRole('button', 'Place order').tap(),
+]);
+expect(JSON.parse(order.postData ?? '{}')).toEqual({ sku: 'A-1', quantity: 2 });
+
+const [search] = await Promise.all([
+  browser.waitForRequest(
+    (request) => new URL(request.url).searchParams.get('q') === 'shoes',
+    { timeout: 10_000 }, // default: actionTimeout
+  ),
+  screen.getByRole('searchbox').fill('shoes'),
+]);
+expect(search.method).toBe('GET');
+```
+
+- Inicie a espera antes da ação que dispara a requisição, normalmente em
+  `Promise.all`. Ela também funciona antes do primeiro `browser.goto` ou
+  `app.open`.
+- Retorna um [`WebRequest`](#route), o mesmo tipo de `route.request`: `url`,
+  `method`, `headers` e o opcional `postData`. Todo campo é uma propriedade.
+  `headers` tem nomes em minúsculas. Os cabeçalhos de cookie que o navegador
+  adiciona por conta própria só aparecem quando uma rota de [`route`](#route)
+  intercepta a requisição.
+- Um predicado roda uma vez por requisição, com um `WebRequest`. A
+  correspondência por valor truthy, os predicados assíncronos concorrentes, os
+  erros lançados e o rótulo `predicate` no trace funcionam do mesmo jeito que
+  em [`waitForResponse`](#waitforresponse).
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Qualquer forma de padrão ou opção que [`waitForResponse`](#waitforresponse) recusa, inclusive qualquer opção diferente de `timeout`. |
+| `APP_URL_REQUIRED` | Um padrão relativo em um alvo sem `app.url`. |
+| `ACTION_FAILED` | Nenhuma requisição corresponde antes do tempo limite. |
+
+#### `cookies`
+
+Retorna todos os cookies do navegador, ou só os cookies que uma requisição para
+uma URL levaria.
+
+```ts
+const all = await browser.cookies();
+const sent = await browser.cookies('/api/orders');
+const either = await browser.cookies(['/api/orders', 'https://auth.example.com']);
+```
+
+- Um cookie corresponde a uma URL pelo domínio, pelo caminho e por `Secure`: um
+  cookie `Secure` corresponde a URLs `https` e a URLs `http` em um host de
+  loopback como `localhost`.
+- Uma URL relativa é resolvida em relação à URL base, como `goto` a resolve.
+- Uma lista vazia não retorna nenhum cookie.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um valor que não é uma string nem um array de strings. |
+| `POLICY_DENIED` | Uma URL que não pode ser analisada ou que não é `http(s)`. |
+| `APP_URL_REQUIRED` | Uma URL, em um alvo que não declara `app.url`. |
+
+#### `setCookies`
+
+Valida todos os cookies e depois os define.
+
+```ts
+await browser.setCookies([{ url: 'http://localhost:3000', name: 'tz', value: 'UTC' }]);
+```
+
+- Uma `url` relativa é resolvida em relação à URL base, como `goto` a resolve.
+- Na forma com `domain`, o esquema segue a URL base, e um `.` no início é
+  removido.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Não é um array, ou é um cookie que o tipo `Cookie` não permite (um campo com o tipo errado, nenhum ou ambos entre `url` e `domain`/`path`, um `domain` que não é um host simples, um `expires` que não está em segundos, uma chave desconhecida). Nada é definido. |
+| `POLICY_DENIED` | Um destino que não pode ser analisado ou um esquema proibido. Nada é definido. |
+
+```ts
+export interface CookieFields {
+  /** Cookie name. */
+  name: string;
+  /** Cookie value. */
+  value: string;
+  /** Unix timestamp in whole seconds. */
+  expires?: number;
+  /** HttpOnly flag. */
+  httpOnly?: boolean;
+  /** Secure flag. */
+  secure?: boolean;
+  /** SameSite attribute. */
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
+/** `url`, or `domain` with an optional `path`, never both. */
+export type Cookie = CookieFields &
+  (
+    | { url: string; domain?: never; path?: never }
+    | { url?: never; domain: string; path?: string }
+  );
+```
+
+#### `clearCookies`
+
+`clearCookies({ name?, domain?, path? })` remove os cookies que correspondem a
+todos os filtros dados. Strings correspondem exatamente; uma RegExp é testada
+contra o campo. Sem opções, remove todos os cookies. O resto do armazenamento
+fica intacto.
+
+```ts
+await browser.clearCookies({ name: /^session/, path: '/' });
+```
+
+```ts
+export interface CookieFilter {
+  name?: string | RegExp;
+  domain?: string | RegExp;
+  path?: string | RegExp;
+}
+```
+
+#### `setViewport`
+
+Define o tamanho do viewport e registra o novo tamanho no relatório.
+
+```ts
+await browser.setViewport({ width: 390, height: 844 });
+await app.open('/');
+```
+
+- Também funciona antes da primeira navegação, como o `setViewportSize` do
+  Playwright. O próximo `app.open` carrega nesse tamanho, então um teste com
+  tamanho de celular nunca renderiza o layout de desktop antes.
+- O tamanho vale pelo resto da tentativa, inclusive depois de `app.restart()` e
+  `app.clearState()`.
+
+#### `setNetwork`
+
+Deixa o navegador offline, ou de volta online, pelo resto da tentativa.
+
+```ts
+await app.open('/');
+await browser.setNetwork('offline');
+await screen.getByRole('button', 'Refresh').tap();
+await expect(screen.getByText('You are offline')).toBeVisible();
+await browser.setNetwork('online');
+```
+
+- Offline, uma requisição que chega à rede falha como falharia sem conexão, e
+  `navigator.onLine` é `false`. A página aberta recebe um evento `offline`.
+- Vale para todas as abas, para todas as abas abertas depois e para os service
+  workers da página. Mesmo assim, um service worker pode responder do próprio
+  cache, então `browser.reload()` carrega uma página que ele guardou em cache.
+- O cache HTTP do navegador também continua respondendo. O Chromium serve uma
+  resposta que ainda está válida, o Firefox qualquer resposta que armazenou, e
+  o WebKit nenhuma. Uma navegação para uma página que nenhum cache guarda falha.
+- Uma conexão que já está aberta, como um stream de eventos, continua aberta.
+- Depois que uma navegação falha, o Chromium mostra a própria página de erro, e
+  um `reload()` dessa página resolve. Faça a asserção sobre a tela.
+- O estado da rede se mantém depois de `app.restart()` e `app.clearState()`. Toda
+  tentativa começa online, inclusive uma nova tentativa.
+- Funciona antes da primeira navegação.
+- Mesmo offline, o Chromium e o WebKit respondem a uma requisição que uma rota
+  de [`route`](#route) atende. O Firefox faz essa requisição falhar.
+- Com [`headers`](#headers) configurado, os service workers ficam bloqueados,
+  então nenhum service worker serve uma página em cache.
+- A fixture [`request`](/reference/request) roda no processo do runner e
+  continua online.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um estado diferente de `'online'` ou `'offline'`. |
+| `ACTION_FAILED` | Uma navegação falha enquanto o navegador está offline. |
+
+#### `onDialog`
+
+Registra um handler de diálogos nativos com escopo de tentativa e retorna uma
+função que cancela o registro.
+
+```ts
+const off = await browser.onDialog('accept');
+await screen.getByRole('button', 'Delete').tap();
+await off();
+```
+
+- O handler é `'accept'`, `'dismiss'` ou uma função que recebe o `Dialog`.
+- Um handler em forma de função precisa chamar `accept` ou `dismiss`. Se não
+  chamar nenhum dos dois, o diálogo é dispensado, como acontece com um diálogo
+  não tratado.
+- Um handler que lança um erro faz o próximo passo falhar com esse erro ou,
+  quando nenhum passo vem depois, faz a tentativa falhar no final. Se o
+  handler lançar antes de responder, o diálogo é dispensado.
+
+Os erros aparecem no próximo passo, não em `onDialog`:
+
+| Lança | Quando |
+| --- | --- |
+| `APP_NOT_OPEN` | Um handler em forma de função não respondeu de nenhum dos dois jeitos, ou nenhum handler tratou o diálogo. |
+| `ASSERTION_FAILED` | O `expect` do handler falhou. |
+| `ENGINE_FAILURE` | O handler lançou um erro não classificado. |
+
+```ts
+/** A native dialog as a test's handler sees it. */
+export interface Dialog {
+  /** The native dialog kind, independent of its message. */
+  readonly type: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+  /** The dialog's text. */
+  readonly message: string;
+  /** Accepts the dialog once. */
+  accept(text?: string): Promise<void>;
+  /** Dismisses the dialog once. */
+  dismiss(): Promise<void>;
+}
+
+export type DialogHandler = 'accept' | 'dismiss' | ((dialog: Dialog) => void | Promise<void>);
+```
+
+#### Abas
+
+Uma aba que o app abre, por um link `target="_blank"` ou por `window.open`, abre
+em segundo plano. A aba ativa continua onde estava, e `screen`, `expect` e os
+métodos de página do `browser` continuam agindo sobre ela.
+`waitForPopup` torna ativa a aba que o gatilho dele abre. Quando a aba ativa
+fecha, a aba que a abriu volta a ficar ativa ou, quando essa aba de origem
+também já fechou, a aba aberta que ficou ativa mais recentemente.
+
+```ts
+const popup = await browser.waitForPopup(() =>
+  screen.getByRole('button', 'Open verification tab').tap(),
+);
+const code = await screen.getByText(/^TAB-/).textContent();
+await popup.close(); // the opener is active again
+await screen.getByRole('textbox', 'Verification code').fill(code);
+```
+
+- `waitForPopup(trigger)` roda o gatilho e resolve com a aba que ele abre,
+  assim que essa aba fica ativa. Pega a primeira aba que o app abre depois que
+  a espera começa, que pode ser uma aba aberta por uma ação anterior cuja página
+  só carregou agora.
+- `tabs()` retorna as abas abertas na ordem em que abriram, com o mesmo
+  `BrowserTab` para uma aba durante toda a tentativa. Uma aba entra na lista
+  quando carrega a primeira página, então duas abas que uma ação abre aparecem
+  na ordem em que carregam as páginas. Uma aba que nunca recebe uma página
+  nunca aparece: um link `target="_blank"` para um download, para um endereço
+  `mailto:` ou para uma resposta sem conteúdo.
+- `tab.activate()` torna uma aba ativa sem fechar as outras.
+  `tab.close()` fecha a aba e, quando ela estava ativa, espera até a próxima
+  ficar ativa.
+- `newTab()` abre uma aba em branco no mesmo contexto do navegador, com os
+  mesmos cookies e o mesmo armazenamento, e a torna ativa. Navegue nela com
+  `goto`.
+- No Chromium, uma aba cuja aba de origem fechou antes de a nova aba carregar
+  também aparece na lista. Uma página que um teste abre por `surfaceOf(engine)`
+  não aparece.
+- O screencast grava a aba ativa, um segmento de vídeo por troca. Uma aba que se
+  fecha sozinha não fica com nenhum segmento, já que a página dela fecha antes
+  que a gravação possa ser salva. A gravação do próprio provedor cobre todas as
+  abas.
+
+```ts
+/** One tab of the browser the attempt drives. */
+export interface BrowserTab {
+  url(): Promise<string>;
+  title(): Promise<string>;
+  /** Whether this is the active tab. */
+  isActive(): boolean;
+  isClosed(): boolean;
+  /** Makes this the active tab. */
+  activate(): Promise<void>;
+  /** Closes the tab; the tab that opened it becomes active when it was. */
+  close(): Promise<void>;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `ACTION_FAILED` | `waitForPopup`: nenhuma aba abriu a tempo. Quando o gatilho resolveu a tempo, a chamada falha com `no tab opened within <n>ms; the trigger resolved after <m>ms`, ou com `the tab the app opened did not load <url> within <n>ms` quando uma aba ainda estava carregando a primeira página. `activate`: a aba foi fechada. |
+
+#### `waitForDownload`
+
+Roda um gatilho e espera o download que ele inicia.
+
+```ts
+const file = await browser.waitForDownload(() =>
+  screen.getByRole('link', 'Export CSV').tap(),
+);
+```
+
+- Registra o arquivo como um artefato `download` e retorna o `path` relativo
+  dele, o `absolutePath` do lado do runner e `suggestedFilename`.
+- Use `absolutePath` com APIs de arquivo para inspecionar o conteúdo, inclusive
+  em um navegador hospedado.
+- Em um navegador hospedado, o arquivo volta pelo
+  [`downloads`](/browser#downloads-on-the-provider) do provedor.
+- A espera inclui o tempo do próprio gatilho.
+
+| Lança | Quando |
+| --- | --- |
+| `ACTION_FAILED` | O download não terminou a tempo. Quando o gatilho resolveu a tempo mas não iniciou nenhum download, a chamada falha com `no download started within <n>ms; the trigger resolved after <m>ms`. |
+
+Um gatilho que ainda está rodando quando o tempo limite chega falha com o tempo
+limite do passo. Um gatilho que lança um erro falha com o próprio erro.
+
+#### `waitForDownloads`
+
+`waitForDownloads(trigger, { count })` chama o gatilho uma vez e retorna `count`
+arquivos na ordem em que começaram, cada um como um artefato próprio, dentro do
+mesmo tempo limite. Quando menos downloads começam a tempo, o erro cita as duas
+contagens; downloads extras são ignorados.
+
+#### `keyboard`
+
+Entrada de teclado no nível do viewport, para o que estiver com o foco.
+
+```ts
+await browser.keyboard.press('Escape');
+await browser.keyboard.type('hello');
+```
+
+- `type(text)` digita só texto simples, nunca um `Secret`.
+- Prefira `locator.press` e `locator.fill` quando existe um elemento de destino.
+- [`Browser`](#browser-interface) descreve cada método.
+
+#### `mouse`
+
+Entrada de ponteiro no nível do viewport a partir do código de teste,
+independente das observações do agente.
+
+```ts
+await browser.mouse.move(120, 240);
+await browser.mouse.down();
+await browser.mouse.move(320, 240);
+await browser.mouse.up();
+```
+
+[`Browser`](#browser-interface) descreve cada método, incluindo `wheel`.
+
+#### WebMCP
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) é uma API experimental de
+navegador pela qual uma página registra ferramentas, em `document.modelContext`
+(`navigator.modelContext` no Firefox). `browser.webmcp` lista as ferramentas que
+a página da aba ativa registrou e as chama a partir do código de teste, sem
+nenhum modelo envolvido.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{ engine: web({ webmcp: true }), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+```ts
+const tools = await browser.webmcp.tools();
+expect(tools.map((tool) => tool.name)).toContain('add');
+
+const result = await browser.webmcp.callTool('add', { a: 2, b: 40 });
+expect(result).toEqual({ content: [{ type: 'text', text: '42' }] });
+```
+
+- `web({ webmcp: true })` inicia o Chromium com `--enable-features=WebMCP`,
+  ou o Firefox com as preferências `dom.modelcontext`. O WebMCP vem desligado
+  por padrão, já que, com ele ligado, toda página vê uma API que a maioria dos
+  navegadores ainda não tem. O WebKit não tem WebMCP. A opção vale só para um
+  navegador que a engine inicia: inicie você mesmo, com esse argumento, um
+  navegador acessado por [`connect`](#connect) ou por um provedor.
+- A página precisa ser um contexto seguro, `https:` ou `localhost`; caso
+  contrário, ela não tem `document.modelContext` e as duas chamadas falham com
+  `UNSUPPORTED_CAPABILITY`. A engine pergunta à própria página, então um
+  navegador acessado por `connect` ou por um provedor que foi iniciado sem
+  WebMCP falha do mesmo jeito.
+- `tools()` retorna as ferramentas registradas no momento, cada uma com `name`,
+  `description`, `inputSchema` e `annotations` quando a página os forneceu.
+  Uma página que não registra nenhuma ferramenta dá uma lista vazia. A ordem é
+  a do próprio navegador e difere entre o Chromium e o Firefox.
+- `callTool(name, input)` resolve com o valor com que o `execute` da ferramenta
+  resolveu, normalmente um objeto com um array `content`. `input` é um objeto
+  JSON; quando omitido ou `null`, a ferramenta recebe um objeto vazio. Um
+  resultado com `isError: true` volta como está, e uma ferramenta que resolve
+  sem nenhum valor dá `null`.
+- Um objeto ou array volta como o JSON dele, igual no Chromium e no Firefox: uma
+  propriedade deixada como `undefined` não aparece nele, e um `Date` dentro dele
+  vira uma string. Uma ferramenta que resolve com qualquer outro valor dá o
+  texto desse valor, analisado quando o texto é JSON: `'42'` e `42` dão `42`, e
+  um número acima de 2^53 perde dígitos. Uma string vazia dá
+  `'Operation succeeded'` no Chromium. Resolva com um objeto para manter o valor
+  como está.
+- Uma ferramenta que leva a página para outra URL encerra a chamada antes de
+  responder. A chamada falha com `ACTION_FAILED` assim que a nova página
+  carrega, e a mensagem diz que a ferramenta pode ter rodado. Uma ferramenta
+  ainda rodando quando o tempo acaba falha do mesmo jeito.
+- As duas chamadas cobrem o frame principal da aba ativa, não os frames dentro
+  dele.
+- Nomes, descrições, schemas e resultados vêm da página, então trate-os como
+  entrada não confiável.
+
+```ts
+/** A tool a page registered through WebMCP, as the page describes it. */
+export interface WebMcpTool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool's input, when the page gave one. */
+  readonly inputSchema?: JsonValue;
+  /** Hints the page gives about the tool. */
+  readonly annotations?: {
+    /** The tool changes no state. */
+    readonly readOnly?: boolean;
+    /** The tool's output may carry third-party content. */
+    readonly untrustedContent?: boolean;
+    /** The tool takes a consequential action, such as placing an order. */
+    readonly consequential?: boolean;
+  };
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | A página não tem WebMCP: o navegador roda sem ele, ou a página não é um contexto seguro. A mensagem diz qual é o caso e como corrigir. |
+| `ACTION_FAILED` | `callTool`: a página não registra nenhuma ferramenta com esse nome (a mensagem lista as que ela registra), a ferramenta lançou um erro ou resolveu com algo que o JSON não comporta (um `BigInt` dentro, um ciclo), ou a chamada terminou antes de a ferramenta responder, porque a página navegou ou o tempo acabou. |
+| `INVALID_ARGUMENT` | `callTool`: `name` não é uma string não vazia, ou `input` não é um objeto JSON. |
+| `INVALID_CONFIG` | `web({ webmcp: true })` com `connect`, um provedor de navegadores ou o WebKit. |
+
+#### `clock`
+
+`browser.clock` controla o tempo nas páginas da tentativa: `Date`,
+`performance`, timers, `requestAnimationFrame` e `requestIdleCallback`. É o
+`page.clock` do Playwright, com os mesmos métodos e argumentos.
+
+```ts
+await browser.clock.install({ time: new Date('2024-02-02T08:00:00Z') });
+await browser.clock.pauseAt(new Date('2024-02-02T09:00:00Z'));
+await app.open('/offer');
+await browser.clock.runFor(3000); // fires every timer due in 3 seconds
+await browser.clock.fastForward('30:00'); // jumps 30 minutes, firing each due timer once
+```
+
+| Método | O que faz |
+| --- | --- |
+| `install({ time? })` | Simula as funções de tempo, começando em `time` (padrão: agora). O relógio continua andando em tempo real. |
+| `pauseAt(time)` | Avança rapidamente até `time` e fica parado ali. Os timers só disparam por `runFor` e `fastForward`. |
+| `resume()` | Faz um relógio pausado voltar a andar em tempo real. |
+| `runFor(ticks)` | Avança o relógio, disparando todos os timers que vencem no caminho. |
+| `fastForward(ticks)` | Pula adiante, disparando cada timer vencido no máximo uma vez. |
+| `setFixedTime(time)` | Mantém `Date.now()` e `new Date()` fixos em `time`. Os timers continuam rodando. |
+| `setSystemTime(time)` | Muda a hora do relógio de parede sem disparar nenhum timer. |
+
+- Um `time` é um número de milissegundos desde a época Unix, uma string que
+  `new Date()` analisa no processo do runner, ou um `Date`. `ticks` são
+  milissegundos, ou `'ss'`, `'mm:ss'` ou `'hh:mm:ss'`.
+- Qualquer outro método instala o relógio antes, se ele ainda não estiver
+  instalado, como faz o Playwright: o relógio começa na época Unix, 1970-01-01,
+  então chame `install({ time })` primeiro, a menos que a próxima chamada
+  defina a hora. Instale antes de `app.open` para a página carregar com ele;
+  uma página já aberta recebe o relógio imediatamente.
+- O relógio cobre todas as abas e todos os frames, inclusive os que o app abre.
+  Ele se mantém depois de navegações, de `app.restart()` e de
+  `app.clearState()`, e termina com a tentativa.
+- `app.clearState()` e a restauração de sessão reproduzem as chamadas do relógio
+  no novo contexto, como faz um novo documento: uma chamada que falhou, como um
+  `runFor` cujo timer lançou um erro, conta, e um `pauseAt` recusado não conta.
+  Um relógio pausado ou fixo volta como estava. Um relógio em andamento perde o
+  tempo real que passou antes da limpeza.
+- Só o tempo da página anda. Os tempos limite do teste, o polling de `expect` e
+  as esperas do agente seguem o tempo real, então um relógio pausado nunca
+  segura um passo.
+- Uma [recuperação do CDP](#recovering-a-cdp-transport) depois que a tentativa
+  usou o relógio faz a tentativa falhar com `ENGINE_FAILURE`: as páginas abertas
+  mantêm o relógio, mas o navegador reconectado não consegue restaurá-lo.
+- Um loop de timers que nunca termina, como um intervalo de 1 ms sob
+  `runFor('10:00:00')`, faz a chamada ser interrompida em `actionTimeout` com
+  `ACTION_FAILED`.
+
+```ts
+/** A point in time: epoch milliseconds, a string `Date` parses, or a `Date`. */
+export type ClockTime = number | string | Date;
+
+/** A span of time: milliseconds, or a `'ss'`, `'mm:ss'`, or `'hh:mm:ss'` string. */
+export type ClockTicks = number | string;
+
+export interface BrowserClock {
+  install(options?: { time?: ClockTime }): Promise<void>;
+  fastForward(ticks: ClockTicks): Promise<void>;
+  runFor(ticks: ClockTicks): Promise<void>;
+  pauseAt(time: ClockTime): Promise<void>;
+  resume(): Promise<void>;
+  setFixedTime(time: ClockTime): Promise<void>;
+  setSystemTime(time: ClockTime): Promise<void>;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um tempo que não é um número finito, uma string não vazia que pode ser analisada ou um `Date` válido; ticks negativos ou fora de `'hh:mm:ss'`; uma opção desconhecida de `install`; `pauseAt` antes da hora atual do relógio. |
+| `EVALUATE_FAILED` | Um timer que a página rodou durante `runFor`, `fastForward` ou `pauseAt` lançou um erro. A mensagem traz o erro da página. |
+| `ACTION_FAILED` | A chamada passou de `actionTimeout`. |
+
+## Instalar navegadores
+
+O pacote fixa o `playwright-core` em uma versão exata, então a engine sempre
+roda o Playwright com o qual foi testada. Um app que depende diretamente do
+Playwright mantém a própria cópia. Os dois compartilham um cache de
+navegadores só quando as versões coincidem.
+
+Um navegador ausente é baixado uma vez por execução, antes de o relógio da
+execução começar a contar. Para instalar os navegadores em um step próprio, na
+CI ou em uma imagem de contêiner, rode o comando do pacote. Ele instala os
+navegadores do Playwright fixado pela engine:
+
+<CodeGroup>
+```bash npm
+npx @e2e-dev/web install chromium --with-deps
+```
+
+```bash pnpm
+pnpm exec e2e-web install chromium --with-deps
+```
+
+```bash bun
+bunx @e2e-dev/web install chromium --with-deps
+```
+</CodeGroup>
+
+- Informe qualquer um de `chromium`, `firefox` e `webkit`. Sem nenhum, o
+  comando instala o `chromium`.
+- `--with-deps` também instala as bibliotecas de sistema de que os navegadores
+  precisam no Linux. Quando o chromium ou o firefox é instalado sem elas,
+  [`e2e doctor`](/reference/cli#e2e-doctor) falha na verificação `browser` e a
+  inicialização do navegador falha em uma execução; as duas mensagens citam as
+  bibliotecas ausentes e este comando.
+- O comando sai com o código de saída do instalador.
+
+## Recuperação da captura semântica
+
+Quando o leitor semântico excede o tempo limite, as observações do agente
+podem se recuperar com uma captura de tela nova do viewport.
+
+- O Playwright faz uma nova varredura de máscara dos campos seguros em todo
+  frame alcançável, incluindo shadow roots em modo aberto e fechado. Toda
+  sondagem de máscara precisa ter sucesso.
+- A observação informa que a semântica está indisponível e descarta as
+  referências de nós anteriores.
+- A recuperação exige tempo restante no orçamento da operação e permissão do
+  runner. `act` a permite; os julgamentos exigem `vision: true` ou `'only'`.
+- Uma falha de mascaramento, um cancelamento e erros graves da engine
+  encerram a observação mesmo assim.
+
+Quando o fallback é permitido, o leitor reserva um quarto do orçamento
+restante da observação, até no máximo dois segundos, para a captura de tela. O
+prazo cobre o percurso da página, a releitura dos metadados e dos elementos, e
+os frames aninhados.
+
+Os metadados semânticos atravessam a conexão do Playwright como uma única
+string JSON, para reduzir o custo de serialização. Os elementos que o leitor
+percorreu ficam em um array na página, um por documento, e uma ação cria o
+handle do próprio nó a partir desse array na primeira vez que precisa desse
+nó. Uma referência continua apontando para o elemento que o percurso leu, não
+para o que estiver naquela posição depois. Uma página que substitui
+`JSON.stringify`, ou adiciona métodos `toJSON` aos protótipos de objeto ou de
+array, recebe transferência estruturada. A limpeza não espera respostas
+travadas do protocolo. Um leitor abandonado não pode reutilizar IDs de nós nem
+publicar referências sobre uma observação mais recente.
+
+## surfaceOf
+
+Retorna a superfície Playwright ao vivo de um handle de `web()`, para um
+[executor personalizado](/executors#driving-the-page-yourself) que controla a
+página por conta própria.
+
+```ts
+import { web, surfaceOf } from '@e2e-dev/web';
+
+const engine = web();
+const live = surfaceOf(engine);   // PlaywrightLiveSurface | undefined
+live!.page();                     // the Page of the current attempt
+live!.context();                  // its BrowserContext
+```
+
+- Retorna `undefined` para um handle de outro pacote.
+- Chamadas diretas ao Playwright não são registradas como passos.
+- Depois de uma [recuperação do CDP](#recovering-a-cdp-transport), leia os
+  acessores de novo.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_STATE` | Um acessor chamado fora de uma tentativa ativa, ou em um handle que não foi iniciado neste processo, como um segundo `web()`. |
+
+## Tipos
+
+O pacote exporta estes tipos para tipar funções auxiliares de configuração e
+fixtures:
+`WebEngine`, `WebOptions`, `WebMedia`, `WebScreencastOptions`, `WebConnectOptions`,
+`WebBasicAuth`, `WebInitScript`, `BrowserName`, `BrowserProvider`,
+`BrowserProviderScope`, `BrowserRequest`, `BrowserLease`,
+`BrowserReleaseContext`, `BrowserProviderDownloads`,
+`BrowserDownloadContext`, `PlaywrightLiveSurface`, `Browser`, `FrameScreen`,
+`BrowserExpectation`, `BrowserClock`, `ClockTime`, `ClockTicks`, `WebRoute`, `RouteFulfillResponse`,
+`RouteContinueOverrides`, `RouteMatcher`, `WebRequest`, `WebResponse`,
+`PageResponse`, `Cookie`, `CookieFields`,
+`CookieFilter`, `Dialog` e `DialogHandler`.
+
+As exportações de runtime são `web`, [`surfaceOf`](#surfaceof) e `test`,
+`describe`, `beforeEach`, `afterEach`, `beforeAll` e `afterAll`, tipados com a
+fixture `browser`.
+
+### `WebOptions`
+
+```ts
+/**
+ * Options of the browser engine: how it drives the app. The app itself
+ * (its `url`, `environment`, `identity`, and the command that starts it) is
+ * the target's `app`.
+ */
+export interface WebOptions {
+  /**
+   * Browser to launch, `chromium` by default. A `BrowserProvider` leases
+   * hosted browsers instead: one per worker slot at `prepare`, or one per
+   * attempt, each attached to over CDP and released when its scope ends. A
+   * provider implies chromium and excludes `connect`.
+   */
+  readonly browser?: BrowserName | BrowserProvider;
+  /**
+   * Initial viewport of every attempt's page; default 1280 by 720. `null`
+   * emulates no size: the page fills the browser window, whatever size the
+   * window has (a hosted browser's live view, a headed run), and
+   * `browser.setViewport` still fixes one for the rest of the attempt.
+   */
+  readonly viewport?: ViewportSize | null;
+  /**
+   * Device pixels per CSS pixel on every attempt's page, as
+   * `window.devicePixelRatio` reads it; default 1. At 2 the page renders as
+   * on a high-density display, and every saved screenshot
+   * (`app.screenshot()`, a failure's, an `agent.assert`'s) is twice the
+   * viewport's size on each side. The factor does not change the image the
+   * model reads or the one `toHaveScreenshot` compares. It needs a viewport
+   * size, so `viewport: null` refuses it, and a persistent context
+   * (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`)
+   * refuses it.
+   */
+  readonly deviceScaleFactor?: number;
+  /**
+   * How the engine's own screencast records an attempt that records video.
+   * A browser provider that records (`BrowserProvider.record`) records in
+   * its place, and ignores these. Which attempts record is the config's
+   * `video`, not an engine option.
+   */
+  readonly screencast?: WebScreencastOptions;
+  /**
+   * Attach to a remote browser over CDP instead of launching locally. Requires
+   * the chromium browser (the default). Wired by a hosted-browser engine.
+   */
+  readonly connect?: WebConnectOptions;
+  /**
+   * Headers added to every request that starts at the app's origin (the
+   * scheme, host, and port of `app.url`) or one in `credentialOrigins`.
+   * Useful for preview-protection tokens. A request that starts at another
+   * origin goes without them; a redirect keeps them, to any origin.
+   * Names are case-insensitive and replace existing headers of the same name.
+   * This enables request routing, disables the browser's HTTP cache, and
+   * blocks service workers.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * HTTP basic authentication. The browser answers a `401` challenge from the
+   * app's origin, or one in `credentialOrigins`, with these credentials.
+   */
+  readonly basicAuth?: WebBasicAuth;
+  /**
+   * More origins that receive `headers` and `basicAuth`, such as
+   * `https://api.example.com`; requires `headers` or `basicAuth`.
+   */
+  readonly credentialOrigins?: readonly string[];
+  /**
+   * The attribute that carries an element's test id: what the `testId` query
+   * (`screen.getByTestId`) resolves and what `SemanticNode.testId` reports.
+   * Defaults to `data-testid`.
+   */
+  readonly testIdAttribute?: string;
+  /**
+   * The `User-Agent` every attempt's context sends and `navigator.userAgent`
+   * reports, for an app that switches into a test mode on a marker in the
+   * agent string. Defaults to the browser's own. A `user-agent` entry in
+   * `headers` beside it is `INVALID_CONFIG`, and so is a persistent context
+   * (`connect.reconnectEndpoint`, or a provider with `scope: 'attempt'`).
+   */
+  readonly userAgent?: string;
+  /**
+   * The locale every attempt's context runs in, a BCP 47 tag such as
+   * `de-DE`: what `navigator.language`, `Intl` formatting, and the
+   * `Accept-Language` header report. Defaults to the browser's own. An
+   * `accept-language` entry in `headers` beside it is `INVALID_CONFIG`, and
+   * so is a persistent context.
+   */
+  readonly locale?: string;
+  /**
+   * The IANA time zone every attempt's context runs in, such as
+   * `Europe/Berlin`: what `Date` and `Intl` resolve local time against.
+   * Defaults to the machine's. A persistent context is `INVALID_CONFIG`.
+   */
+  readonly timezoneId?: string;
+  /** The `prefers-color-scheme` every page reports. See [Media emulation](#media-emulation). */
+  readonly colorScheme?: WebMedia['colorScheme'];
+  /** The `prefers-reduced-motion` every page reports. See [Media emulation](#media-emulation). */
+  readonly reducedMotion?: WebMedia['reducedMotion'];
+  /** Scripts every document runs before the page's own. See [Init scripts](#init-scripts). */
+  readonly initScripts?: readonly WebInitScript[];
+  /** Launches Chromium or Firefox with WebMCP, for `browser.webmcp`. See [WebMCP](#webmcp). */
+  readonly webmcp?: boolean;
+}
+```
+
+### Interface `Browser`
+
+```ts
+/**
+ * The browser the attempt drives, showing one active tab. Navigation, reads,
+ * `locator`, `frameLocator`, `evaluate`, `waitForResponse`, `waitForRequest`,
+ * `waitForDownload`, the keyboard and mouse, `expect(browser)`, and `screen` act on the active
+ * tab; cookies, routes, and dialog handlers cover the whole browser, every
+ * tab included. A tab the app opens (a `target="_blank"` link,
+ * `window.open`) joins `tabs()` but does not become active on its own:
+ * `waitForPopup` makes the tab its trigger opens active, and `activate`
+ * any other. When the active tab closes, the tab that opened it is active
+ * again.
+ */
+export interface Browser extends Expectable<BrowserExpectation> {
+  /**
+   * The browser the attempt drives, as the driver names it: the
+   * `web({ browser })` value, and `chromium` for every browser the engine
+   * attaches to over CDP (`connect`, a provider), whatever it is.
+   */
+  readonly name: BrowserName;
+  /**
+   * The version the running browser reports, such as `159.0.8154.6`: for
+   * an attached or hosted one, what its CDP endpoint reports. The target's
+   * `userAgent` does not change it.
+   */
+  readonly version: string;
+  /** Navigates to an allowed URL. */
+  goto(
+    url: string,
+    options?: {
+      waitUntil?: 'load' | 'domcontentloaded' | 'networkidle';
+      timeout?: number;
+    },
+  ): Promise<void>;
+  /** Reloads the current document. */
+  reload(options?: ActionOptions): Promise<void>;
+  /** Navigates browser history back once. */
+  back(options?: ActionOptions): Promise<void>;
+  /** Navigates browser history forward once. */
+  forward(options?: ActionOptions): Promise<void>;
+  /** Returns the current URL. */
+  url(): Promise<string>;
+  /** Returns the current title. */
+  title(): Promise<string>;
+  /** Waits for the current URL to match. */
+  waitForURL(url: string | RegExp, options?: { timeout?: number }): Promise<void>;
+  /** Creates a web-only CSS or XPath locator. */
+  locator(selector: string): Locator;
+  /** Creates a screen query scope inside one iframe. */
+  frameLocator(selector: string): FrameScreen;
+  /** Evaluates trusted test code in the page: a function, or a string expression whose value is returned, called first if it is a function. */
+  evaluate<T extends JsonValue>(fn: string | (() => T | Promise<T>)): Promise<T>;
+  /** Evaluates trusted test code with one required JSON-safe argument. */
+  evaluate<T extends JsonValue, Arg extends JsonValue>(
+    fn: string | ((arg: Arg) => T | Promise<T>),
+    arg: Arg,
+  ): Promise<T>;
+  /** Adds a script every document runs before the page's own, from the next navigation on. */
+  addInitScript(script: string | { path: string } | (() => unknown)): Promise<void>;
+  /** Adds an init script function called with one JSON argument. */
+  addInitScript<Arg extends JsonValue>(script: (arg: Arg) => unknown, arg: Arg): Promise<void>;
+  /** Adds an attempt-scoped network route, optionally narrowed to one HTTP method. */
+  route(
+    pattern: string | RegExp | RouteMatcher,
+    handler: (route: WebRoute) => void | Promise<void>,
+  ): Promise<void>;
+  /**
+   * Removes the routes registered with the same pattern: the same string or
+   * `RegExp` source and flags, and the same method for a `{ method, url }`
+   * pattern. It does not URL-match registered routes.
+   */
+  unroute(pattern: string | RegExp | RouteMatcher): Promise<void>;
+  /** Removes all routes registered by this browser fixture, preserving the configured headers. */
+  unrouteAll(): Promise<void>;
+  /**
+   * Waits for a response on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate. The predicate runs per response
+   * until one returns or resolves to a truthy value; throwing fails the wait
+   * with the predicate's own error.
+   */
+  waitForResponse(
+    pattern: string | RegExp | RouteMatcher | ((response: PageResponse) => boolean | Promise<boolean>),
+    options?: { timeout?: number },
+  ): Promise<PageResponse>;
+  /**
+   * Waits for a request on the active tab matching a URL pattern, a
+   * `{ method, url }` matcher, or a predicate, and resolves when the page sends
+   * it before any response arrives. Predicate matching and errors work the
+   * same way as in `waitForResponse`.
+   */
+  waitForRequest(
+    pattern: string | RegExp | RouteMatcher | ((request: WebRequest) => boolean | Promise<boolean>),
+    options?: { timeout?: number },
+  ): Promise<WebRequest>;
+  /**
+   * Returns every cookie of the browser, or only those a request to `urls`
+   * (one URL or several) would carry. A relative URL resolves against the
+   * base URL.
+   */
+  cookies(urls?: string | readonly string[]): Promise<Cookie[]>;
+  /** Sets cookies after URL validation. */
+  setCookies(cookies: readonly Cookie[]): Promise<void>;
+  /** Removes matching cookies only; without filters removes every cookie, preserving other storage. */
+  clearCookies(options?: CookieFilter): Promise<void>;
+  /** Sets the viewport size. */
+  setViewport(size: { width: number; height: number }): Promise<void>;
+  /** Emulates CSS media features on every open tab and every tab opened after them. */
+  emulateMedia(media: WebMedia): Promise<void>;
+  /** Takes the browser offline or back online for the rest of the attempt: every tab and the page's service workers. */
+  setNetwork(state: 'online' | 'offline'): Promise<void>;
+  /** Registers an attempt-scoped dialog handler and returns an unsubscribe function. */
+  onDialog(handler: DialogHandler): Promise<() => Promise<void>>;
+  /** Returns the open tabs, in the order they opened. */
+  tabs(): readonly BrowserTab[];
+  /**
+   * Runs a trigger and waits for the tab it opens, then resolves with that
+   * tab once it is the active tab. The wait takes the first tab the app
+   * opens after it starts, which can be one an earlier action opened whose
+   * page loaded only now. Rejects with `ACTION_FAILED` when no tab opens
+   * within the timeout, naming the page when a tab was still loading it.
+   */
+  waitForPopup(trigger: () => Promise<void>, options?: { timeout?: number }): Promise<BrowserTab>;
+  /** Opens a blank tab in the same browser context, sharing its cookies and storage, and makes it the active tab. */
+  newTab(): Promise<BrowserTab>;
+  /** Runs a trigger and waits for its download. */
+  waitForDownload(
+    trigger: () => Promise<void>,
+    options?: { timeout?: number },
+  ): Promise<{ path: string; absolutePath: string; suggestedFilename: string }>;
+  /** Runs one trigger and waits for the requested number of completed downloads. */
+  waitForDownloads(
+    trigger: () => Promise<void>,
+    options: { count: number; timeout?: number },
+  ): Promise<readonly { path: string; absolutePath: string; suggestedFilename: string }[]>;
+  /** Viewport-level keyboard, for whatever has focus. */
+  readonly keyboard: {
+    /** Sends one key. */
+    press(key: string): Promise<void>;
+    /** Holds one key until up; repeated down calls send a repeat event. */
+    down(key: string): Promise<void>;
+    /** Releases a held key. */
+    up(key: string): Promise<void>;
+    /** Types plain text. */
+    type(text: string): Promise<void>;
+  };
+  /**
+   * Direct pointer input from test code, independent of agent observations.
+   * After CDP recovery, test code can read current geometry with `evaluate`
+   * before starting a pointer sequence.
+   */
+  readonly mouse: {
+    /** Moves the pointer. */
+    move(x: number, y: number): Promise<void>;
+    /** Scrolls the pointer wheel. */
+    wheel(deltaX: number, deltaY: number): Promise<void>;
+    /** Presses the primary pointer button. */
+    down(): Promise<void>;
+    /** Releases the primary pointer button. */
+    up(): Promise<void>;
+  };
+  /** The tools the active tab's page registers through WebMCP. See [WebMCP](#webmcp). */
+  readonly webmcp: {
+    /** Returns the tools the page has registered now. */
+    tools(): Promise<readonly WebMcpTool[]>;
+    /** Calls one tool and resolves with what its `execute` resolved to. */
+    callTool(name: string, input?: { readonly [key: string]: JsonValue } | null): Promise<JsonValue>;
+  };
+  /** Controls time in the attempt's pages. See [clock](#clock). */
+  readonly clock: BrowserClock;
+}
+```
+
+### JsonValue
+
+```ts
+/** A JSON scalar. */
+export type JsonPrimitive = string | number | boolean | null;
+
+/** Data that survives JSON serialization. */
+export type JsonValue =
+  | JsonPrimitive
+  | { readonly [key: string]: JsonValue }
+  | readonly JsonValue[];
+```
+
+## Relacionados
+
+O [guia do navegador](/browser) mostra estes membros em receitas e cobre os
+[navegadores hospedados](/browser#hosted-browsers). As operações portáveis
+ficam na fixture [`app`](/reference/app).

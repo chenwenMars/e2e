@@ -1,0 +1,171 @@
+---
+title: Ferramentas do projeto
+description: Adicione ferramentas para APIs de teste, preparação de dados e operações de dispositivo.
+"og:image": "https://e2e.com/docs/images/og/tools.png?v=8747047102"
+"twitter:image": "https://e2e.com/docs/images/og/tools.png?v=8747047102"
+---
+
+Uma ferramenta do projeto é uma ferramenta do AI SDK que o agente pode chamar
+durante um objetivo, como uma requisição à sua API de teste ou um passo de
+preparação de dados.
+
+## Adicione uma ferramenta
+
+Envolva a ferramenta com `defineTool` e coloque-a nas `tools` do agente:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { defineTool } from 'e2e/agent';
+import { web } from '@e2e-dev/web';
+import { gateway, tool } from 'ai';
+import { z } from 'zod';
+
+const APP_URL = process.env.APP_URL ?? 'http://localhost:3000';
+
+const seedCart = defineTool(
+  tool({
+    description: 'Seed the cart with a SKU via the store test API',
+    inputSchema: z.object({ sku: z.string() }),
+    execute: async ({ sku }) => {
+      const response = await fetch(`${APP_URL}/api/test/cart?sku=${encodeURIComponent(sku)}`);
+      if (!response.ok) throw new Error(`Cart seeding failed: HTTP ${response.status}`);
+      return response.text();
+    },
+  }),
+  { mutates: true },
+);
+
+export default {
+  targets: [{ engine: web(), app: { url: APP_URL } }],
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast'), tools: { seedCart } } },
+} satisfies E2EConfig;
+```
+
+Agora o agente pode pré-carregar um carrinho antes de finalizar a compra:
+
+```ts
+await agent.act('seed the cart with SKU {sku}, then check out', {
+  params: { sku: 'SHIRT-BLUE-M' },
+});
+await expect(screen.getByText('Order confirmed')).toBeVisible();
+```
+
+<Note>
+Evite dar a uma ferramenta personalizada o nome de uma ação embutida (`tap`,
+`screenshot`, `complete_step`, `locate`, `run_code`, `test_lines`,
+`start_recording`, `stop_recording` ou `report_finding`), porque nomes
+reservados falham na validação da configuração. Sempre envolva as ferramentas
+com `defineTool` e não combine `tools` com um `executor` personalizado.
+</Note>
+
+## Declare o que uma ferramenta faz
+
+`defineTool` recebe a ferramenta do AI SDK e estas anotações:
+
+| Anotação | Significado |
+| --- | --- |
+| `mutates: true` | Altera estado. A chamada ocupa um slot do orçamento de ações do passo antes de rodar, falhe ou não, e roda em ordem com as outras ações. O [cache de replay](/cache) não consegue reproduzi-la, então o agente roda essa parte do passo ao vivo. |
+| `mutates: false` | Somente leitura. Roda sem ocupar um slot de ação e pode observar a tela ou ler propriedades de nós. |
+| `platforms: ['ios', 'android']` | Oferece a ferramenta só nessas plataformas. Omita essa anotação para oferecer a ferramenta em todos os alvos. |
+
+## Observe a partir de uma ferramenta
+
+Uma ferramenta somente leitura pode observar a tela com dados sensíveis
+ocultados por meio de `getToolContext`. Este exemplo salva uma captura de tela
+mascarada como evidência no relatório quando há pixels disponíveis:
+
+```ts
+import { randomUUID } from 'node:crypto';
+import { defineTool, getToolContext } from 'e2e/agent';
+import { tool } from 'ai';
+import { z } from 'zod';
+
+const captureEvidence = defineTool(
+  tool({
+    description: 'Save a screenshot as evidence in the report',
+    inputSchema: z.object({}),
+    execute: async (_input, executionOptions) => {
+      const context = getToolContext(executionOptions);
+      const observation = await context.observe({ pixels: true });
+      const pixels = observation.pixels;
+      if (pixels === undefined) {
+        return { withheld: observation.pixelsWithheld ?? 'UNSUPPORTED_CAPABILITY' };
+      }
+      const id = await context.attachScreenshot(pixels, `evidence-${randomUUID()}`);
+      return { evidence: id };
+    },
+  }),
+  { mutates: false },
+);
+```
+
+- `observe()` retorna um snapshot em texto com dados sensíveis ocultados.
+  `tree: true` adiciona a árvore de nós e `pixels: true` uma captura de tela
+  mascarada, sob as regras do agente embutido.
+- Em uma ferramenta `mutates: true`, `observe()` falha com `POLICY_DENIED`.
+  Observe em uma ferramenta somente leitura separada.
+- `attachScreenshot(pixels, label)` adiciona a imagem aos artefatos do passo
+  e retorna o id de artefato da imagem. Um rótulo reutilizado sobrescreve a
+  imagem anterior.
+
+## Leia o estilo computado de um nó
+
+Em uma ferramenta somente leitura, use `context.read` para medir o estilo
+renderizado de um nó listado na engine web:
+
+```ts
+const context = getToolContext(executionOptions);
+await context.observe();
+const result = await context.read({ id: nodeId }, {
+  style: ['color', 'font-weight', 'visibility', 'opacity'],
+});
+return result.style;
+```
+
+Passe o ID do nó da observação mais recente. O resultado contém apenas as
+propriedades pedidas, com os segredos ocultados como na árvore.
+Os valores usam o formato de CSS computado do navegador, como `rgb(255, 0, 0)` para vermelho.
+
+Peça propriedades da [lista de permissões de estilo computado](/reference/engine#rendered-node-properties).
+Propriedades personalizadas, conteúdo gerado, seletores e código da página são rejeitados.
+
+As leituras usam o prazo do passo e rodam em ordem com observações e ações,
+sem ocupar um slot de ação. Elas medem o valor atual no elemento original e
+não atualizam a observação nem esperam um valor mudar.
+Os valores computados de `visibility` e `opacity` descrevem o CSS do
+elemento, não se outro elemento o cobre ou se um ancestral o torna invisível.
+
+| Erro | Quando |
+| --- | --- |
+| `POLICY_DENIED` | Uma ferramenta `mutates: true` chama `read`, ou a engine não tem um método `readStyle`, como acontece com a engine mobile. |
+| `INVALID_ARGUMENT` | As opções ou os nomes das propriedades são inválidos. |
+| `LOCATOR_NOT_FOUND` | Não existe observação semântica, a mais recente não lista o ID, ou o elemento foi desconectado. Observe de novo antes de ler. |
+| `STEP_TIMEOUT` | A leitura esgotou o tempo restante do passo, incluindo um tempo limite da engine no prazo. Capturar o erro da leitura não faz o passo passar. |
+
+Use `platforms` em um teste para pular alvos que não leem estilos.
+
+## Kits de ferramentas para dispositivos
+
+O `@e2e-dev/mobile` tem um pacote de ferramentas pronto, `mobileTools`, com
+`open_app`, `swipe` e `alert`. Inclua o pacote por spread para adicionar suas
+próprias ferramentas ao lado dele:
+
+```ts
+tools: { ...mobileTools(iphone, pixel), seedCart },
+```
+
+Veja [Ferramentas do agente](/mobile#agent-tools) para a configuração. Uma
+ferramenta sua que precisa de uma sessão bruta do driver obtém o cliente do
+dispositivo em execução com
+[`unstable_deviceSession`](/reference/mobile#unstable_devicesession).
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Executores personalizados" icon="gears" href="/executors">
+    Substitua o prompt ou o loop de decisão.
+  </Card>
+  <Card title="Como funcionam os passos do agente" icon="stairs" href="/agent-steps">
+    O que o modelo vê e o que ele pode fazer.
+  </Card>
+</CardGroup>

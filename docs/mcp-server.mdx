@@ -29,9 +29,11 @@ as `npx -y e2e@<version> mcp`, running the plugin's e2e release even when
 the project has another version installed. In Claude Code (or without the
 plugin), register it in your project. `e2e init` can write the config for
 `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor), and
-`.codex/config.toml` (Codex). Install your project dependencies and launch
-your MCP client in the project directory so `npx` (or `bunx`) picks up the
-installed `e2e` version. To set it up by hand:
+`.codex/config.toml` (Codex), with the command of your package manager:
+`npx e2e mcp`, `pnpm exec e2e mcp`, `yarn exec e2e mcp`
+(`yarn --silent exec -- e2e mcp` on Yarn 1), or `bunx e2e mcp`. Install your project dependencies and launch your MCP client
+in the project directory so the command picks up the installed `e2e`
+version. To set it up by hand:
 
 <Tabs>
   <Tab title="Claude Code">
@@ -86,6 +88,10 @@ installed `e2e` version. To set it up by hand:
     ```
   </Tab>
 </Tabs>
+
+If the client reports `Connection closed` and the command fails in a
+terminal with `EBADDEVENGINES`, the project's `devEngines` pins another
+package manager: register that manager's command, such as `pnpm exec e2e mcp`.
 
 If your target defines an `app.command`, the session starts your app and
 prints its URL and port. The first session on a config file starts its

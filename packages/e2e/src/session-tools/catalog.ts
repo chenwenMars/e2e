@@ -6,7 +6,7 @@
  * `select_at`) among it, `locate` tries a semantic
  * locator the way a test would, `run_code` runs JavaScript whose test lines run on
  * the session's fixtures, `test_lines` returns the test line every action
- * printed (`test-lines.ts`) and the lines `run_code` passed,
+ * printed (`test-lines.ts`), the point tools' among them, and the lines `run_code` passed,
  * `start_recording` and `stop_recording` follow when the engine records video,
  * and the project's own tools come last. The config load refuses a project
  * tool named like a built-in; should one reach here anyway, the built-in
@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { projectTools } from '@e2e-dev/core/lib/agent/default-agent';
 import type { ExecutorNode, StepExecutorContext } from '@e2e-dev/core/lib/agent/executor';
 import { projectTree, redactNode, type NodeRedaction } from '@e2e-dev/core/lib/agent/observation';
+import { imagePointToViewport } from '@e2e-dev/core/lib/agent/point-tap';
 import { GRAMMAR_TOOL_NAMES } from '@e2e-dev/core/lib/agent/action-names';
 import { grammarTools } from '@e2e-dev/core/lib/agent/primitives';
 import type { ScreenPresenter } from '@e2e-dev/core/lib/agent/screen-update';
@@ -98,6 +99,11 @@ export function createSessionCatalog(options: CatalogOptions): SessionCatalog {
     resolve: (expression) => locator.resolveNow(expression),
     read: (ref) => options.session.read(ref, locator.operation()),
     redact: options.redaction.redact,
+    // The point tools read their points off the screenshot the presenter last sent.
+    pointOf: (x, y) => {
+      const shot = screen.latestScreenshot;
+      return shot === undefined ? undefined : imagePointToViewport({ x, y }, shot.pixels, shot.viewport);
+    },
     appBase: options.appBase,
     fills: options.fills,
     engineFixtures: options.runCode?.engineFixtures,

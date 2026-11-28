@@ -68,13 +68,13 @@
   },
   "dependencies": {
     "@napi-rs/image": "1.16.0",
-    "agent-device": "0.21.43",
+    "agent-device": "0.21.44",
     "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@e2e-dev/core": ">=0.25.0 <1",
+    "@e2e-dev/core": ">=0.25.1 <1",
     "ai": "^7.0.0",
-    "e2e": ">=0.25.0 <1"
+    "e2e": ">=0.25.1 <1"
   },
   "peerDependenciesMeta": {
     "ai": {

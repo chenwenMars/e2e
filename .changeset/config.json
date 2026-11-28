@@ -14,6 +14,11 @@
     [
       "e2e",
       "@e2e-dev/core"
+    ],
+    [
+      "@e2e-dev/desktop",
+      "@e2e-dev/desktop-darwin-arm64",
+      "@e2e-dev/desktop-darwin-x64"
     ]
   ],
   "linked": [],

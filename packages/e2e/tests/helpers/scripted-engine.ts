@@ -36,7 +36,7 @@ export function createScriptedEngine(script: ScriptedEngineScript): FakeEngineHa
 /**
  * The reference screen: form controls, toggles, a list with nested
  * checkboxes, hidden twins, echoed text, and the nodes that move while an
- * attempt runs (a late arrival, a growing list, a flipping state).
+ * attempt runs (a late arrival, a growing list, a flipping state, a blink).
  */
 export function scene(stage: Stage): ScriptedNode[] {
   const counter: ScriptedNode = { id: 'counter', role: 'status', name: 'Count', text: '0' };
@@ -86,6 +86,23 @@ export function scene(stage: Stage): ScriptedNode[] {
       if (action.kind !== 'tap') return;
       stage.after(200, () => growing.children?.push({ id: 'grow-2', role: 'listitem', text: 'Two' }));
       stage.after(400, () => growing.children?.push({ id: 'grow-3', role: 'listitem', text: 'Three' }));
+    },
+  };
+
+  const banner: ScriptedNode = { id: 'banner', role: 'status', name: 'Banner', text: 'Saved' };
+  // Hidden for 900 ms, then back for good: a read in that window is the only one that sees it gone.
+  const blink: ScriptedNode = {
+    id: 'blink',
+    role: 'button',
+    name: 'Blink',
+    on(action) {
+      if (action.kind !== 'tap') return;
+      stage.after(200, () => {
+        banner.states = { hidden: true };
+      });
+      stage.after(1_100, () => {
+        banner.states = { hidden: false };
+      });
     },
   };
 
@@ -198,6 +215,8 @@ export function scene(stage: Stage): ScriptedNode[] {
     { id: 'focus-target', role: 'textbox', name: 'Focus target', value: '' },
     { id: 'city', role: 'textbox', name: 'City', value: '' },
     { id: 'echo', role: 'group', text: 'Echoed', children: [{ id: 'echo-inner', text: 'Echoed' }] },
+    blink,
+    banner,
     reveal,
     advance,
     loadMore,

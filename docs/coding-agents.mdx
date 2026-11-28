@@ -145,8 +145,10 @@ permissions:
 When a copy is still there, pnpm links the skill beside it as
 `pnpm-e2e-e2e`, and agents load two `e2e` skills. `init` and `upgrade` warn
 about it: delete the copy, then run `pnpm install --force` to rename the
-link to `e2e`. Neither command writes over pnpm's link, and `init` adds no
-copy where pnpm links the skill, a workspace member included.
+link to `e2e`. The commands preserve pnpm's links. You can use `init` to
+restore a missing `SKILL.md` in an existing copy in another skills directory.
+When `init` finds a pnpm skill link in the project or at the workspace root
+it detects, it skips creating new copies.
 
 </Accordion>
 

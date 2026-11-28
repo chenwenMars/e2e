@@ -12,6 +12,10 @@
 
 /** A swipe or scroll direction. */
 export type ScrollDirection = 'up' | 'down' | 'left' | 'right';
+/** Every scroll edge, in a fixed order; `ScrollEdge` is derived from it. */
+export const SCROLL_EDGES = ['top', 'bottom', 'left', 'right'] as const;
+/** An edge of a scroll container, which `scrollTo` scrolls to. */
+export type ScrollEdge = (typeof SCROLL_EDGES)[number];
 /** Fling strength of a swipe. */
 export type Momentum = 'none' | 'slow' | 'fast';
 /** One option of a select: its label (a bare string too), its `value` attribute, or its zero-based index. */
@@ -354,6 +358,22 @@ export type LocatorAction =
       readonly kind: 'swipe';
       readonly direction: ScrollDirection;
       readonly momentum?: Momentum;
+    }
+  | {
+      /**
+       * Scrolls a container to one of its edges, as far as it goes. On a
+       * node: the node when it scrolls along the edge's axis, else its
+       * nearest ancestor that does; an engine that cannot tell which node
+       * scrolls drags inside the node's own box. On the observation root:
+       * the screen's main scrolling content, else what is under the
+       * viewport's center. The engine resolves once the container
+       * cannot scroll further toward `edge`, at once when it is there already
+       * or nothing scrolls along that axis, and stops when the operation's
+       * budget runs out. Not a kind of SPI v1, so an engine lists it
+       * explicitly.
+       */
+      readonly kind: 'scrollTo';
+      readonly edge: ScrollEdge;
     };
 
 /** Every action kind; what an engine declares in `actions`. */
@@ -380,7 +400,7 @@ export const LOCATOR_ACTION_KINDS = [
 ] as const satisfies readonly LocatorActionKind[];
 
 /** Every action kind understood by this version of core. */
-export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap'] as const satisfies readonly LocatorActionKind[];
+export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap', 'scrollTo'] as const satisfies readonly LocatorActionKind[];
 
 /**
  * One action `performAt` carries out at a viewport point, with no node

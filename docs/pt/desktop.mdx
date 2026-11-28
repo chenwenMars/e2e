@@ -1,0 +1,238 @@
+---
+title: Desktop
+description: Teste um app desktop nativo no macOS pela árvore de acessibilidade dele.
+---
+
+`@e2e-dev/desktop` roda testes em apps desktop nativos. Ele lê e controla o
+app pela árvore de acessibilidade do sistema operacional, com um driver nativo
+que roda no processo de teste. Os testes usam as mesmas APIs `agent`, `screen`
+e `expect` dos testes de navegador.
+
+<Note>
+  A engine desktop é um protótipo e roda somente no macOS 13 ou posterior. Uma
+  configuração com um alvo desktop carrega mesmo assim no Windows e no Linux, e
+  os outros alvos dela rodam ali quando você os escolhe com `--target`. Uma
+  execução que inclui o alvo desktop é interrompida com
+  `UNSUPPORTED_CAPABILITY` antes de qualquer teste começar.
+</Note>
+
+## Configuração
+
+Instale o runner e a engine:
+
+<CodeGroup>
+```bash npm
+npm install --save-dev e2e @e2e-dev/desktop
+```
+
+```bash pnpm
+pnpm add --save-dev e2e @e2e-dev/desktop
+```
+
+```bash bun
+bun add --dev e2e @e2e-dev/desktop
+```
+</CodeGroup>
+
+No macOS, o app que inicia o e2e precisa de duas permissões em **Ajustes do
+Sistema > Privacidade e Segurança**. Esse app é o seu terminal, a sua IDE ou
+o seu agente de CI.
+
+- **Acessibilidade**, para ler e controlar o app.
+- **Gravação de Tela**, para capturas de tela.
+
+O npm instala o driver para o seu Mac junto com a engine, como
+`@e2e-dev/desktop-darwin-arm64` ou `@e2e-dev/desktop-darwin-x64`. Você não
+precisa de Rust nem de Xcode.
+
+Verifique sua configuração:
+
+<CodeGroup>
+```bash npm
+npx e2e doctor
+```
+
+```bash pnpm
+pnpm exec e2e doctor
+```
+
+```bash bun
+bunx e2e doctor
+```
+</CodeGroup>
+
+O comando verifica o driver, as duas permissões e o build de `appPath`.
+
+## Aponte para o seu app
+
+Defina o `app.appPath` do alvo como um bundle `.app` já compilado. Ou defina
+`app.bundleId` como o bundle id ou o nome de um app instalado, como
+`com.apple.calculator`. Com os dois, o build de `appPath` é iniciado, e o
+bundle id desse build precisa ser `bundleId`. `app.launchArguments` vão para
+cada inicialização. Uma entrada de objeto vira `-name value`, como no iOS,
+então `{ AppleLanguages: ['fr'] }` abre o app em francês.
+
+O app iniciado recebe só um ambiente mínimo (`HOME`, `USER`, `LOGNAME`,
+`SHELL`, `PATH`, `TMPDIR`, `LANG`, `LC_*`, `__CF_USER_TEXT_ENCODING`, além de
+`E2E_DESKTOP_LAUNCH` para rastrear o processo), então seus segredos, chaves de
+modelo e tokens de CI nunca vazam para ele. O macOS esconde essa variável nos
+apps do próprio sistema, nos apps da Apple na App Store (Numbers, Pages,
+Xcode) e em builds assinados com a flag `restrict`, então esses apps também
+recebem `-E2EDesktopLaunch=<token>` como o último argumento de
+inicialização. A engine reconhece os apps da App Store pela assinatura, então
+todo app da Mac App Store recebe esse argumento.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { desktop } from '@e2e-dev/desktop';
+
+export default {
+  targets: [
+    {
+      name: 'mac',
+      engine: desktop(),
+      app: { appPath: 'build/MyApp.app' },
+    },
+  ],
+  credentials: {
+    ada: { username: 'ada', password: process.env.ADA_PASSWORD ?? '' },
+  },
+} satisfies E2EConfig;
+```
+
+## Escreva um teste
+
+Importe `test` de `@e2e-dev/desktop`. Por padrão, `app.open()` deixa o app em
+segundo plano. Rode com `--headed` para apps que precisam vir para a frente
+antes de mostrar uma janela. `desktop({ physicalInput: true })` também traz o
+app para a frente e ativa a entrada física descrita abaixo. Se a engine já
+tinha iniciado o app, ela encerra essa cópia primeiro. Uma cópia que você
+mesmo abriu fica como está, e a engine nunca a lê nem a controla. Um app que
+roda uma cópia por vez entrega a inicialização a uma cópia que já está
+rodando, então `app.open()` falha e nomeia essa cópia: encerre-a primeiro.
+Todo teste termina com o app encerrado, e nenhuma janela que o app salvou no
+último encerramento volta.
+
+```ts title="tests/sign-in.e2e.ts"
+import { test } from '@e2e-dev/desktop';
+import { credentials, expect } from 'e2e';
+
+test('signs in', async ({ app, screen }) => {
+  const ada = credentials.user('ada');
+  await app.open();
+  await screen.getByRole('textbox', 'Username').fill(ada.username);
+  await screen.getByRole('textbox', 'Password').fill(ada.password);
+  await screen.getByRole('combobox', 'Plan').selectOption('Team');
+  await screen.getByRole('button', 'Sign in').tap();
+  await expect(screen.getByTestId('status')).toContainText('Signed in as ada');
+});
+```
+
+Os papéis usam os nomes que a web usa: `textbox`, `checkbox`, `combobox`,
+`button`. A árvore lista texto estático como `text`, que não é um papel de
+`getByRole`: encontre-o com `getByText`.
+O nome de um controle é o que a acessibilidade do macOS atribui a ele: o
+título ou o rótulo de acessibilidade. O título de um botão é o nome e o texto
+do botão, então `getByText('Sign in')` encontra o botão e também qualquer
+texto estático com as mesmas palavras; `getByRole('button', 'Sign in')`
+encontra só o botão. `getByPlaceholder` não é suportado: a engine nomeia um
+campo sem rótulo pelo placeholder do campo, então encontre esse campo com
+`getByRole('textbox', 'Username')`. `getByTestId` encontra o `AXIdentifier`
+do controle (`accessibilityIdentifier` no AppKit,
+`.accessibilityIdentifier` no SwiftUI).
+
+## A fixture desktop
+
+| Método | O que faz |
+| --- | --- |
+| `windows()` | As janelas abertas do app |
+| `waitForWindow(trigger, { timeout }?)` | Roda `trigger`, espera a janela que ele abre e torna essa janela ativa |
+| `window({ title }, { timeout }?)` | Espera uma janela pelo título e a retorna, sem torná-la ativa |
+| `keyboard.press(key)` | Pressiona uma tecla ou uma combinação como `ControlOrMeta+2` na janela ativa, para um app sem nenhum controle que receba o foco do teclado |
+| `keyboard.type(text)` | Digita texto no campo em foco |
+| `closeApp()` | Encerra o app. `app.open()` o inicia de novo |
+| `platform` | O sistema operacional em que o app roda, `'macos'` |
+
+## Trabalhe com várias janelas
+
+`screen` lê a janela ativa. Até que um teste escolha uma, essa é a janela em
+foco do app, então um diálogo que recebe o foco é lido sem um passo próprio.
+`desktop.waitForWindow()` roda o passo que abre uma janela e torna essa janela
+ativa. Depois ela continua ativa, seja qual for a janela em foco, até fechar.
+Depois disso, `screen` volta a ler a janela em foco.
+
+```ts
+const settings = await desktop.waitForWindow(() =>
+  screen.getByRole('button', 'Settings…').tap(),
+);
+await expect(screen.getByRole('checkbox', 'Launch at login')).toBeVisible();
+
+const main = await desktop.window({ title: 'My App' });
+await main.activate();
+await settings.close();
+```
+
+Uma janela tem `title()`, `isActive()`, `isClosed()`, `activate()` e
+`close()`. Cada um consulta o macOS, então use `await` em todos. `close()`
+pressiona o botão de fechar da janela, então falha em uma janela que continua
+aberta para perguntar sobre alterações não salvas. `title` aceita uma string
+exata ou um `RegExp`. Use `desktop.window()` para uma janela que o app abre
+sozinho.
+
+## O que muda em relação à web
+
+| Área | Em um alvo desktop |
+| --- | --- |
+| Entrada | O app roda em segundo plano. As ações usam a API de acessibilidade do macOS e as teclas vão para a fila de eventos do próprio app, então seu mouse e seu teclado ficam livres. Apps que não abrem uma janela em segundo plano (como apps baseados em documentos) precisam de `--headed` ou `physicalInput: true`. Um toque, `doubleTap`, `secondaryTap`, `check`, `uncheck`, `fill`, `clear` ou `selectOption` em um controle desativado espera, dentro do tempo limite da ação, que o app ative o controle, e depois falha com `ACTION_FAILED` (recusado, então nada foi enviado); uma caixa que já mostra o estado pedido por `check` ou `uncheck` fica como está. |
+| Entrada física | `doubleTap`, `hover` e toques por coordenadas exigem `desktop({ physicalInput: true })`, que traz o app para a frente e usa o ponteiro real. Teclas e digitação passam então a usar o teclado real. Um clique é recusado quando outra janela, do app ou de qualquer outro, ou um controle dentro do elemento (o botão ou o campo de texto de uma linha) está sob o ponteiro, antes ou depois do movimento; um toque em um ponto, ou um hover, é recusado quando outra janela está por cima ali. Um clique duplo é um único gesto, como o de uma pessoa: depois que o primeiro clique é enviado, o segundo vem logo em seguida, seja o que for que o primeiro abriu. Cuidado com janelas flutuantes que se sobrepõem à área alvo. |
+| Teclas | `press` e a digitação enviam teclas só para o controle em foco na key window do app; sem `physicalInput`, uma janela tornada ativa com `activate()` que não é a key window não recebe nenhuma. Há suporte a teclas nomeadas, letras, dígitos e ``, . / ; ' [ ] \ - = ` `` (outros caracteres, como `!` ou `é`, são rejeitados), e atalhos do sistema como `ControlOrMeta+q` são bloqueados (use `desktop.closeApp()` em vez disso). A letra de um atalho é a do layout de teclado do Mac, então `ControlOrMeta+a` também é Selecionar Tudo no AZERTY. Um atalho com um dígito ou uma pontuação precisa de um layout que o digite sem Shift: no AZERTY, `ControlOrMeta+2` falha como não suportado. Sem `physicalInput`, um atalho `ControlOrMeta` chega só à barra de menus do app: o atalho de um item de menu funciona, mas um atalho que o controle em foco ou a key window trata (Copiar, Colar, Selecionar Tudo, o `.keyboardShortcut` de um botão SwiftUI) não faz nada, e `press` é bem-sucedido mesmo assim. Use `physicalInput: true` para esses casos. O `press` de um localizador precisa de um controle que receba o foco do teclado; para um app sem nenhum (como a Calculadora), use `desktop.keyboard.press()`. |
+| Seleção | `selectOption` encontra a opção pelo rótulo, não pelo índice. O rótulo de uma linha de tabela é todo o texto que a linha mostra, célula por célula, como o nome acessível dela; um rótulo que duas linhas mostram é recusado. Em um botão pop-up, a seleção verifica se o botão mostra a opção escolhida. Uma opção desativada espera, dentro do tempo limite da ação, que o app ative a opção, e depois falha com `ACTION_FAILED` nomeando a opção, e o menu fecha; entre duas opções com o mesmo título, a seleção escolhe uma ativada no menu, e um pop-up que já mostra o título fica como está, já que um pop-up fechado não mostra nenhum item para diferenciar as duas. Para combo boxes editáveis, use `fill()` em vez disso; um combo box que não aceita valor digitado é recusado, então toque nele e depois na opção. |
+| Janelas | `screen` lê a [janela ativa](#work-with-several-windows): a que um teste tornou ativa; na falta dela, a janela em foco; depois, a janela principal do app; por último, a primeira janela visível. O diálogo da Siri que o macOS 27 pode colocar sobre um app só é lido quando um teste o torna ativo. Uma janela com uma sheet aberta conta como em foco. Sheets e menus de contexto ou pop-up abertos são incluídos, então `getByRole('menuitem', 'Copy')` encontra os itens de um menu; os botões da janela (Fechar/Minimizar/Zoom) ficam de fora. Janelas minimizadas e linhas roladas para fora da lista são lidas como ocultas, então `getByRole` as ignora. `getByText` e `getByTestId` ainda correspondem a nós ocultos. Cada um encontra o nó que carrega o texto ou o identificador, então `getByText('Item 40')` encontra o rótulo de uma linha, não a linha. Um toque, um toque secundário, `check` ou `uncheck` em um nó oculto primeiro rola o nó até a área visível, ou é recusado, e uma falha depois dessa rolagem falha com `ACTION_FAILED`, como uma ação que pode ter tido efeito, e a ação nunca é tentada novamente, já que a lista se moveu. Janelas em outro Espaço do macOS continuam legíveis. |
+| Leitura | Só um app sem janelas abertas é lido como vazio. Se a tela estiver bloqueada, se a árvore da janela for mais profunda que `maxDepth` ou se a janela tiver mais que os 8.000 elementos que uma leitura aceita, os localizadores continuam tentando até o tempo limite em vez de retornar falsos negativos, e capturas de tela dessa janela são recusadas. `app.open()` falha com a tela bloqueada. |
+| Barra de menus | A barra de menus do app ainda não é legível; acione os itens de menu com um atalho de teclado (`press`). |
+| Conteúdo web | Janelas de navegador, apps Electron e web views não são suportados. Use `@e2e-dev/web` para apps web e [`@e2e-dev/electron`](/electron) para apps Electron. |
+| Workers | Limitado a um worker por alvo desktop. Se você rodar dois alvos desktop com `physicalInput: true`, defina `workers: 1` para que eles não disputem o cursor e o teclado. |
+| Rolagem | `scrollTo(edge)` não é suportado e falha com `UNSUPPORTED_CAPABILITY`. Use `scrollUntilVisible` em vez disso. |
+| Estado | `app.clearState()` e `app.back()` ainda não são suportados. Uma sessão de `test.setup` e `video: 'on'` são recusados quando os testes são coletados, já que a engine não salva estado nem grava vídeo. |
+| Não suportado | `getByPlaceholder`, `toBeInViewport`, `toBeEmpty`, `blur`, `longPress`, `dragTo`, `setInputFiles`, `modifiers` em toques e `selectOption({ index })` falham com uma mensagem que diz isso. |
+| Segredos | Campos de senha nunca expõem o valor e aparecem pintados de preto nas capturas de tela. Se uma captura de tela não consegue cobrir um campo de senha, ou se a janela é mais profunda que `maxDepth` ou maior do que uma leitura aceita, a captura falha em vez de ser salva. |
+
+O estado temporário é limpo quando a execução termina, e, se um app ou um
+worker for encerrado à força no meio da execução, a próxima execução desktop
+limpa automaticamente o processo do app que sobrou.
+
+<Accordion title="Outros casos de borda do desktop">
+- **Janelas ilegíveis:** uma janela que não pode ser lida nunca é lida como
+  vazia, então `not.toBeVisible()` não pode passar nessa janela.
+- **Menus pop-up:** escolher uma opção inexistente em um botão pop-up fecha o
+  menu de novo; se o menu continuar aberto, o erro diz isso.
+</Accordion>
+
+## Opções
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `snapshot` | `'full' \| 'interactive'` | `'full'` |
+| `physicalInput` | `boolean` | `false` |
+| `settle` | `number \| false` | `150` |
+| `maxDepth` | `number` | `24` |
+
+`snapshot: 'interactive'` faz as observações do agente lerem só controles, sem
+texto estático; localizadores e `expect` leem a janela inteira de qualquer
+forma. `physicalInput` permite o ponteiro e o teclado reais, que movem seu
+cursor e trazem o app para a frente. `settle` é quanto tempo a engine espera depois de uma ação do agente
+antes que o agente leia a tela, em milissegundos. `maxDepth` é quantos níveis
+de uma janela uma leitura percorre, de 1 a 50; aumente esse valor quando
+localizadores em um app muito aninhado estourarem o tempo limite com uma
+leitura só parcial.
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Mobile" icon="mobile" href="/mobile">
+    Rode os mesmos testes em simuladores iOS e emuladores Android.
+  </Card>
+  <Card title="Passos do agente" icon="robot" href="/agent-steps">
+    Deixe o agente preencher um formulário ou verificar a tela.
+  </Card>
+</CardGroup>

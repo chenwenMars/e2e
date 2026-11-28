@@ -15,6 +15,7 @@
     "@e2e-dev/decision": "workspace:*",
     "@e2e-dev/desktop": "workspace:*",
     "@e2e-dev/e2b": "workspace:*",
+    "@e2e-dev/electron": "workspace:*",
     "@e2e-dev/limrun": "workspace:*",
     "@e2e-dev/mobile": "workspace:*",
     "@e2e-dev/moli": "workspace:*",

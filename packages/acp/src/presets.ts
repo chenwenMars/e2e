@@ -269,8 +269,9 @@ async function codexServers(adapter: string, env: Readonly<Record<string, string
     codexPath === undefined
       ? [process.execPath, [createRequire(join(adapter, 'package.json')).resolve('@openai/codex/bin/codex.js')]]
       : [codexPath, []];
+  const disable = CODEX_FEATURES_OFF.flatMap((feature) => ['--disable', feature]);
   try {
-    const { stdout } = await execFileAsync(command, [...args, 'mcp', 'list', '--json'], {
+    const { stdout } = await execFileAsync(command, [...args, 'mcp', 'list', '--json', ...disable], {
       env: agentEnvironment({ ...process.env, ...env }),
       timeout: 30_000,
     });

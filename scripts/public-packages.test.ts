@@ -47,8 +47,9 @@ describe('publicPackages', () => {
     const names = packages.map(({ manifest }) => manifest.name);
     assert.ok(names.includes('e2e'), names.join(', '));
     assert.ok(names.includes('@e2e-dev/web'), names.join(', '));
+    assert.ok(names.includes('@e2e-dev/desktop-darwin-arm64'), names.join(', '));
     for (const { path, manifest } of packages) {
-      assert.match(path, /packages[\\/][^\\/]+[\\/]package\.json$/);
+      assert.match(path, /packages[\\/][^\\/]+[\\/](npm[\\/][^\\/]+[\\/])?package\.json$/);
       assert.equal(manifest.private, undefined);
       assert.ok(manifest.name.length > 0);
     }

@@ -1,0 +1,245 @@
+---
+title: Escrevendo fixtures
+description: Crie dados de teste e outros recursos antes de cada teste e limpe-os depois dele.
+"og:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+"twitter:image": "https://e2e.com/docs/images/og/fixtures.png?v=a85d0155da"
+---
+
+Uma fixture é um valor que um teste recebe, preparado antes do teste e
+desmontado depois dele, mesmo quando o teste falha. Use uma fixture para criar
+dados de teste. Para fazer login, use uma [sessão salva](/authentication) em
+vez disso.
+
+## Defina as fixtures em um único arquivo
+
+Estenda o `test` da sua engine e exporte-o. Uma fixture pode usar `agent`,
+então ela pode criar seus dados pelo app com
+[objetivos](/core-concepts#goals):
+
+```ts title="tests/fixtures.ts" expandable
+import { test as base } from '@e2e-dev/web';
+import { expect, unique } from 'e2e';
+
+export const test = base.extend<{ project: string; task: string }>({
+  /** A fresh project, created and deleted through the app. */
+  project: async ({ app, agent, screen }, use) => {
+    const name = `Launch plan ${Date.now()}`;
+    await app.open('/projects');
+    await agent.act('create a project named {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('heading', name)).toBeVisible();
+    await use(name);
+    await app.open('/projects');
+    await agent.act('delete the project {name}', { params: { name: unique(name) } });
+    await expect(screen.getByRole('link', name)).toBeHidden();
+  },
+  /** One task in that project. Deleting the project deletes it too. */
+  task: async ({ project, agent, screen }, use) => {
+    const title = 'Write the announcement';
+    await agent.act('add a task {title} to the project {project}', { params: { title, project } });
+    await expect(screen.getByRole('checkbox', title)).toBeVisible();
+    await use(title);
+  },
+});
+```
+
+O código antes de `await use(value)` é a preparação, e o código depois dele é
+a desmontagem. Importe o `test` estendido nos seus arquivos de teste:
+
+```ts title="tests/tasks.e2e.ts"
+import { expect } from 'e2e';
+import { test } from './fixtures.ts';
+
+test('completes a task', { session: 'admin' }, async ({ screen, task }) => {
+  await screen.getByRole('checkbox', task).check();
+  await expect(screen.getByRole('checkbox', task)).toBeChecked();
+});
+```
+
+A sessão salva é restaurada antes de as fixtures rodarem.
+
+<Note>
+Os passos do agente em uma fixture rodam para cada teste que a usa. Se o seu
+app tem uma API de teste, uma chamada `fetch` é mais rápida.
+</Note>
+
+## Construa uma fixture sobre outra
+
+Uma fixture nomeia as fixtures de que precisa no primeiro parâmetro, e o e2e
+prepara essas fixtures primeiro. `task` nomeia `project`, então um teste que
+nomeia `task` também recebe um projeto. A desmontagem roda na ordem inversa.
+
+Uma fixture pode nomear as fixtures do `test` que ela estende e as declaradas
+ao lado dela, em qualquer ordem. Uma que não precisa de nenhuma recebe
+`({}, use)`.
+
+## Prepare só o que um teste nomeia
+
+O e2e prepara uma fixture apenas para um teste que a nomeia: no corpo do
+teste, em um hook `beforeEach` ou `afterEach`, ou em outra fixture que o teste
+usa. Um teste que não nomeia nenhuma fixture não prepara nenhuma, então um
+único `test` pode conter todas as fixtures da suíte.
+
+Nomeie as fixtures desestruturando o primeiro parâmetro. O e2e lê os nomes
+desse parâmetro, então `async (fixtures) => {}` e uma propriedade rest
+(`{ app, ...rest }`) falham quando o arquivo é coletado.
+
+## Rode uma fixture em todos os testes
+
+Defina `auto: true` em uma fixture de que os testes precisam sem nomeá-la,
+como uma que redefine os dados:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend<{ cleanData: void }>({
+  cleanData: [async ({ app }, use) => {
+    await fetch(`${app.baseUrl}/api/test/reset`, { method: 'POST' });
+    await use();
+  }, { auto: true }],
+});
+```
+
+Com `{ scope: 'worker', auto: true }`, ela roda uma vez por worker.
+
+## Estenda uma fixture embutida
+
+Dê a uma fixture o nome de uma fixture embutida, como `app` ou `device`, para
+rodar código em volta dela. Dentro da função, o nome se refere à fixture
+embutida. Testes e hooks que nomeiam essa fixture recebem o valor que você
+passa para `use`:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend({
+  device: async ({ device }, use) => {
+    await device?.setPermission('camera', 'deny');
+    await use(device);
+  },
+});
+```
+
+Essa sobrescrita é uma fixture de teste, então ela roda para cada teste que
+usa `device`. Para rodá-la uma vez por worker e usá-la em `beforeAll`,
+defina-a como `[fn, { scope: 'worker' }]`. Veja
+[Estendendo uma fixture](/reference/test#extending-a-fixture).
+
+## Rode um teste na web e no mobile
+
+Você pode rodar o mesmo teste em alvos cujas engines têm fixtures diferentes.
+Por exemplo, em uma configuração com alvos web e iOS, `device` é `undefined`
+na web.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [
+    { engine: web(), app: { url: 'http://localhost:3000' } },
+    { engine: mobile({ platform: 'ios' }), app: { bundleId: 'com.example.app' } },
+  ],
+} as const satisfies E2EConfig;
+```
+
+Use `as const satisfies E2EConfig` ou
+[`defineConfig`](/reference/config#defineconfig) para manter o tipo inferido
+da configuração. Com uma anotação de tipo como `const config: E2EConfig`,
+`typeof config` é só `E2EConfig`, então os tipos dos alvos não são inferidos.
+Se você passar esse tipo para `test.extend<{}, {}, typeof config>()`, recebe
+um erro de tipo.
+
+Passe `typeof config` como o terceiro argumento de tipo de `test.extend`.
+Verifique `platform === 'ios'` para estreitar `device` para `Device`:
+
+```ts title="tests/fixtures.ts"
+import { test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+export const test = base.extend<{ signedOut: void }, {}, typeof config>({
+  /** Signs the app out. On iOS, the keychain is cleared first, since `app.clearState()` doesn't clear it. */
+  signedOut: async ({ app, platform, device }, use) => {
+    if (platform === 'ios') {
+      await device.clearKeychain();
+    }
+
+    await app.clearState();
+    await use();
+  },
+});
+```
+
+Com `platforms` em um teste, as fixtures desse teste são tipadas para os
+alvos que o rodam:
+
+```ts title="tests/menu.e2e.ts"
+import { test } from './fixtures.ts';
+
+test('closes the menu with Escape', { platforms: ['web'] }, async ({ browser }) => {
+  await browser.keyboard.press('Escape');
+});
+```
+
+Se você [estender `device`](#extend-a-built-in-fixture), sua sobrescrita
+também é chamada na web, com `device` definido como `undefined`.
+
+## Compartilhe uma fixture em um worker
+
+Uma fixture de worker é preparada uma vez por worker e alvo (no primeiro teste
+ou hook de suíte que a usa) e desmontada quando o worker termina. Use-a para
+um banco de dados, um servidor ou um cliente de API compartilhado entre
+muitos testes. Declare-a com `{ scope: 'worker' }` e defina o tipo dela no
+segundo argumento de tipo:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend<{}, { database: Database }>({
+  database: [async ({}, use) => {
+    const database = await startDatabase();
+    await use(database);
+    await database.stop();
+  }, { scope: 'worker' }],
+});
+```
+
+Uma fixture de worker sobrevive a todos os testes, então ela vê apenas
+fixtures de worker: as do mesmo tipo que ela e as
+[fixtures embutidas](/reference/test#fixtures) cujo escopo é worker no alvo.
+
+Declare-a em um módulo que seus arquivos de teste importam, não em um arquivo
+de teste. Um arquivo de teste é carregado de novo depois de um teste que
+falhou e para cada grupo serial e teste de preparação, e uma fixture de worker
+declarada nele ganha uma nova instância a cada vez. A instância antiga
+continua preparada até o worker terminar.
+
+## Leia fixtures em hooks
+
+Registre o hook no seu `test` estendido para obter os tipos das fixtures. Um
+hook nomeia as fixtures dele como um teste faz:
+
+```ts
+test.beforeEach(async ({ screen, project }) => {
+  await expect(screen.getByRole('heading', project)).toBeVisible();
+});
+```
+
+`beforeAll` e `afterAll` recebem apenas fixtures de worker. Um dispositivo
+mantém o estado entre testes, então, no mobile, as fixtures embutidas
+`device`, `app` e `screen` também são fixtures de worker. Um teste de
+navegador recebe um contexto novo, então coloque a preparação da UI em
+`beforeEach`. Veja o escopo de cada
+[fixture embutida](/reference/test#fixtures).
+
+## Quando uma fixture falha
+
+Um erro na preparação faz o teste falhar em `beforeEach`, e um hook
+`afterEach` que nomeia a fixture que falhou é pulado. Um erro na desmontagem é
+reportado em `afterEach`. Veja a
+[lista completa de usos incorretos](/reference/test#your-own-fixtures).
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Referência de test" icon="code" href="/reference/test#your-own-fixtures">
+    O contrato das fixtures, os tipos e cada falha.
+  </Card>
+  <Card title="Autenticação" icon="key" href="/authentication">
+    Salve uma sessão uma vez e restaure-a em cada teste.
+  </Card>
+</CardGroup>

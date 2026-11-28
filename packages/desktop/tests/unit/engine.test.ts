@@ -4,28 +4,29 @@ import { desktop } from '../../src/engine.ts';
 import { resolveOptions } from '../../src/options.ts';
 
 describe('desktop()', () => {
-  it('offers the pointer-only actions, and keys, with headed alone', () => {
+  it('offers keys without physicalInput, and the pointer-only actions with physicalInput alone', () => {
     const plain = desktop();
-    const headed = desktop({ headed: true });
+    const physical = desktop({ physicalInput: true });
     expect(plain.actions).not.toContain('doubleTap');
     expect(plain.actions).not.toContain('hover');
-    // agent-desktop sends a key only to the active window, which an app in the background never has.
-    expect(plain.actions).not.toContain('press');
+    // A key goes into the app's own event queue, which reaches its key window while it stays in the background.
+    expect(plain.actions).toContain('press');
+    expect(plain.keyboard).toBeDefined();
     expect(plain.pointerActions).toBeUndefined();
-    expect(headed.actions).toEqual(expect.arrayContaining(['doubleTap', 'hover', 'press']));
-    expect(headed.pointerActions).toEqual(expect.arrayContaining(['tap']));
+    expect(physical.actions).toEqual(expect.arrayContaining(['doubleTap', 'hover', 'press']));
+    expect(physical.pointerActions).toEqual(expect.arrayContaining(['tap', 'doubleTap', 'secondaryTap', 'hover']));
+    expect(physical.keyboard).toBeDefined();
     expect(plain.workers).toBe(1);
     expect(describeEngine(plain).launchArgumentValues).toBe(true);
-    expect(plain.keyboard).toBeUndefined();
-    expect(headed.keyboard).toBeDefined();
   });
 
   it('refuses options it does not take', () => {
     expect(() => resolveOptions({ settle: 1.5 })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
-    expect(() => resolveOptions({ binary: '' })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+    // The agent-desktop executable is gone: a config that still names one fails to load, rather than run on something else.
+    expect(() => resolveOptions({ binary: '/usr/local/bin/agent-desktop' } as never)).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
     expect(() => resolveOptions({ snapshot: 'all' as never })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
     expect(() => resolveOptions({ bogus: 1 } as never)).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
-    expect(resolveOptions({ settle: false })).toMatchObject({ settleMs: 0, headed: false, interactiveOnly: false });
+    expect(resolveOptions({ settle: false })).toMatchObject({ settleMs: 0, physicalInput: false, interactiveOnly: false });
     expect(resolveOptions({})).toMatchObject({ maxDepth: 24 });
     expect(resolveOptions({ maxDepth: 50 })).toMatchObject({ maxDepth: 50 });
     for (const maxDepth of [0, 51, 2.5]) expect(() => resolveOptions({ maxDepth })).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
@@ -43,10 +44,25 @@ describe('desktop()', () => {
     expect(check({ appPath: 'build/App.app' })).not.toThrow();
   });
 
-  it.skipIf(process.platform === 'darwin')('loads anywhere, and refuses to start a target on any OS but macOS', async () => {
+  it.each(['linux', 'win32'] as const)('loads on %s, and reports a target there as unsupported before it starts', async (platform) => {
     const engine = desktop();
     expect(engine.platform).toBe('macos');
-    await expect(Promise.resolve().then(() => engine.prepare?.({} as never))).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
-    await expect(Promise.resolve().then(() => engine.init?.({} as never))).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    await onPlatform(platform, async () => {
+      const unsupported = { code: 'UNSUPPORTED_CAPABILITY', message: `desktop() is not supported on ${platform}: it drives macOS apps only` };
+      await expect(Promise.resolve().then(() => engine.prepare?.({} as never))).rejects.toMatchObject(unsupported);
+      await expect(Promise.resolve().then(() => engine.init?.({} as never))).rejects.toMatchObject(unsupported);
+      await expect(engine.doctor?.({} as never)).resolves.toEqual([{ id: 'platform', status: 'fail', message: unsupported.message }]);
+    });
   });
 });
+
+/** Runs `body` while `process.platform` reads `platform`. */
+async function onPlatform(platform: NodeJS.Platform, body: () => Promise<void>): Promise<void> {
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    await body();
+  } finally {
+    if (real !== undefined) Object.defineProperty(process, 'platform', real);
+  }
+}

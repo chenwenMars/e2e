@@ -304,8 +304,10 @@ subscriptionModel satisfies ModelInstance;
 
 // Secrets: a bare value or a provider; every handle is the same opaque Secret.
 ({ targets, secrets: { key: 'sk_test', totp: () => '123456' } }) satisfies E2EConfig;
-// @ts-expect-error a secret needs a value; an env variable that may be unset must be defaulted.
+// A secret may be undefined, like an env variable that may be unset: E2E_SECRET_KEY gives the value, or the config load fails.
 ({ targets, secrets: { key: process.env['STRIPE_KEY'] } }) satisfies E2EConfig;
+// @ts-expect-error a secret is a string or a provider
+({ targets, secrets: { key: 42 } }) satisfies E2EConfig;
 secrets.get('key') satisfies Secret;
 // An engine declares the secrets its options hold and resolves them per attempt.
 ({ name: 'gated', version: '1.0.0', spiVersion: 1, secrets: [secrets.get('key')] }) satisfies Engine;
@@ -665,6 +667,8 @@ screen.getByRole('grid').getByRole('rowgroup').getByRole('gridcell');
 screen.getByRole('carousel');
 // @ts-expect-error a Playwright role the vocabulary does not carry stays out
 screen.getByRole('generic');
+// @ts-expect-error static text is `text` in a device or desktop tree, which getByText finds; it is not a role
+screen.getByRole('text', 'Words');
 // @ts-expect-error img is an alias getByRole accepts, never a Role an engine emits
 'img' satisfies Role;
 'image' satisfies Role;
@@ -907,6 +911,14 @@ void screen.getByRole('button').doubleTap({ count: 3 });
 declare const multiTapAction: Extract<import('../../src/engine/index.ts').LocatorAction, { kind: 'multiTap' }>;
 void (multiTapAction.count satisfies number);
 void (multiTapAction.modifiers satisfies readonly KeyModifier[] | undefined);
+void screen.scrollTo('bottom');
+void screen.getByTestId('feed').scrollTo('left', { timeout: 1_000 });
+// @ts-expect-error scrollTo takes an edge, not a position: positions are web-only, through browser.evaluate.
+void screen.scrollTo({ x: 0, y: 500 });
+// @ts-expect-error an edge is top, bottom, left, or right; corners are two calls.
+void screen.scrollTo('bottomRight');
+declare const scrollToAction: Extract<import('../../src/engine/index.ts').LocatorAction, { kind: 'scrollTo' }>;
+void (scrollToAction.edge satisfies import('../../src/index.ts').ScrollEdge);
 // @ts-expect-error a point has both coordinates.
 void screen.tapAt({ x: 1 });
 // @ts-expect-error a path swipe names both ends.
@@ -1584,6 +1596,17 @@ test.extend<{}, {}, typeof optionalServicesConfig>()('reads an optional service'
   void services.mailbox?.url;
 });
 
+// A service set to undefined starts nothing, and the fixture's value is undefined.
+const disabledServiceConfig = defineConfig({
+  services: { mailbox: withMailbox ? mailbox : undefined },
+  targets: [{ engine: paneEngine }],
+});
+test.extend<{}, {}, typeof disabledServiceConfig>()('reads a service set to undefined', async ({ services }) => {
+  // @ts-expect-error mailbox is undefined when the condition is false
+  void services.mailbox.url;
+  void services.mailbox?.url;
+});
+
 // A test, a group, and a call each pin a configured agent by name.
 test('as the buyer', { agent: 'buyer' }, async () => {});
 test('traced on retries', { trace: 'on-all-retries', video: 'retain-on-failure' }, async () => {});
@@ -1643,7 +1666,7 @@ redactStepText('text');
 // A grammar tool's result is a rendered screen: text, or text with its screenshot.
 declare const rendered: ScreenOutput;
 if (typeof rendered !== 'string') rendered.pixels.mediaType satisfies string;
-// @ts-expect-error limits left the config: maxInputTokens is per agent, the rest are fixed by the runner
+// @ts-expect-error limits left the config: maxInputTokens and maxContextBytes are per agent, the rest are fixed by the runner
 ({ targets, limits: { maxModelTokensPerCall: 1_000 } }) satisfies E2EConfig;
 
 declare const report: Report;
@@ -1704,7 +1727,7 @@ grok('grok-4', {});
 opencodeConsole('go/deepseek-v4.1-flash', {});
 
 // agents.<name>: the judge slot beside model, and every budget in one entry.
-({ targets: [{ engine }], agents: { default: { model, judge: model, judgmentTimeout: 30_000, maxSteps: 5, maxModelCalls: 10, maxObservationBytes: 1000, maxInputTokens: 32_000 } } }) satisfies E2EConfig;
+({ targets: [{ engine }], agents: { default: { model, judge: model, judgmentTimeout: 30_000, maxSteps: 5, maxModelCalls: 10, maxObservationBytes: 1000, maxInputTokens: 32_000, maxContextBytes: 32_768 } } }) satisfies E2EConfig;
 // @ts-expect-error the judge is an AI SDK instance like model; a string names no gateway model
 ({ targets: [{ engine }], agents: { default: { model, judge: 'openai/gpt-5.6-luna-fast' } } }) satisfies E2EConfig;
 // @ts-expect-error judgmentTimeout is milliseconds, not a duration string
@@ -1923,6 +1946,7 @@ void host.openSession({
   onStep: (step) => {
     step satisfies StepProgress;
     if (step.phase === 'end') step.status satisfies StepRecord['status'];
+    if (step.phase === 'end') step.cache?.mode satisfies 'self-finalized' | 'agent-concluded' | 'missed' | undefined;
   },
 } satisfies OpenSessionOptions);
 // @ts-expect-error every hosted session requires options with a name

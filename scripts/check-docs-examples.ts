@@ -46,6 +46,8 @@ const EXAMPLES: Record<string, string> = {
   'docs/examples/javascript/e2e.config.js': 'docs/reference/config.mdx',
   'docs/examples/desktop/e2e.config.ts': 'docs/desktop.mdx',
   'docs/examples/desktop/tests/sign-in.e2e.ts': 'docs/desktop.mdx',
+  'docs/examples/electron/e2e.config.ts': 'docs/electron.mdx',
+  'docs/examples/electron/tests/sign-in.e2e.ts': 'docs/electron.mdx',
   'docs/examples/mobile/device-provider.ts': 'docs/mobile.mdx',
   'docs/examples/mobile/device-cloud-provider.ts': 'docs/mobile.mdx',
   'docs/examples/mobile/testmu.config.ts': 'docs/integrations/testmu.mdx',

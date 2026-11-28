@@ -530,10 +530,10 @@ describe('AttemptBudget.capped', () => {
 });
 
 describe('LocatorEngine read contract', () => {
-  it('collapses stale reads to a zero-count sample so assertion polls re-resolve', async () => {
+  it('marks a stale read as a stale sample with no node so assertion polls re-resolve', async () => {
     const { engine } = makeEngine({ read: ['stale'] });
     const sample = await engine.tryRead(EXPRESSION, engine.reads(new Deadline(5_000)));
-    expect(sample).toEqual({ node: null, count: 0 });
+    expect(sample).toEqual({ node: null, count: 1, stale: true });
   });
 
   it('translates non-stale read failures', async () => {
@@ -808,11 +808,12 @@ describe('LocatorEngine retries a cross-realm driver failure', () => {
     expect(calls.resolve).toBe(2);
   });
 
-  it('treats a foreign stale read as zero matches while polling', async () => {
+  it('treats a foreign stale read as a stale sample while polling', async () => {
     const { engine } = makeEngine({ read: ['foreign-stale'] });
     await expect(engine.tryRead(EXPRESSION, engine.reads(new Deadline(0)))).resolves.toEqual({
       node: null,
-      count: 0,
+      count: 1,
+      stale: true,
     });
   });
 

@@ -15,7 +15,7 @@ import { abortError, cancelledError, Deadline, withAbort, withTimeout } from '@e
 import { LocatorEngine } from '@e2e-dev/core/lib/locator/engine';
 import { createAttemptArtifacts, type AttemptArtifacts } from '@e2e-dev/core/lib/run/artifacts';
 import { AttemptBudget } from '@e2e-dev/core/lib/run/budget';
-import { createApp } from '@e2e-dev/core/lib/run/fixtures';
+import { createApp, createEngineFixtures } from '@e2e-dev/core/lib/run/fixtures';
 import { outputLayout } from '@e2e-dev/core/lib/run/output';
 import { sessionRecordings } from '@e2e-dev/core/lib/run/recordings';
 import { StepRecorder } from '@e2e-dev/core/lib/run/steps';
@@ -411,6 +411,30 @@ export class HeldTestTools {
     });
 
     let screenshots: AttemptArtifacts | undefined;
+    // `run_code`'s attempt: the held test's session, with the engine's fixtures over it as a standalone session's code
+    // gets them, each built on first touch. Built on the first call and kept for the attachment, as a standalone session
+    // keeps its own, so what a fixture keeps (a route the browser fixture holds) carries from one call to the next. The
+    // code's calls are the session's, not the held test's steps: they record here, and a step hold never stops them.
+    const statementBudget = new AttemptBudget(signal, new Deadline(Number.POSITIVE_INFINITY));
+    const buildCodeAttempt = () => {
+      const steps = new StepRecorder(this.attemptId, { redact });
+      const locator = this.locator(statementBudget);
+      const target = this.options.target;
+      const runId = this.options.runId;
+      const attemptId = this.attemptId;
+      return {
+        agentRuntime: { ...runtime, engine: locator, steps },
+        budget: statementBudget,
+        session,
+        runId,
+        attemptId,
+        fixtures: Object.defineProperties(
+          { app: createApp({ config, steps, target, session, artifacts }, locator), services: this.options.services },
+          Object.getOwnPropertyDescriptors(createEngineFixtures({ config, target, session, steps, budget: statementBudget, runId, attemptId, artifacts })),
+        ),
+      };
+    };
+    let codeAttempt: ReturnType<typeof buildCodeAttempt> | undefined;
     const context: StepExecutorContext = {
       step: {
         kind: 'act',
@@ -479,30 +503,12 @@ export class HeldTestTools {
         }
       },
       runCode: {
-        // A held test's attempt only builds `app` and `services`, so the code doesn't get an engine fixture.
-        engineFixtures: [],
+        engineFixtures: Object.keys(this.options.target.engine?.fixtures ?? {}),
         attempt: (requestSignal) => {
-          const statementBudget = new AttemptBudget(requestSignal ?? signal, new Deadline(Number.POSITIVE_INFINITY));
-          const steps = new StepRecorder(this.attemptId, { redact });
-          const locator = this.locator(statementBudget);
-
-          return {
-            agentRuntime: { ...runtime, engine: locator, steps },
-            budget: statementBudget,
-            session,
-            runId: this.options.runId,
-            attemptId: this.attemptId,
-            fixtures: {
-              app: createApp({
-                config,
-                steps,
-                target: this.options.target,
-                session,
-                artifacts,
-              }, locator),
-              services: this.options.services,
-            },
-          };
+          // Each call runs in its own phase of the attachment's one budget, cancelled with that call.
+          statementBudget.enter(requestSignal ?? signal, Number.POSITIVE_INFINITY);
+          codeAttempt ??= buildCodeAttempt();
+          return codeAttempt;
         },
       },
       warn: () => undefined,

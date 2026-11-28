@@ -30,25 +30,23 @@ bunx e2e init
 | `.agents/skills/e2e/` | Codex, Cursor, OpenCode e outros agentes que leem `.agents/skills` |
 | `.claude/skills/e2e/` | Claude Code. Um link simbólico para `.agents/skills/e2e/` quando os dois estão instalados. |
 
-A cópia contém o `SKILL.md` e referências por tópico.
-[`e2e upgrade`](/reference/cli#e2e-upgrade) a atualiza, também depois que você
-atualiza pelo seu gerenciador de pacotes. Sem o `init`,
-`npx skills add e2e-inc/e2e` instala a skill, e `npx e2e guide [topic]` a
-imprime a partir do pacote instalado. O plugin abaixo instala as três skills
-do e2e para todos os projetos.
+O `init` coloca o `SKILL.md` e as referências por tópico nessas pastas, e o
+[`e2e upgrade`](/reference/cli#e2e-upgrade) os mantém atualizados. Sem o
+`init`, instale a skill com `npx skills add e2e-inc/e2e` ou imprima a skill a
+partir do pacote instalado com `npx e2e guide [topic]`. O plugin abaixo instala
+as três skills do e2e globalmente, para todos os projetos.
 
-O `init` também adiciona esta linha ao fim do `AGENTS.md`, para que um prompt
-como “adicione um teste para o checkout” chegue à skill. O `CLAUDE.md` recebe
-a linha com o caminho `.claude/skills`, e um arquivo ausente é criado.
-Adicione a linha você mesmo quando instalar a skill de outra forma:
+O `init` também adiciona uma indicação curta ao `AGENTS.md` (e ao `CLAUDE.md`,
+com o caminho `.claude/skills`), criando o arquivo se necessário, para que
+prompts como “adicione um teste para o checkout” usem a skill automaticamente.
+Se você instalar a skill de outra forma, adicione esta linha você mesmo:
 
 ```md title="AGENTS.md"
 End-to-end tests use e2e; read .agents/skills/e2e/SKILL.md before writing or running one.
 ```
 
-O pacote também inclui esta documentação como páginas `.mdx` para leitura
-offline, em `node_modules/e2e/docs` em um projeto de pacote único. Um link como
-`/reference/cli` corresponde a `docs/reference/cli.mdx`.
+O pacote `e2e` também inclui esta documentação offline, em
+`node_modules/e2e/docs/`, para que os agentes a leiam localmente.
 
 <Accordion title="Instale o plugin para Claude Code, Codex ou Cursor">
 
@@ -80,9 +78,10 @@ Inicie uma nova sessão. No Cursor, rode **Developer: Reload Window**. No Cursor
 Teams e Enterprise, plugins locais precisam da configuração de administrador
 **Allow Local Plugin Imports**, ou um administrador importa `e2e-inc/e2e` como
 marketplace da equipe. O plugin adiciona as skills
-`e2e`, `create-verification-skill` e `migrate-to-e2e` e o
-[servidor MCP](/mcp-server), não o pacote npm. Invoque as outras duas sob o nome
-do plugin, `/e2e:<skill>` no Claude Code e `$e2e:<skill>` no Codex, e como
+`e2e`, `create-verification-skill` e `migrate-to-e2e`, não o pacote npm. No
+Codex e no Cursor, ele também adiciona o [servidor MCP](/mcp-server); no Claude
+Code e no Grok Build, registre o servidor no projeto. Invoque as outras duas sob
+o nome do plugin, `/e2e:<skill>` no Claude Code e `$e2e:<skill>` no Codex, e como
 `/<skill>` no Cursor.
 
 A versão do plugin acompanha os lançamentos do e2e. Para atualizá-lo, rode
@@ -122,6 +121,39 @@ hermes skills install e2e-inc/e2e/e2e
 
 </Accordion>
 
+<Accordion title="Deixe o pnpm criar o link da skill">
+
+O pnpm 12.11 ou posterior pode criar um link para a skill a partir do pacote
+`e2e` instalado, em vez da cópia que o `init` escreve. Até você escolher, todo
+`pnpm install` lista `e2e skills` como aguardando aprovação. Escolha no
+`pnpm-workspace.yaml` da raiz do workspace, onde o pnpm cria os links das
+skills:
+
+- **Mantenha a cópia.** Defina `skills: false`. A linha de aprovação some.
+- **Deixe o pnpm criar o link.** Use o pnpm 12.18 ou posterior: versões
+  anteriores chamam o link de `pnpm-e2e-e2e`, não de `e2e`, o nome que o
+  `AGENTS.md` usa. Apague `.agents/skills/e2e` e `.claude/skills/e2e` e depois
+  defina `skills: true` ou rode `pnpm approve`. Cada instalação cria o link da
+  skill nas pastas de skills da raiz e adiciona o link ao `.gitignore` dessas
+  pastas, então a skill acompanha cada atualização do `e2e`. Antes da primeira
+  instalação, a skill não existe: um agente que lê um clone novo não encontra
+  nada nesse caminho.
+
+```yaml title="pnpm-workspace.yaml"
+permissions:
+  e2e:
+    skills: true
+```
+
+Quando ainda existe uma cópia, o pnpm cria o link da skill ao lado dela, com o
+nome `pnpm-e2e-e2e`, e os agentes carregam duas skills `e2e`. O `init` e o
+`upgrade` avisam sobre isso: apague a cópia e depois rode `pnpm install --force`
+para renomear o link para `e2e`. Nenhum dos dois comandos sobrescreve o link do
+pnpm, e o `init` não adiciona uma cópia onde o pnpm cria o link da skill,
+inclusive em um membro do workspace.
+
+</Accordion>
+
 ## Deixe o agente usar o app
 
 O `e2e mcp` dá ao agente uma sessão ao vivo no seu app. O agente confere seus
@@ -131,42 +163,54 @@ configuração e prompts.
 
 ## Como um agente escreve e roda um teste
 
-A skill instrui o agente a ler primeiro a configuração e um teste existente.
-Com o `e2e mcp`, ele percorre o fluxo em uma sessão e escreve cada passo à
-medida que o executa. Campos conhecidos e valores exatos viram chamadas de
-`screen`, a partir de localizadores que corresponderam a um único nó:
+A skill instrui o seu agente a ler primeiro a sua configuração e um teste
+existente. Com o `e2e mcp`, ele percorre o fluxo em uma sessão ao vivo e
+escreve cada passo à medida que avança. Cada teste verifica um comportamento:
+prepare o estado inicial, aja rumo a um objetivo e, no fim, verifique o
+resultado:
 
-```ts title="tests/checkout.e2e.ts"
-import { test, expect, credentials } from 'e2e';
+```ts title="tests/shop.e2e.ts"
+import { test, expect } from 'e2e';
 
-test('a signed-in user reaches checkout', async ({ screen, app, agent }) => {
-  const user = credentials.user('customer');
-  await app.open('/login');
-  await screen.getByLabel('Email').fill(user.username);
-  await screen.getByLabel('Password').fill(user.password);
-  await screen.getByRole('button', 'Sign in').click();
-  await expect(screen.getByRole('heading', 'Welcome back')).toBeVisible();
+test('filters the shop to items under $20', { session: 'customer' }, async ({ app, agent, screen }) => {
+  const results = screen.getByRole('status', 'Results');
+  const products = screen.getByRole('list', 'Products').getByRole('listitem');
+  await app.open('/shop');
+  await results.waitFor();
+  await products.filter({ hasText: 'Leather Backpack, $90' }).waitFor();
 
-  await agent.act('Add the cheapest item on the page to the cart');
-  await expect(screen.getByRole('status', 'Cart')).toHaveText('1 item');
-  await agent.act('Open the cart');
-  await expect(screen.getByRole('heading', 'Your cart')).toBeVisible();
+  await agent.act('show only items under $20');
+
+  await expect(results).toHaveText('2 items under $20');
+  await expect(products).toHaveText(['Canvas Tote, $14', 'Steel Bottle, $18']);
 });
 ```
 
-- **Um `agent.act` por [objetivo atômico](/core-concepts#goals), depois um
-  `expect`.** O `expect` falha quando o agente fez a coisa errada. Um matcher
-  de localizador, ou outra
-  [verificação](/cache#when-a-recording-is-written), também permite que o
-  cache reproduza o passo.
+- **Um comportamento e um [objetivo](/core-concepts#goals) por teste.** Dê ao
+  `agent.act` os passos específicos de que ele precisa para alcançar esse
+  objetivo. Divida o caminho em várias chamadas quando um passo posterior
+  precisar de um estado de tela conhecido, quando um fluxo longo arriscar
+  estourar os orçamentos `maxSteps` ou `maxModelCalls`, ou quando uma falha no
+  meio precisar de uma fronteira de passo própria. Explique a divisão e espere
+  pelo estado de tela intermediário antes de continuar. Confira o resultado no
+  fim para verificar o comportamento e confirmar a
+  [gravação](/cache#when-a-recording-is-written).
+- **Localizadores nomeados.** Um localizador que o teste usa duas vezes, como
+  `results`, vira uma `const`, então renomear um controle exige uma única
+  edição.
 - **Sem sleeps.** Os localizadores fazem polling, as ações esperam pelo
   elemento-alvo e o `expect` tenta novamente até o seu tempo limite.
-- **Segredos via `credentials.user(name)`.** Declare-os na configuração.
-  Nunca os escreva em um teste.
+- **Dê a cada usuário uma sessão separada.** Um
+  [teste de preparação](/authentication) faz login com
+  `credentials.user(name)` e salva a sessão do usuário principal. Para um fluxo
+  como um chat, [abra uma segunda sessão](/core#open-a-host-inside-a-test) e
+  verifique o resultado na sessão do destinatário. Nunca escreva uma senha ou
+  outro segredo em um teste: declare as credenciais do runner na configuração e
+  passe os segredos de um segundo host por `launch({ secrets })`.
 
-Enquanto itera, o agente roda só o teste em que está trabalhando, pela linha
-em que o seu `test(` começa. Com `--action-timeout 5000`, um localizador errado
-falha após 5 s em vez de 30 s:
+Enquanto itera, o agente roda só o teste que está editando (pelo número da
+linha) com `--action-timeout 5000`, para que um localizador errado falhe em 5
+segundos em vez de 30:
 
 <CodeGroup>
 ```bash npm
@@ -182,50 +226,38 @@ bunx e2e run tests/checkout.e2e.ts:3 --action-timeout 5000
 ```
 </CodeGroup>
 
-O agente corrige erros de CLI, de configuração e de coleta antes de rodar de
-novo. Ele não edita gravações do cache.
-
-O agente mantém o cache de replay ligado, então um objetivo cuja verificação
-passou é reproduzido sem chamadas ao modelo. Ele desliga as novas tentativas,
-já que uma nova tentativa roda todos os objetivos ao vivo. Quando o teste
-passa, o agente remove `--action-timeout` e o roda uma vez com `--no-cache`
-para verificar que o agente ao vivo alcança todos os objetivos. Veja
+O agente deixa o cache de replay ligado, para que os objetivos que passam sejam
+reproduzidos sem chamar um modelo, e desliga as novas tentativas (já que elas
+rodam todos os objetivos ao vivo). Quando o teste passa, o agente remove
+`--action-timeout` e roda o teste uma vez com `--no-cache` para garantir que o
+agente ao vivo ainda conclua todos os objetivos. Veja
 [Rode um teste de novo enquanto o corrige](/cache#rerun-a-test-while-you-fix-it).
 
 ## Como um agente lê uma falha
 
-Por padrão ([`trace`](/reference/config#trace)), uma execução escreve uma
-página de trace para cada teste que falhou, excedeu o tempo limite, foi
-interrompido ou se mostrou instável, no diretório do teste em
-`.e2e/results/`. `.e2e` é o `output` padrão. O terminal indica a página abaixo
-de cada teste que falhou, como `❯ trace .e2e/results/<test>/trace.md`.
+Por padrão ([`trace`](/reference/config#trace)), o e2e escreve um arquivo
+`trace.md` em `.e2e/results/` para cada teste que falhou, excedeu o tempo
+limite, foi interrompido ou se mostrou instável. O terminal imprime o caminho
+logo abaixo da falha (`❯ trace .e2e/results/<test>/trace.md`).
 
-O agente lê essa página, não o `.e2e/report.json`, que guarda os mesmos fatos
-para [scripts](/debugging). A página tem a linha que falhou e cada passo com o
-que ele fez: o nó que uma ação atingiu, os valores que uma asserção leu, a
-decisão do cache, erros do console e requisições que falharam. Ela também tem
-os últimos turnos do agente e a tela no momento da falha.
+O seu agente de código lê o `trace.md` em vez do `report.json` bruto. O arquivo
+inclui a linha que falhou, o alvo e o resultado de cada passo, erros do
+console, requisições de rede que falharam, os últimos turnos do agente e a tela
+no momento da falha. Se o agente precisar conferir uma tela que não está no
+trace, ele abre a URL dessa tela diretamente em uma sessão MCP, em vez de
+percorrer o fluxo de novo desde o início.
 
-O agente corrige o teste a partir dessas evidências. Ele corrige todas as
-linhas que as evidências cobrem, não só a que falhou. Um teste para no
-primeiro passo que falha, então o agente também confere as linhas depois dele
-antes da próxima execução.
-
-Para ver uma tela que a página não mostra, o agente a abre em uma sessão MCP
-pelo caminho mais curto, como a URL dela na web. Ele não percorre o fluxo de
-novo desde o início.
-
-Para detalhes das chamadas ao modelo, o agente adiciona `--ai-trace` e lê o
-trace com o [unbox-ai](/debugging#agent-steps). Combine com `--no-cache` para
-capturar todas as chamadas ao modelo no fluxo. Não abra o trace bruto no
-contexto de um agente. Ele repete prompts e pode ter vários megabytes.
+Para inspecionar chamadas ao modelo uma a uma, passe `--ai-trace --no-cache` e
+leia a saída com o [unbox-ai](/debugging#agent-steps). Não cole o
+`ai-trace.json` bruto no contexto de um agente, já que o arquivo repete prompts
+entre turnos e pode chegar a vários megabytes.
 
 ## Gere uma skill de verificação para o seu app
 
-A skill do e2e ensina o runner, não o seu app. A skill
-`create-verification-skill` escreve uma skill local do projeto,
-`.agents/skills/verify-<app>/`, que ensina o app, e a testa uma vez antes de
-entregá-la.
+A skill `e2e` ensina o framework, não o seu app. A skill
+`create-verification-skill` gera uma skill local do projeto,
+`.agents/skills/verify-<app>/`, feita sob medida para o seu app, e a testa uma
+vez antes de terminar.
 
 <CodeGroup>
 ```bash npm

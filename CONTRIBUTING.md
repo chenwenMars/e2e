@@ -327,7 +327,9 @@ git checkout -- packages .changeset
 ```
 
 The first script writes a changeset that bumps every public package, versions
-them as `<next version>-canary-<datetime>`, and builds. The second publishes
+them as `<next version>-canary-<datetime>`, and builds, the desktop engine's
+native driver for both Mac architectures included: run it on a Mac with
+[rustup](https://rustup.rs) installed. The second publishes
 with `--tag canary`; it is a separate step because npm's two-factor prompt
 (a hardware key, for instance) has to be answered at the terminal. Bumping all
 of them together is what keeps the engines installable: their peer ranges are
@@ -387,7 +389,7 @@ prompts and tool descriptions.
 ### Engine contract
 
 `@e2e-dev/core/engine` (re-exported as `e2e/engine`) is what `@e2e-dev/web`,
-`@e2e-dev/mobile`, and `@e2e-dev/desktop` build against, and what a third-party
+`@e2e-dev/mobile`, `@e2e-dev/desktop`, and `@e2e-dev/electron` build against, and what a third-party
 engine builds against too. A change to that contract bumps `@e2e-dev/core`,
 `e2e`, and every engine together in one release, with a changeset for each,
 so an engine and a runner from the same release always match. `e2e` and `@e2e-dev/core` are a changesets

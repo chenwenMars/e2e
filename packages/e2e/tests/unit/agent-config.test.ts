@@ -46,6 +46,20 @@ describe('agent config defaults', () => {
     expect(resolve({ agents: { default: { providerOptions } } }).agent.providerOptions).toEqual(providerOptions);
   });
 
+  it('leaves out an agent, a tool, and a provider set to undefined', () => {
+    const lookup = readOnlyTool();
+    const config = resolve({
+      agents: {
+        buyer: undefined,
+        default: { tools: { lookup, other: undefined }, providerOptions: { openai: { reasoningEffort: 'low' }, google: undefined } },
+      },
+    });
+    expect([...config.agents.keys()]).toEqual(['default']);
+    expect(config.agent.tools).toStrictEqual({ lookup });
+    expect(config.agent.providerOptions).toStrictEqual({ openai: { reasoningEffort: 'low' } });
+    expect(config.configDigest).toBe(resolve({ agents: { default: { tools: { lookup }, providerOptions: { openai: { reasoningEffort: 'low' } } } } }).configDigest);
+  });
+
   it('rejects agent.providerOptions that is not a record of provider records', () => {
     expect(() => resolve({ agents: { default: { providerOptions: 'low' } } } as never)).toThrow(
       /agents\.default\.providerOptions must be an object/,
@@ -105,11 +119,41 @@ describe('agent config defaults', () => {
 
   it('rejects context larger than the agent-context limit', () => {
     expect(() => resolve({ agents: { default: { context: 'x'.repeat(16_385) } } })).toThrow(
-      'agents.default.context is 16385 bytes; the maximum is 16384',
+      'agents.default.context is 16385 bytes; the maximum is 16384, raise it with agents.default.maxContextBytes (up to 65536)',
     );
     expect(resolve({ agents: { default: { context: 'x'.repeat(16_384) } } }).agent.context).toHaveLength(16_384);
     expect(resolve({ agents: { default: { context: 'be terse' } } }).agent.context).toBe('be terse');
     expect(() => resolve({ agents: { default: { context: 5 } } } as never)).toThrow('agents.default.context must be a string');
+  });
+
+  it('moves the agent-context limit per agent with maxContextBytes', () => {
+    const long = 'x'.repeat(40_000);
+    const config = resolve({ agents: { default: { context: long, maxContextBytes: 40_000 }, ux: { context: 'short' } } });
+    const atCeiling = { maxContextBytes: 65_536, maxInputTokens: 200_000 };
+    expect(resolve({ agents: { default: { context: 'x'.repeat(65_536), ...atCeiling } } }).agent.context).toHaveLength(65_536);
+    expect(() => resolve({ agents: { default: { context: 'x'.repeat(65_537), ...atCeiling } } })).toThrow(
+      /^agents\.default\.context is 65537 bytes; the maximum is 65536$/,
+    );
+    expect(config.agent).toMatchObject({ context: long, maxContextBytes: 40_000 });
+    expect(config.agents.get('ux')!.maxContextBytes).toBe(16_384);
+    expect(() => resolve({ agents: { default: { maxContextBytes: 40_000 }, ux: { context: long } } })).toThrow(
+      'agents.ux.context is 40000 bytes; the maximum is 16384',
+    );
+    expect(() => resolve({ agents: { default: { context: 'x'.repeat(2_000), maxContextBytes: 1_024 } } })).toThrow(
+      'agents.default.context is 2000 bytes; the maximum is 1024',
+    );
+    expect(() => resolve({ agents: { default: { context: 'x'.repeat(60_000), maxContextBytes: 65_536 } } })).toThrow(
+      'agents.default.context is 60000 bytes, which leaves no room for the screen under agents.default.maxInputTokens 64000 (a request is counted in bytes); set agents.default.maxInputTokens to at least 65120',
+    );
+    expect(resolve({ agents: { default: { context: 'x'.repeat(60_000), maxContextBytes: 65_536, maxInputTokens: 65_120 } } }).agent.maxInputTokens).toBe(65_120);
+    for (const maxContextBytes of [1_023, 65_537, 2_000.5]) {
+      expect(() => resolve({ agents: { default: { maxContextBytes } } })).toThrow(
+        'agents.default.maxContextBytes must be an integer from 1024 through 65536',
+      );
+    }
+    expect(() => resolve({ agents: { default: { maxAgentContextBytes: 40_000 } } } as never)).toThrow(
+      'agents.default.maxAgentContextBytes was removed: use maxContextBytes',
+    );
   });
 });
 
@@ -340,18 +384,18 @@ describe('run limits', () => {
   it('fills the per-agent limits with the largest any configured agent may use, whichever runs', () => {
     const agents = {
       default: { maxObservationBytes: 4_096, maxInputTokens: 200_000 },
-      ux: { maxObservationBytes: 65_536, maxInputTokens: 8_000 },
+      ux: { maxObservationBytes: 65_536, maxInputTokens: 8_000, maxContextBytes: 32_768 },
     };
     for (const selected of [undefined, ['ux']]) {
       const config = resolve({ agents }, BASE_ENV, selected === undefined ? undefined : { agents: selected });
-      expect(config.limits).toMatchObject({ maxObservationBytes: 65_536, maxModelTokensPerCall: 200_000, maxLedgerBytes: 8_192 });
+      expect(config.limits).toMatchObject({ maxAgentContextBytes: 32_768, maxObservationBytes: 65_536, maxModelTokensPerCall: 200_000, maxLedgerBytes: 8_192 });
     }
     // The implicit default agent counts too.
-    expect(resolve({ agents: { ux: { maxInputTokens: 8_000 } } }).limits.maxModelTokensPerCall).toBe(64_000);
+    expect(resolve({ agents: { ux: { maxInputTokens: 8_000, maxContextBytes: 1_024 } } }).limits).toMatchObject({ maxModelTokensPerCall: 64_000, maxAgentContextBytes: 16_384 });
   });
 
   it('rejects the removed limits key, naming each replacement', () => {
-    expect(() => resolve({ limits: { maxModelTokensPerCall: 1_000 } } as never)).toThrow(/^limits was removed: set maxInputTokens on each agent/);
+    expect(() => resolve({ limits: { maxModelTokensPerCall: 1_000 } } as never)).toThrow(/^limits was removed: set maxInputTokens \(it was limits\.maxModelTokensPerCall\) and maxContextBytes \(it was limits\.maxAgentContextBytes\) on each agent/);
     expect(() => resolve({ limits: {} } as never)).toThrow(/^limits was removed: /);
     expect(() => resolve({ agents: { default: { limits: {} } } } as never)).toThrow(/^agents\.default\.limits was removed: set maxInputTokens/);
   });

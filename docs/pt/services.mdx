@@ -1,0 +1,365 @@
+---
+title: Serviços
+description: Inicie dependências, como uma API de e-mail, antes de o seu app rodar e use-as nos testes.
+---
+
+Um serviço é uma dependência de que o seu app precisa, como uma API de e-mail,
+um provedor de OAuth ou um banco de dados. Quando você roda `e2e run` ou
+`e2e explore`, cada serviço inicia antes dos comandos do app e é encerrado no
+fim da execução. Os serviços também iniciam no
+[`e2e mcp` e no `openHost`](#services-in-e2e-mcp-and-openhost).
+
+## Defina um serviço
+
+Chame `defineService` com um objeto cuja propriedade `start` seja um gerador
+assíncrono. O gerador inicia a dependência antes do `yield`, e a configuração
+e os testes recebem o objeto entregue pelo yield como o valor do serviço.
+Quando a execução termina, tudo o que vem depois do `yield` encerra a
+dependência:
+
+```ts title="services/email.ts" expandable
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { text } from 'node:stream/consumers';
+import { setTimeout } from 'node:timers/promises';
+import { defineService } from 'e2e';
+
+type Email = {
+  to: string;
+  subject: string;
+};
+
+export const email = defineService({
+  async *start({ signal }) {
+    const emails: Email[] = [];
+
+    const server = createServer(async (request, response) => {
+      emails.push(JSON.parse(await text(request)));
+      response.end();
+    });
+
+    server.listen({ port: 0, host: '127.0.0.1', signal });
+
+    await once(server, 'listening', { signal });
+
+    const serverAddress = server.address();
+
+    if (serverAddress === null || typeof serverAddress === 'string') {
+      throw new Error('The email server has no TCP address.');
+    }
+
+    const received = (address: string) => emails.filter((message) => message.to === address);
+
+    yield {
+      url: `http://127.0.0.1:${serverAddress.port}`,
+      createInbox: () => ({ address: `${randomUUID()}@example.com` }),
+      received,
+      waitForEmail: async (address: string, { subject }: { subject: RegExp }) => {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const match = received(address).find((message) => subject.test(message.subject));
+
+          if (match !== undefined) {
+            return match;
+          }
+
+          await setTimeout(100);
+        }
+
+        throw new Error(`no email to ${address} with a subject matching ${subject} arrived within 10 seconds`);
+      },
+    };
+
+    server.close();
+
+    await once(server, 'close');
+  },
+});
+```
+
+Passe `signal` para tudo o que você inicia e encerra no serviço. O sinal é
+abortado nestes casos:
+
+- A inicialização é cancelada (por exemplo, com Ctrl+C), ou o serviço não faz
+  yield dentro do `startupTimeout` (60 segundos por padrão).
+- Quando os serviços não são mais necessários, o código depois do `yield` não
+  termina dentro do `shutdownTimeout` (10 segundos por padrão).
+- Ctrl+C é pressionado uma segunda vez no `e2e run` ou no `e2e explore`,
+  durante os testes ou enquanto os serviços estão sendo encerrados.
+
+Um serviço pode levar mais tempo para iniciar ou ser encerrado (como um que
+baixa uma imagem Docker). Defina `startupTimeout` ou `shutdownTimeout` (os
+mesmos nomes de [`app.command`](/reference/config#command)) em milissegundos
+no objeto que você passa para `defineService`:
+
+```ts
+export const database = defineService({
+  startupTimeout: 180_000, // default: 60000
+  async *start({ signal }) {
+    // ...
+  },
+});
+```
+
+## Passe o serviço para o app
+
+Adicione o serviço em `services` na sua configuração e passe o endereço do
+serviço para o app a partir de uma função `env`:
+
+```ts title="e2e.config.ts"
+import { defineConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { email } from './services/email.ts';
+
+export default defineConfig({
+  projectId: 'dev.example.signup',
+  services: { email },
+  targets: [
+    {
+      name: 'web',
+      engine: web(),
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          args: ['app/server.mjs'],
+          env: async ({ services }) => ({
+            PORT: '{port}',
+            EMAIL_API_URL: services.email.url,
+          }),
+        },
+      },
+    },
+  ],
+});
+```
+
+Os serviços iniciam na ordem das chaves, antes de qualquer comando do app, e
+são encerrados na ordem inversa, depois que os comandos do app terminam.
+
+A função `env` é chamada uma vez por execução, depois que os serviços iniciam
+e antes de qualquer comando do app iniciar. Para as outras regras de `env`,
+veja [`command`](/reference/config#command) na referência da configuração.
+
+Use [`defineConfig`](/reference/config#defineconfig) aqui em vez de
+`satisfies E2EConfig`, para que `services` em `env` seja tipado a partir da
+sua configuração.
+
+## Use o serviço nos testes
+
+Passe o tipo da sua configuração para `test.extend` para tipar a fixture
+`services`:
+
+```ts title="tests/fixtures.ts"
+import { test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+export const test = base.extend<{}, {}, typeof config>({});
+```
+
+Você pode usar `services` em testes, hooks e fixtures de qualquer um dos dois
+escopos:
+
+```ts title="tests/signup.e2e.ts"
+import { expect } from 'e2e';
+import { test } from './fixtures.ts';
+
+test('signing up sends one welcome email', async ({ app, screen, services }) => {
+  const inbox = await services.email.createInbox();
+
+  await app.open('/');
+  await screen.getByRole('textbox', { name: 'Email' }).fill(inbox.address);
+  await screen.getByRole('button', { name: 'Sign up' }).click();
+
+  const email = await services.email.waitForEmail(inbox.address, { subject: /welcome/i });
+
+  expect(email.subject).toContain('Welcome');
+  expect(await services.email.received(inbox.address)).toHaveLength(1);
+});
+```
+
+Cada worker recebe uma cópia dos dados entregues pelo yield. Toda função
+entregue pelo yield vira uma função assíncrona nos testes, então
+`services.email.createInbox()` retorna uma promise.
+Quando um teste chama essa função, o processo que iniciou os serviços roda a
+função real e devolve uma cópia do resultado. Esse processo é o do runner no
+`e2e run`, o servidor no `e2e mcp` e o processo do host no `openHost`.
+
+No `e2e run` e no `e2e explore`, todos os workers compartilham a mesma
+instância do serviço, então um teste pode ver e-mails enviados por outros
+testes. Com `openHost`, cada host inicia a própria instância. Se, entre um
+teste e outro, você zerar um serviço compartilhado (por exemplo, apagando
+todos os e-mails em `afterEach`), você também apaga os dados de testes que
+estão rodando em outros workers ao mesmo tempo. Em vez disso, faça o serviço
+dar a cada teste um ID único e separar os dados de cada teste por esse ID. No
+teste acima, `createInbox()` retorna uma caixa de entrada com um endereço
+único, e o teste lê só os e-mails enviados para esse endereço.
+
+## O que um serviço pode entregar pelo yield
+
+Faça yield de um objeto simples de qualquer formato. Os dados dentro do objeto
+são copiados com
+[`v8.serialize`](https://nodejs.org/api/v8.html#v8serializevalue). Veja o
+que funciona dentro dele:
+
+- Objetos simples, arrays, maps e sets podem se aninhar em qualquer
+  profundidade.
+- Strings, números, booleanos, bigints, `null`, `undefined`, datas, expressões
+  regulares, erros embutidos (como `TypeError`), `ArrayBuffer` e arrays
+  tipados (como `Buffer`) mantêm o tipo.
+- Funções podem aparecer em qualquer profundidade em objetos simples e arrays,
+  mas não dentro de um map ou de um set.
+
+Qualquer outro valor é rejeitado. Se você tem uma instância de uma classe
+personalizada, extraia para um objeto simples os dados e as funções de que os
+testes precisam.
+
+Com `defineService`, a maioria dos valores rejeitados gera um erro de tipo
+(como uma `URL`, uma `Promise`, uma função que recebe um callback ou uma
+função dentro de um `Map` ou de um `Set`). Uma instância de classe só com
+campos de dados ou uma instância da sua própria subclasse de `Error` passa
+mesmo assim na verificação de tipos (o TypeScript compara formatos, não
+classes), mas a execução falha com `INVALID_SERVICE_VALUE` quando começa.
+
+Funções entregues pelo yield rodam com `this` definido como `undefined`. Se um
+método depende de `this`, envolva-o em uma arrow function (como
+`sent: () => inbox.sent()`). Quando você chama uma função do serviço em um
+teste, os argumentos e o valor de retorno podem ser de qualquer um dos tipos
+de dados acima, mas não podem conter funções.
+
+## Quando um serviço falha
+
+| Código | Quando |
+| --- | --- |
+| [`SERVICE_START_FAILED`](/reference/errors#runner-codes) | `start` lança um erro, termina sem fazer yield, não é um gerador assíncrono ou não faz yield dentro do seu `startupTimeout`. Os serviços que já iniciaram são encerrados, e a execução falha. No `e2e mcp`, quem falha é o `open_session`. `openHost()` rejeita com esse erro. |
+| [`INVALID_SERVICE_VALUE`](/reference/errors#runner-codes) | O valor entregue pelo yield não é um objeto simples, ou contém um valor que não pode ser copiado. |
+| [`SERVICE_STOP_FAILED`](/reference/errors#runner-codes) | O código depois do `yield` lança um erro, faz yield uma segunda vez ou não termina dentro do `shutdownTimeout` do serviço. A execução falha com um erro de limpeza. No `e2e mcp`, o resumo de fechamento da última sessão inclui esse erro como uma linha de limpeza. `openHost` retorna esse erro em `host.close()`. |
+
+## Serviços no e2e mcp e no openHost
+
+O `e2e mcp` inicia os serviços de um arquivo de configuração quando a primeira
+sessão nesse arquivo abre, e os encerra quando a última fecha. Todas as
+sessões nesse arquivo compartilham os serviços. Se você editar a configuração
+enquanto há sessões abertas nela, os serviços em execução não mudam. Suas
+mudanças nos serviços passam a valer depois que a última sessão nesse arquivo
+fecha e uma nova abre.
+
+[`openHost`](/reference/runner#openhost) inicia os serviços quando o host
+abre. `host.close()` encerra os serviços depois que os processos do app
+terminam.
+
+## Rode um emulador de API local
+
+Um serviço pode rodar qualquer pacote que emule uma API de terceiros. Uma
+opção é o [emulate](https://emulate.dev), que roda emuladores locais de APIs
+como GitHub, Resend e Stripe. O exemplo abaixo usa o emulador do Resend do
+emulate, então instale o emulate como dependência de desenvolvimento:
+
+<CodeGroup>
+```bash npm
+npm install --save-dev emulate
+```
+
+```bash pnpm
+pnpm add -D emulate
+```
+
+```bash bun
+bun add -d emulate
+```
+</CodeGroup>
+
+Inicie um emulador com `createEmulator` e não faça yield do objeto inteiro do
+emulador. Se fizer isso, qualquer teste pode chamar o `close()` dele e
+encerrar o emulador para todos os workers. Em vez disso, faça yield só do que
+os testes precisam (como a `url` do emulador):
+
+```ts title="services/resend.ts"
+import { createEmulator } from 'emulate';
+import { defineService } from 'e2e';
+
+export const resend = defineService({
+  async *start() {
+    const emulator = await createEmulator({ service: 'resend', port: 0 });
+
+    yield { url: emulator.url };
+
+    await emulator.close();
+  },
+});
+```
+
+<Accordion title="Configuração e teste do emulador do Resend">
+
+```ts title="e2e.config.ts"
+import { defineConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { resend } from './services/resend.ts';
+
+export default defineConfig({
+  projectId: 'dev.example.signup',
+  services: { resend },
+  targets: [
+    {
+      name: 'web',
+      engine: web(),
+      app: {
+        url: 'http://127.0.0.1:0',
+        command: {
+          executable: 'node',
+          args: ['app/server.mjs'],
+          env: ({ services }) => ({
+            PORT: '{port}',
+            RESEND_API_KEY: 're_test',
+            RESEND_BASE_URL: services.resend.url,
+          }),
+        },
+      },
+    },
+  ],
+});
+```
+
+```ts title="tests/fixtures.ts"
+import { test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+export const test = base.extend<{}, {}, typeof config>({});
+```
+
+O teste lê os e-mails enviados pela API do Resend do emulador:
+
+```ts title="tests/signup.e2e.ts"
+import { randomUUID } from 'node:crypto';
+import { expect } from 'e2e';
+import { test } from './fixtures.ts';
+
+test('signing up sends a welcome email through Resend', async ({ app, screen, services }) => {
+  const address = `ada+${randomUUID()}@example.com`;
+
+  await app.open('/');
+  await screen.getByRole('textbox', { name: 'Email' }).fill(address);
+  await screen.getByRole('button', { name: 'Sign up' }).click();
+  await expect(screen.getByRole('heading', { name: 'Check your inbox' })).toBeVisible();
+
+  const response = await fetch(`${services.resend.url}/emails`);
+  const { data } = await response.json();
+
+  expect(data.filter((email: { to: string[] }) => email.to.includes(address))).toEqual([
+    expect.objectContaining({ to: [address], subject: 'Welcome' }),
+  ]);
+});
+```
+
+</Accordion>
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Escrevendo fixtures" icon="puzzle-piece" href="/fixtures">
+    Prepare os dados de teste antes de cada teste e limpe-os depois.
+  </Card>
+  <Card title="Referência da configuração" icon="code" href="/reference/config#services">
+    A chave `services` e a função `env`.
+  </Card>
+</CardGroup>

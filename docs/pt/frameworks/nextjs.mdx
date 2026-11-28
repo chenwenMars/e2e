@@ -1,0 +1,261 @@
+---
+title: Next.js
+description: Adicione o e2e a um app Next.js e teste-o com `next dev` localmente e com um build de produção na CI.
+---
+
+import { SetupPrompt } from '../../snippets/setup-prompt-card.jsx';
+
+export const setupPrompt = `Configure testes end-to-end com o e2e neste app Next.js. Documentação: \`https://e2e.com/docs/frameworks/nextjs.md\`
+
+1. Rode \`npx e2e init --yes\` (ou o equivalente em pnpm ou bun para este projeto).
+2. Verifique se o alvo que o init escreveu em e2e.config.ts corresponde ao da página: \`next dev\` localmente, \`next start\` quando CI estiver definida, na porta e com o gerenciador de pacotes que este app usa. Corrija-o se não corresponder.
+3. Pergunte-me qual modelo usar nos passos do agente e configure-o como https://e2e.com/docs/models.md indica.
+4. Instale as dependências, rode o teste de exemplo e corrija os erros até ele passar. Confira primeiro a seção “Corrija problemas do Next.js” da página.
+5. Escreva um teste para o fluxo de usuário mais importante deste app, rode-o e itere até ele passar.`;
+
+Adicione o e2e a um app Next.js existente. O e2e inicia o `next dev`
+localmente e o `next start` na CI, e roda seus testes no Chromium. Começando
+do zero? [Use o app de exemplo](#start-a-new-app) em vez disso.
+
+<SetupPrompt>
+
+<Prompt description={setupPrompt} children={setupPrompt} actions={["copy", "cursor"]} />
+
+</SetupPrompt>
+
+## Adicione o e2e ao seu app
+
+No diretório do seu app, rode o assistente:
+
+<CodeGroup>
+```bash npm
+npx e2e init
+```
+
+```bash pnpm
+pnpm dlx e2e init
+```
+
+```bash bun
+bunx e2e init
+```
+</CodeGroup>
+
+Escolha **Web (Playwright)** e um provedor de modelo. O assistente escreve
+`e2e.config.ts` e `tests/example.e2e.ts`, adiciona dependências e adiciona a
+saída de execução `.e2e/` ao `.gitignore`. Veja o
+[Início rápido](/quickstart) para cada opção.
+
+O assistente encontra o Next.js no `package.json`, escreve um alvo que inicia
+seu app e imprime o que escreveu:
+
+```text title="Output"
+Found Next.js: the web target starts npm run dev on http://localhost:3000, and npm run start in CI after npm run build
+```
+
+## Inicie o app a partir da configuração
+
+`app.command` inicia seu app e espera até `app.url` responder. O `init` gera
+um alvo com o seu gerenciador de pacotes e a sua porta de desenvolvimento. Se
+você estiver adicionando isto a uma configuração existente, mantenha sua
+entrada `agents`:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+// e2e reads CI the same way: unset, '', '0', and 'false' mean a local run.
+const ci = !['', '0', 'false'].includes(process.env.CI?.trim().toLowerCase() ?? '');
+
+export default {
+  // Keep the `agents` entry that `init` wrote.
+  targets: [{
+    engine: web(),
+    app: {
+      url: 'http://localhost:3000',
+      // CI serves the production build: run `next build` before `e2e run`.
+      command: ci
+        ? { executable: 'npm', args: ['run', 'start'] }
+        : { executable: 'npm', args: ['run', 'dev'], reuseExisting: true },
+    },
+  }],
+} satisfies E2EConfig;
+```
+
+- **Localmente**, o e2e roda o `next dev` (e reutiliza um servidor de
+  desenvolvimento que já está rodando quando `reuseExisting: true` está
+  definido).
+- **Na CI**, o e2e roda o `next start` sobre o seu build de produção (e
+  ignora `reuseExisting`).
+- **Correspondência de portas:** tanto `dev` quanto `start` precisam escutar
+  na porta de `app.url` (3000 por padrão). Se o seu `package.json` não tem um
+  script `start` ou usa portas diferentes, o `init` recorre ao `next dev` em
+  todo lugar.
+
+Depois, rode os testes:
+
+<CodeGroup>
+```bash npm
+npx e2e run
+```
+
+```bash pnpm
+pnpm exec e2e run
+```
+
+```bash bun
+bunx e2e run
+```
+</CodeGroup>
+
+Para as outras opções de `command`, como `log`, `env` e a porta `0`, veja
+[Iniciar seu app](/web#starting-your-app).
+
+## Rode na CI
+
+Faça o build do app antes dos testes. O serviço de CI define `CI`, então a
+configuração inicia o `next start`:
+
+<CodeGroup>
+```bash npm
+npm run build
+npx e2e run
+```
+
+```bash pnpm
+pnpm build
+pnpm exec e2e run
+```
+
+```bash bun
+bun run build
+bunx e2e run
+```
+</CodeGroup>
+
+Para um workflow completo, rode `e2e init --ci github-actions` ou
+`--ci gitlab`: o job web que ele escreve roda o build antes dos testes
+([Pipeline de CI](/reference/cli#ci-pipeline)). Para escrever o job à mão,
+adicione o step de build ao job do [GitHub Actions](/ci/github-actions#web) e
+deixe de fora o `APP_URL` desse job. Para os padrões de CI, veja
+[Integração contínua](/ci).
+
+Para testar cada deploy de preview da Vercel em vez disso, veja
+[Vercel Previews](/ci/vercel-previews).
+
+## Corrija problemas do Next.js
+
+<AccordionGroup>
+<Accordion title="A página renderiza, mas nunca hidrata">
+O Next.js 16 bloqueia requisições de origem cruzada aos próprios recursos de
+desenvolvimento. Quando o alvo abre `127.0.0.1` ou `[::1]`, como a
+[porta `0`](/web#let-the-runner-pick-the-port) faz, o `next dev` mesmo assim
+se identifica como `localhost`. A página renderiza, os localizadores são
+resolvidos e os cliques chegam, mas nenhum handler do React roda.
+
+Adicione o host que o alvo abre a `allowedDevOrigins`. Use `'[::1]'` quando
+`app.url` abre `http://[::1]:0`:
+
+```ts title="next.config.ts"
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  allowedDevOrigins: ['127.0.0.1'],
+};
+
+export default nextConfig;
+```
+
+Um alvo `localhost` e um alvo de produção com `next start` não precisam de
+entrada.
+</Accordion>
+
+<Accordion title="getByRole('alert') encontra um elemento a mais">
+O App Router renderiza um anunciador de rota `role="alert"` vazio em toda
+página. `screen.getByRole('alert')` também corresponde a ele. Escolha seu
+alerta pelo texto:
+
+```ts title="Test fragment"
+await expect(screen.getByRole('alert').filter({ hasText: 'Enter a name first.' })).toBeVisible();
+```
+
+O agente não vê o anunciador de rota, e o [cache de replay](/cache) não o
+conta como mudança.
+</Accordion>
+
+<Accordion title="next dev recompila enquanto os testes rodam">
+O e2e escreve a saída de execução em `.e2e/`: resultados, logs, traces e o
+cache de replay. Um watcher que lê essa pasta pode refazer o build do app
+várias vezes durante uma execução.
+
+- Mantenha as entradas `.e2e/` que o `init` adiciona ao `.gitignore`.
+  Ferramentas que varrem o projeto em busca de arquivos-fonte, como o
+  Tailwind CSS, pulam arquivos ignorados.
+- Com o webpack, o padrão do `next dev` antes do Next.js 16, adicione `.e2e`
+  aos caminhos que o watcher ignora:
+
+```ts title="next.config.ts"
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  webpack: (config, { dev }) => {
+    if (dev) {
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: ['**/.git/**', '**/.next/**', '**/node_modules/**', '**/.e2e/**'],
+      };
+    }
+    return config;
+  },
+};
+
+export default nextConfig;
+```
+
+Esta lista mantém os padrões do Next.js. Quando sua configuração já define
+`ignored`, adicione `'**/.e2e/**'` a ele em vez disso.
+</Accordion>
+</AccordionGroup>
+
+## Comece um app novo
+
+Crie um app Next.js com App Router e o e2e já configurado, a partir do
+[exemplo `with-next`](https://github.com/e2e-inc/e2e/tree/main/examples/with-next):
+
+<CodeGroup>
+```bash npm
+npx create-next-app --example https://github.com/e2e-inc/e2e/tree/main/examples/with-next my-app
+cd my-app
+npm run test:e2e
+```
+
+```bash pnpm
+pnpm create next-app --example https://github.com/e2e-inc/e2e/tree/main/examples/with-next my-app
+cd my-app
+pnpm test:e2e
+```
+
+```bash bun
+bun create next-app --example https://github.com/e2e-inc/e2e/tree/main/examples/with-next my-app
+cd my-app
+bun run test:e2e
+```
+</CodeGroup>
+
+O app tem três testes de localizador e dois testes de agente. Os testes de
+agente são pulados até você definir `AI_GATEWAY_API_KEY`.
+
+Para fazer deploy na Vercel e testar cada deploy, comece pelo
+[template Next.js com e2e](https://github.com/e2e-inc/e2e-vercel-previews)
+em vez disso. O README do template tem um botão **Deploy**.
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Web" icon="globe" href="/web">
+    Todas as formas de iniciar o app, previews protegidos e viewports.
+  </Card>
+  <Card title="Vercel Previews" icon="/images/integrations/vercel.svg" href="/ci/vercel-previews">
+    Teste cada deploy de preview e retenha a produção até os testes passarem.
+  </Card>
+</CardGroup>

@@ -33,6 +33,7 @@ export type {
   RoleAlias,
   RoleOptions,
   ScrollDirection,
+  ScrollEdge,
   Screen,
   ScreenCoordinate,
   ScreenPoint,

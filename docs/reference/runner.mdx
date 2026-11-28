@@ -445,7 +445,8 @@ const session = await host.openSession({
 - `onStep` receives live `StepProgress`, the same feed reporters receive. It
   must not block or throw. Its `phase` is `start`, `event`, `activity`,
   `replay`, or `end`. An `end` event includes `status`, `durationMs`,
-  `modelCalls`, and a redacted `error` when the step failed.
+  `modelCalls`, the replay cache's `cache` for an `agent.act` step, and a
+  redacted `error` when the step failed.
 - `timeout`, `agent`, and `onStep` belong to the session, not `openHost`.
 
 | Throws | When |

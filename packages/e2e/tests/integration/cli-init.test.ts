@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,9 +56,47 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// A project with no lockfile takes the manager that ran init, which is pnpm for this suite; these projects are npm's.
+const NPM_ENV = { ...process.env, npm_config_user_agent: 'npm/11.0.0 node/v24.0.0' };
+
 describe('initializing standalone projects', () => {
-  it('starts the installed MCP server from the generated Codex config with an empty npm cache offline', async () => {
-    await execFileAsync(process.execPath, [CLI, 'init', '--yes', '--mcp', '.codex/config.toml'], { cwd: dir });
+  it('repairs an explicitly selected Claude skill copy when pnpm links the skill in .agents', async () => {
+    vi.stubEnv('CI', '');
+    vi.stubEnv('E2E_TELEMETRY_DISABLED', '1');
+    const packageSkill = path.join(dir, 'node_modules/.pnpm/e2e@sample/node_modules/e2e/skills/e2e');
+    const claudeSkill = path.join(dir, '.claude/skills/e2e');
+    const agentsLink = path.join(dir, '.agents/skills/e2e');
+    const note = path.join(claudeSkill, 'project-notes.md');
+    const skillFile = path.join(claudeSkill, 'SKILL.md');
+    mkdirSync(packageSkill, { recursive: true });
+    mkdirSync(claudeSkill, { recursive: true });
+    mkdirSync(path.dirname(agentsLink), { recursive: true });
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', private: true, packageManager: 'pnpm@12.18.0' }));
+    writeFileSync(path.join(packageSkill, 'SKILL.md'), 'installed by pnpm');
+    writeFileSync(note, 'project note');
+    symlinkSync(packageSkill, agentsLink, 'junction');
+    const originalLink = readlinkSync(agentsLink);
+
+    await execFileAsync(process.execPath, [
+      CLI, 'init', '--yes', '--engine', 'none', '--gateway', 'none', '--skills', '.claude/skills', '--mcp', 'none', '--no-install',
+    ], { cwd: dir });
+
+    expect(readFileSync(note, 'utf8')).toBe('project note');
+    expect(readlinkSync(agentsLink)).toBe(originalLink);
+    expect(readFileSync(path.join(agentsLink, 'SKILL.md'), 'utf8')).toBe('installed by pnpm');
+    expect(existsSync(skillFile), 'Claude SKILL.md was restored').toBe(true);
+    expect(readFileSync(skillFile, 'utf8')).toMatch(/^---\nname: e2e\n/);
+    expect(readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8')).toContain('.claude/skills/e2e/SKILL.md');
+  });
+
+  // A pin on pnpm makes npx exit with EBADDEVENGINES before the handshake, so the pnpm project must not be registered through it.
+  it.each([
+    ['npm', NPM_ENV, {}, { command: 'npx', args: ['e2e', 'mcp'] }],
+    ['pnpm', process.env, { devEngines: { packageManager: { name: 'pnpm', onFail: 'error' } } }, { command: 'pnpm', args: ['exec', 'e2e', 'mcp'] }],
+  ] as const)('starts the installed MCP server from the generated Codex config with an empty npm cache offline: %s', async (manager, env, manifest, launch) => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'app', private: true, type: 'module', ...manifest }));
+    if (manager === 'pnpm') writeFileSync(path.join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+    await execFileAsync(process.execPath, [CLI, 'init', '--yes', '--mcp', '.codex/config.toml', '--no-install'], { cwd: dir, env });
     linkPackages('e2e');
     // Linking the package alone does not create the executable shim an install provides.
     const bin = path.join(dir, 'node_modules', '.bin');
@@ -73,7 +111,7 @@ describe('initializing standalone projects', () => {
     const document = getStaticTOMLValue(parseTOML(readFileSync(path.join(dir, '.codex/config.toml'), 'utf8'))) as {
       mcp_servers: { e2e: { command: string; args: string[] } };
     };
-    expect(document.mcp_servers.e2e).toEqual({ command: 'npx', args: ['e2e', 'mcp'] });
+    expect(document.mcp_servers.e2e).toEqual(launch);
     const client = new Client({ name: 'init-codex-test', version: '1.0.0' });
     const transport = new StdioClientTransport({
       ...document.mcp_servers.e2e, cwd: dir, stderr: 'pipe',
@@ -93,7 +131,7 @@ describe('initializing standalone projects', () => {
       clientSetting: true,
     }, null, 4) + '\n';
     writeFileSync(path.join(dir, '.mcp.json'), original);
-    await execFileAsync(process.execPath, [CLI, 'init', '--yes'], { cwd: dir });
+    await execFileAsync(process.execPath, [CLI, 'init', '--yes'], { cwd: dir, env: NPM_ENV });
     expect(readFileSync(path.join(dir, '.mcp.json'), 'utf8')).toBe(original);
   });
 

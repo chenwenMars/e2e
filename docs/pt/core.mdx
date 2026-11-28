@@ -1,0 +1,391 @@
+---
+title: "@e2e-dev/core"
+sidebarTitle: Automação
+description: Controle um navegador ou um app nativo com código comum, com um agente opcional e sem runner de testes.
+---
+
+`@e2e-dev/core` controla um navegador ou um app iOS ou Android a partir de
+código comum. Ele usa as engines do e2e, `screen` e o agente, sem o runner de
+testes: não há arquivo de configuração, nem relatório, nem `expect`.
+
+## Quando usar
+
+| Você quer | Use |
+| --- | --- |
+| Escrever testes e rodá-los localmente e na CI, com relatórios | `e2e`. Veja o [Início rápido](/quickstart). |
+| Dar a um agente de código uma sessão ao vivo no seu app | O [servidor MCP](/mcp-server) |
+| Controlar um app a partir do seu próprio programa: um script, um scraper, um bot, a preparação de dados de teste | `@e2e-dev/core` |
+| Abrir um segundo navegador ou dispositivo dentro de um teste | `@e2e-dev/core`. Veja [Abra um host dentro de um teste](#open-a-host-inside-a-test). |
+
+## Instale
+
+<CodeGroup>
+
+```bash npm
+npm install @e2e-dev/core @e2e-dev/web
+```
+
+```bash pnpm
+pnpm add @e2e-dev/core @e2e-dev/web
+```
+
+```bash bun
+bun add @e2e-dev/core @e2e-dev/web
+```
+
+</CodeGroup>
+
+Instale `@e2e-dev/mobile` no lugar de `@e2e-dev/web` (ou junto com ele) para
+controlar dispositivos mobile. `@e2e-dev/core` não precisa do runner de testes
+`e2e` instalado e roda no Node.js 22.22.3+ ou 24.8+.
+
+<Note>
+Sempre importe as engines do subcaminho `/engine` de cada uma (como
+`@e2e-dev/web/engine`). A entrada raiz exporta uma fixture `test` que exige o
+pacote `e2e` completo.
+</Note>
+
+## Controle um navegador
+
+`launch` prepara uma engine e retorna um host. Uma sessão é um contexto de
+navegador isolado nesse host e contém as fixtures embutidas `screen`, `app` e
+`platform`, além da que a engine fornece, aqui `browser`.
+
+```ts title="prices.ts"
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+await using shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+
+for (const sku of ['A-1001', 'B-2040']) {
+  await using session = await shop.newSession();
+  await session.app.open(`/products/${sku}`);
+  const soldOut = session.screen.getByText('Sold out', { exact: false, visible: true });
+  if (await soldOut.isVisible()) continue;
+  const price = await session.screen.getByTestId('sale-price').textContent();
+  console.log(sku, price);
+}
+```
+
+Rode com `node prices.ts`. O Node.js roda um arquivo `.ts` sem etapa de
+build.
+
+`screen` e `app` são a mesma API de um teste: veja
+[screen](/reference/screen) e [app](/reference/app). `await using` fecha cada
+sessão no fim do bloco dela, e o host, junto com o navegador, no fim do
+arquivo. Isso exige Node.js 24 ou Bun. No Node.js 22, chame `close()` em um
+`finally`:
+
+```ts
+const shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+try {
+  const session = await shop.newSession();
+  await session.app.open('/products/A-1001');
+} finally {
+  await shop.close(); // closes the open session too
+}
+```
+
+| Regra | Comportamento |
+| --- | --- |
+| Posse | Passe uma instância nova da engine para cada chamada `launch(web())`; reutilizar uma instância falha. |
+| Sessões | Uma sessão ativa por host de cada vez. Feche-a antes de chamar `newSession()`, ou inicie outro host para trabalhar em paralelo. |
+| Dispositivos | Cada host `mobile()` obtém a própria sessão de dispositivo. Veja [Vários hosts em dispositivos](#several-hosts-on-devices). |
+| Tempos limite | Ações, esperas e leituras têm padrão de 30s; `app.open()` e `app.restart()` têm padrão de 120s. Substitua com `launch({ timeout })` ou `session.setDefaultTimeout(ms)`. |
+| Cancelamento | Passe um `AbortSignal` para `launch({ signal })` ou `newSession({ signal })`. |
+| Ctrl-C | Os hosts fecham de forma limpa com SIGINT, SIGTERM e SIGHUP, para que navegadores e dispositivos não fiquem abertos. Desative com `handleSignals: false`. |
+| Arquivos | Capturas de tela e downloads vão para uma pasta temporária que é apagada em `close()`. Passe `artifactsDir` para mantê-los. |
+
+A [referência](/reference/core) lista todas as opções.
+
+### Vários hosts em dispositivos
+
+Sem a opção `session`, cada host `mobile()` controla o seu dispositivo em uma
+sessão própria do agent-device, nomeada a partir do alvo e de um token
+aleatório (`e2e-ios-<token>-0`). Um host nunca assume um dispositivo que outra
+sessão mantém, seja ela de outro host ou de um worker do `e2e run`.
+
+- Faça o boot de um dispositivo livre por host. Dentro de um teste, os workers
+  da execução ficam com os dispositivos deles primeiro: por padrão, uma
+  execução local controla tantos dispositivos inicializados quantos forem os
+  workers e os arquivos de teste dela. Deixe um livre com `--workers` ou
+  nomeie os dispositivos da execução na opção `device` do alvo.
+- Sem a opção `device`, dois hosts que abrem no mesmo momento podem ver o
+  mesmo dispositivo inicializado como livre. O host que perde passa para o
+  próximo dispositivo livre. Quando não sobra nenhum, a inicialização desse
+  host falha. Um alvo com `appPath` pode colidir mesmo assim: veja o próximo
+  item.
+- Um host fica com o dispositivo a partir do momento em que o app do host
+  abre. Um alvo que nomeia só `appPath` não abre nenhum app na inicialização,
+  então um segundo host iniciado antes de o primeiro abrir o app pode escolher
+  o mesmo dispositivo. Chame `device.installApp()` e depois `app.open()` na
+  sessão de cada host antes de iniciar o próximo, ou nomeie o dispositivo de
+  cada host na opção `device` desse host.
+- Um programa que termina sem fechar um host em que abriu um app
+  (`process.exit()`, um kill) deixa o dispositivo desse host ocupado, assim
+  como um host cuja sessão não consegue fechar: o `close()` desse host lança
+  um erro que nomeia a sessão. Hosts posteriores e o `e2e run` pulam esse
+  dispositivo até você fechar a sessão que o erro nomeia.
+  Substitua `SESSION` por esse nome:
+
+<CodeGroup>
+```bash npm
+npx agent-device close --session "SESSION"
+```
+
+```bash pnpm
+pnpm dlx agent-device close --session "SESSION"
+```
+
+```bash bun
+bunx agent-device close --session "SESSION"
+```
+</CodeGroup>
+
+
+## Controle um app em um dispositivo
+
+Passe `mobile()` e o app. O mesmo código de `screen` roda em um navegador e
+em um dispositivo.
+
+```ts
+import { launch } from '@e2e-dev/core';
+import { mobile } from '@e2e-dev/mobile/engine';
+
+await using shopApp = await launch(mobile({ platform: 'ios' }), {
+  app: { bundleId: 'com.example.shop', linkBase: 'https://shop.example.com' },
+});
+await using session = await shopApp.newSession();
+await session.app.open('/products/A-1001');
+```
+
+`app.linkBase` faz `app.open(path)` abrir um link no app:
+`https://shop.example.com/products/A-1001` como universal link aqui, ou
+`shopapp://products/A-1001` com `linkBase: 'shopapp://'`. Sem ele,
+`app.open()` inicia o app e não aceita caminho. `linkBase` também funciona em
+um alvo do `e2e.config.ts`; veja a [configuração](/reference/config#linkbase).
+
+O simulador iOS pode interromper um link de esquema personalizado em um prompt
+“Open in ...?”. Toque no botão `Open` do prompt quando ele aparecer:
+`session.screen.getByRole('button', 'Open')`.
+
+## Mantenha um estado autenticado
+
+`session.saveState()` captura em memória os cookies e o armazenamento de uma
+sessão de navegador para que você passe esse estado a `newSession({ state })`
+depois de fechar a primeira sessão. (Não suportado em dispositivos mobile.)
+
+```ts
+const state = await session.saveState();
+await session.close();
+await using next = await shop.newSession({ state });
+```
+
+Para manter um estado entre execuções do programa, criptografe-o com uma chave
+de 32 bytes que você guarda, por exemplo em um cofre de segredos. Não há
+exportação em texto puro.
+
+```ts
+import { randomBytes } from 'node:crypto';
+import { SessionState } from '@e2e-dev/core';
+
+const key = randomBytes(32);
+const bytes = await state.export({ key }); // write these to disk
+const restored = await SessionState.import(bytes, { key });
+```
+
+Um estado salvo só é restaurado em um host com a mesma engine, a mesma
+plataforma e o mesmo app (defina valores de `app.identity` iguais se endereços
+como `localhost` e `127.0.0.1` forem diferentes). Um host incompatível, uma
+chave errada ou bytes adulterados fazem a restauração falhar.
+
+## Passe segredos
+
+Passe os valores secretos a `launch` e depois preencha-os pelo nome.
+
+```ts
+await using shop = await launch(web(), {
+  app: { url: 'https://shop.example.com' },
+  secrets: { SHOP_PASSWORD: process.env.SHOP_PASSWORD! },
+});
+await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
+```
+
+Os valores nunca aparecem nos erros que uma sessão lança, em `screen.tree()`
+nem no que o agente lê. Uma leitura que o seu código pede, como
+`textContent()`, retorna o texto da página como ele está. Um estado exportado
+contém, criptografados, os valores que a sessão conhecia, então um host
+iniciado sem eles os oculta mesmo assim.
+
+Cada sessão no programa oculta os valores de todos os hosts abertos nele.
+
+Um agente recebe um segredo pelos params, só pelo nome:
+`agent.act('Sign in with {password}', { params: { password: shop.secret('SHOP_PASSWORD') } })`.
+
+## Trate erros
+
+Toda falha é um erro com um `code`. Verifique-o com `isE2EError`, não com
+`instanceof`.
+
+```ts
+import { isE2EError } from '@e2e-dev/core';
+
+try {
+  await session.screen.getByRole('button', 'Add to cart').tap();
+} catch (error) {
+  if (isE2EError(error) && error.code === 'LOCATOR_NOT_FOUND') console.log('not on sale');
+  else throw error;
+}
+```
+
+| Código | Quando |
+| --- | --- |
+| `LOCATOR_NOT_FOUND` | Nada correspondeu antes do tempo limite. Uma espera que se esgotou também tem esse código. |
+| `LOCATOR_AMBIGUOUS` | O localizador correspondeu a mais de um nó. |
+| `ACTION_FAILED` | A ação não terminou. Ela pode ter chegado ao app mesmo assim, então não repita um pagamento. |
+| `APP_UNREACHABLE` | Nada respondeu na URL do app. |
+| `CANCELLED` | Um `signal` abortou a operação, ou a sessão está fechada. |
+| `WORKER_PROTOCOL` | Uma segunda sessão em um host, um segundo host em uma mesma instância de engine ou um host fechado. |
+
+[Erros](/reference/errors) lista todos os códigos.
+
+## Deixe o agente agir
+
+`createAgent` de `@e2e-dev/core/agent` coloca um agente sobre uma sessão. Os
+métodos `act`, `assert`, `waitFor` e `extract` dele funcionam como em um
+[teste](/reference/agent). O agente precisa do AI SDK, e o exemplo lê um
+resultado tipado com `zod`: instale `ai` e `zod` ao lado da engine.
+
+```ts title="checkout.ts"
+import { launch } from '@e2e-dev/core';
+import { createAgent } from '@e2e-dev/core/agent';
+import { web } from '@e2e-dev/web/engine';
+import { gateway } from 'ai';
+import { z } from 'zod';
+
+await using shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+await using session = await shop.newSession();
+await session.app.open('/products/A-1001');
+
+const agent = createAgent(session, {
+  model: gateway('anthropic/claude-sonnet-5-5'),
+  cache: { dir: '.shop-bot/cache' },
+});
+
+await agent.act('Add the item to the cart and apply the coupon with the largest discount', {
+  cacheKey: 'cart-best-coupon',
+});
+// A check after the step lets the cache keep its recording.
+await session.screen.getByRole('button', /pay now/i).waitFor();
+
+const order = await agent.extract('the order total', { schema: z.object({ total: z.number() }) });
+if (order.total <= 39_000) {
+  try {
+    await session.screen.getByRole('button', /pay now/i).tap();
+  } catch (error) {
+    // A failed tap may still have reached the server:
+    // check the order list, never retry the payment.
+    console.error('check /my/orders');
+    throw error;
+  }
+} else {
+  console.log(`the total, ${order.total}, is over the limit: the order stays unpaid`);
+}
+```
+
+`createAgent` aceita as mesmas opções de uma [entrada de `agents`](/reference/config#agents)
+(`model`, `judge`, `maxSteps`, `context`), além de `cache`. Não há modelo
+padrão, então sempre passe um. `agent.act` tem um tempo limite padrão de 120s
+(substitua por chamada com `timeout`).
+
+### Reproduza passos gravados
+
+Passe `cache` para gravar os passos `agent.act` que passam e reproduzi-los em
+execuções futuras sem nenhuma chamada ao modelo. Cada chamada `act` precisa
+então especificar um `cacheKey` ou `cache: false`. As entradas são indexadas
+por `cacheKey`, instrução, params, app e quantas vezes a sessão fez essa
+chamada.
+
+As gravações são salvas quando a sessão ou o host fecha, desde que uma
+verificação como `locator.waitFor()`, `agent.assert()` ou `agent.waitFor()`
+tenha passado depois do passo. Um passo do agente que falha descarta as
+gravações não confirmadas, enquanto uma falha no seu próprio código de
+localizador (como um `waitFor` que estourou o tempo limite) não descarta nada.
+Veja [Cache](/cache) para entender como o replay e a autocorreção funcionam.
+
+| Opção | Padrão | Significado |
+| --- | --- | --- |
+| `dir` | `.e2e/cache` | Diretório do cache (relativo ao que `launch` recebe como `cwd`). |
+| `mode` | `read-write` | Defina `read-only` para reproduzir sem escrever. |
+| `strict` | `false` | Falha com gravações desatualizadas em vez de recorrer ao modelo. |
+| `store` | - | [`CacheStore`](/cache) personalizado em vez de arquivos locais. |
+
+## Abra um host dentro de um teste
+
+Um teste pode abrir uma segunda sessão para outro usuário ou dispositivo.
+Neste exemplo de navegador, um [teste de preparação](/authentication) salva o
+login do remetente como `sender`. O destinatário faz login em um host separado
+apontado para o mesmo app. Use contas de teste e uma conversa reservada para o
+teste.
+
+```ts title="tests/chat.e2e.ts"
+import { randomUUID } from 'node:crypto';
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { launch } from '@e2e-dev/core';
+import { web } from '@e2e-dev/web/engine';
+
+test('delivers a message to the recipient', { session: 'sender' }, async ({ app, screen }) => {
+  const message = `Hello ${randomUUID()}`;
+  await using host = await launch(web(), {
+    app: { url: app.baseUrl },
+    secrets: { RECIPIENT_PASSWORD: process.env.RECIPIENT_PASSWORD ?? '' },
+  });
+  const recipient = await host.newSession();
+  await recipient.app.open('/login');
+  await recipient.screen.getByLabel('Email').fill('recipient@example.test');
+  await recipient.screen.getByLabel('Password').fill(host.secret('RECIPIENT_PASSWORD'));
+  await recipient.screen.getByRole('button', 'Sign in').tap();
+  await recipient.screen.getByRole('heading', 'Chat').waitFor();
+  await app.open('/chat');
+
+  await screen.getByLabel('Message').fill(message);
+  await screen.getByRole('button', 'Send').tap();
+
+  await expect(recipient.screen.getByText(message, { exact: true })).toBeVisible();
+});
+```
+
+Se você já capturou o login do destinatário com `saveState()` em uma sessão do
+core, restaure-o com [`newSession({ state })`](/reference/core#newsession) em
+um host para o mesmo app, a mesma engine e a mesma plataforma. Sessões
+nomeadas do runner, vindas de `session.save()`, são restauradas pela opção
+`session` do runner.
+
+O relatório do teste cobre a sessão:
+
+| No relatório | Comportamento |
+| --- | --- |
+| Passos | Cada passo da sessão, sob `launch-1`, `launch-2`, na ordem em que o teste abriu as sessões. |
+| Uso do modelo | Contado junto com o do teste. |
+| Vídeo | Mantido ao lado do vídeo do teste quando o teste grava um, como `video/launch-1.webm`. A sessão precisa ser aberta dentro do teste, e `app.startRecording()` nela falha enquanto ela grava. |
+| Segredos | O host oculta os segredos da configuração, e o relatório oculta os do host até o teste terminar. |
+| Um host ou uma sessão que o teste abriu | Fechado quando o teste termina, se ainda estiver aberto. Um que uma fixture de worker ou um hook `beforeAll` abriu continua aberto e não grava vídeo. |
+| Uma chamada ainda em andamento | Um passo, `launch` ou `newSession` ainda em andamento quando o teste termina faz o teste falhar com `STEP_NOT_AWAITED`: a sessão de um passo é fechada, e uma abertura é cancelada. Uma chamada que falhou e cujo erro o teste capturou não faz o teste falhar. |
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Referência do @e2e-dev/core" href="/reference/core">
+    Todas as opções de `launch`, de uma sessão, de um estado salvo e de `createAgent`.
+  </Card>
+  <Card title="screen" href="/reference/screen">
+    Todas as consultas e ações que uma sessão tem.
+  </Card>
+  <Card title="Agente" href="/reference/agent">
+    O que `act`, `assert`, `waitFor` e `extract` recebem e retornam.
+  </Card>
+  <Card title="Modelos" href="/models">
+    Escolha e configure o modelo que o agente chama.
+  </Card>
+</CardGroup>

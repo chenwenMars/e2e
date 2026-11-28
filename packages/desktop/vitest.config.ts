@@ -1,9 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Unit tests drive the engine through a scripted agent-desktop binary and
- * captured snapshots, fully in parallel. A real desktop session is the
- * desktop testbed's.
+ * Unit tests drive the engine through a scripted native driver
+ * (`tests/helpers/fake-driver.ts`) and captured snapshots, fully in
+ * parallel, on any OS. A real desktop session is the desktop testbed's.
  */
 export default defineConfig({
   test: {
@@ -15,8 +15,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['tests/unit/**/*.test.ts'],
-          // A private os.tmpdir() per test file, and a screen that reads as unlocked: see the setup files.
-          setupFiles: ['tests/helpers/private-tmpdir.ts', 'tests/helpers/unlocked-screen.ts'],
+          // A private os.tmpdir() per test file: see the setup file.
+          setupFiles: ['tests/helpers/private-tmpdir.ts'],
           testTimeout: 30_000,
           hookTimeout: 30_000,
           pool: 'forks',

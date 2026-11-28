@@ -203,6 +203,10 @@
       {
         "id": "custom-executors",
         "label": "Custom executors"
+      },
+      {
+        "id": "automation",
+        "label": "Automation"
       }
     ],
     "platform": [
@@ -997,6 +1001,31 @@
         "useCase": [
           "preview-deployments",
           "ci"
+        ],
+        "platform": [
+          "web"
+        ]
+      }
+    },
+    {
+      "slug": "web-scraper",
+      "title": "Scraping a website with e2e core",
+      "shortTitle": "Web scraper",
+      "description": "A script that collects every Science Fiction book from Books to Scrape with @e2e-dev/core, the agent navigating and extracting data with no CSS selectors.",
+      "source": "official",
+      "repository": "https://github.com/e2e-inc/e2e-web-scraper",
+      "author": {
+        "name": "e2e",
+        "github": "e2e-inc"
+      },
+      "license": "MIT",
+      "licenseUrl": "https://github.com/e2e-inc/e2e-web-scraper/blob/main/LICENSE",
+      "tags": {
+        "framework": [
+          "nodejs"
+        ],
+        "useCase": [
+          "automation"
         ],
         "platform": [
           "web"

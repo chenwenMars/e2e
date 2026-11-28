@@ -81,6 +81,7 @@ $ npx e2e --version
 | [`e2e list`](#e2e-list) | Imprime os testes que uma execução seleciona |
 | [`e2e doctor`](#e2e-doctor) | Verifica se uma execução pode começar |
 | [`e2e cache`](#e2e-cache) | Inspeciona ou limpa o cache de replay |
+| [`e2e merge-reports`](#e2e-merge-reports) | Mescla relatórios e artefatos de shards concluídos |
 | [`e2e report`](#e2e-report) | Abre o relatório HTML em um navegador |
 | [`e2e upgrade`](#e2e-upgrade) | Atualiza o e2e e os pacotes dele |
 | [`e2e feedback`](#e2e-feedback) | Envia feedback para a equipe do e2e |
@@ -180,10 +181,14 @@ Para um projeto novo, o assistente pergunta:
 Em um app Next.js, o alvo web inicia o app. Veja
 [Apps Next.js](#nextjs-apps).
 
-Depois que você confirma as mudanças nos arquivos, o assistente pergunta se
-deve instalar as dependências selecionadas. O instalador segue o campo
-`packageManager` ou o lockfile do projeto, depois o gerenciador de pacotes que
-chamou o comando, depois o npm.
+Depois que você confirma as mudanças nos arquivos, o assistente pergunta se deve
+instalar as dependências selecionadas. O instalador segue o campo
+`packageManager` ou o lockfile do projeto ou, em um membro de workspace, os da
+raiz do workspace. Na falta deles, usa o gerenciador de pacotes que chamou o
+comando, depois o npm; um membro de workspace faz o mesmo, com um aviso, quando
+o gerenciador da raiz do workspace não está instalado. O pnpm recebe
+`--no-frozen-lockfile`, e o Yarn, `YARN_ENABLE_IMMUTABLE_INSTALLS=false`, para
+que o lockfile possa mudar também na CI.
 
 ##### Arquivos
 
@@ -208,7 +213,7 @@ comandos e a URL que escreveu:
 
 - `app.url` é `http://localhost:<port>`, com a porta tirada da flag `--port`
   ou `-p` ou da variável `PORT=` do comando `next` no script `dev`, ou 3000
-  se não houver. Nunca é `127.0.0.1`, que
+  por padrão. Nunca é `127.0.0.1`, que
   [não hidrata](/frameworks/nextjs#fix-next-js-problems) no `next dev`.
 - Localmente, `app.command` roda o script `dev` com `reuseExisting: true`.
 - Quando o app também tem os scripts `build` e `start` na mesma porta,
@@ -380,9 +385,15 @@ bunx e2e init my-app --example with-expo
   comando de inicialização. Um registro que já está em dia fica inalterado, byte
   a byte.
 - Depois que um diretório de skill existe, as execuções seguintes atualizam
-  as cópias que diferem da versão instalada. Elas nunca adicionam um
-  diretório que o projeto não escolheu. `--skills` e `--mcp` indicam os
-  locais exatos em vez disso e deixam os outros como estão.
+  as cópias que diferem da versão instalada e removem um arquivo que uma
+  versão anterior trazia e esta não traz; um arquivo que você adicionou fica.
+  Elas nunca adicionam um diretório que o projeto não escolheu. `--skills` e
+  `--mcp` indicam os locais exatos em vez disso e deixam os outros como estão.
+- Onde o pnpm cria o link da skill a partir do pacote instalado, no projeto
+  ou na raiz do workspace dele
+  ([Deixe o pnpm criar o link da skill](/coding-agents)), o `init` deixa os
+  links como estão, não escreve nenhuma cópia ao lado deles e avisa sobre uma
+  cópia e um link na mesma pasta.
 - Uma cópia em `.claude/skills/e2e/` de uma versão anterior vira o link
   simbólico quando contém só os arquivos distribuídos. Uma cópia com outros
   arquivos continua sendo uma cópia e é atualizada.
@@ -569,7 +580,7 @@ própria versão:
 | tem instalada uma versão do e2e diferente da versão da CLI que roda | o guia e os tópicos da versão instalada |
 | tem instalada uma versão anterior ao lançamento do guia | o guia da CLI, e avisa que a versão instalada não traz nenhum |
 | declara uma versão ou um intervalo que deixa a CLI de fora, sem nada instalado | o guia da CLI, e os comandos que imprimem o guia do projeto |
-| tem instalada uma versão que o intervalo do próprio `package.json` deixa de fora | o guia da CLI quando o intervalo inclui a CLI, senão o da versão instalada, e pede que você reinstale |
+| tem instalada uma versão que o intervalo do próprio `package.json` deixa de fora | o guia da CLI quando o intervalo inclui a CLI, caso contrário o da versão instalada, e pede que você reinstale |
 
 Um intervalo é lido do jeito que o npm lê. Uma dist-tag, um link de workspace
 ou um alias não indica nenhuma versão, então a linha não acrescenta nada.
@@ -744,7 +755,7 @@ Arquivos de teste, diretórios ou globs relativos à raiz do projeto:
 | `--grep-invert <pattern>` | Deixa de fora os testes cujo título corresponde a uma das expressões regulares; repetível, com o texto e as formas de `--grep`. Com as duas, a execução mantém o que corresponde a `--grep`, menos o que corresponde a `--grep-invert`. |
 | `--changed-since <ref>` | Roda os [filtros de testes](/filters) configurados sobre a mudança desde a ref: todo arquivo que difere da base de merge entre a ref e `HEAD`, incluindo arquivos sem commit e não rastreados. Cada alvo começa pelos arquivos dos testes que os filtros pontuam como mais prováveis. Sem ela, nenhum filtro roda. Sem filtros configurados, um aviso diz que todos os testes rodam. |
 | `--last-failed` | Só os testes que não passaram na execução anterior; a lista depois destas tabelas diz quais. |
-| `--shard <index/total>` | Roda uma fatia contínua dos testes selecionados, como `2/3`, cortada depois de aplicadas todas as outras flags. As fatias diferem em no máximo um teste. Um grupo serial conta como um e nunca é dividido. Cada shard traz só os testes de preparação de que os próprios testes precisam. Testes pulados não entram no corte: quem informa um deles é o shard que roda o teste mais próximo antes dele, ou então o primeiro shard, de modo que só um shard o informa. Todo shard roda o mesmo comando com um índice diferente. A ordem é a do relatório, então uma suíte é dividida em shards do mesmo jeito em toda máquina. Um shard sem nenhum teste é `NO_TESTS`, a menos que haja `--pass-with-no-tests`. O relatório registra o shard como `run.shard` e marca cada teste que o corte dá a outro shard com `skip.otherShard`. Com `--last-failed`, o corte fatia os testes que não passaram na última execução. Veja [Sharding](/ci#sharding). |
+| `--shard <index/total>` | Roda uma fatia contínua dos testes selecionados, como `2/3`, cortada depois de aplicadas todas as outras flags. As fatias diferem em no máximo um teste. Um grupo serial conta como um e nunca é dividido. Cada shard traz só os testes de preparação de que os próprios testes precisam. Testes pulados não entram no corte: quem informa um deles é o shard que roda o teste mais próximo antes dele (ou o primeiro shard), de modo que só um shard o informa. Todo shard roda o mesmo comando com um índice diferente. A ordem é a do relatório, então uma suíte é dividida em shards do mesmo jeito em toda máquina. Um shard sem nenhum teste é `NO_TESTS`, a menos que haja `--pass-with-no-tests`. O relatório registra o shard como `run.shard` e marca cada teste que o corte dá a outro shard com `skip.otherShard`. Com `--last-failed`, o corte fatia os testes que não passaram na última execução. Veja [Sharding](/ci#sharding). |
 | `--pass-with-no-tests` | Sai com código 0 em vez de `NO_TESTS` quando nada é selecionado. Uma execução sem nada para rodar não prepara nenhuma engine e não inicia nenhum comando de app ou de serviço. |
 
 **Execução**
@@ -753,7 +764,7 @@ Arquivos de teste, diretórios ou globs relativos à raiz do projeto:
 | --- | --- |
 | `--headed` | UI visível quando a engine oferece suporte. |
 | `--device <name>` | O simulador, emulador ou telefone em que o alvo mobile selecionado roda nesta execução, no lugar da opção `device` dele: um nome de dispositivo, um UDID de simulador ou um serial de emulador (`emulator-5554`). Ela vale para o único alvo selecionado que aceita um dispositivo; os outros alvos selecionados (`web()`, ou um alvo cujos dispositivos um provedor reserva) continuam rodando como configurados. Com vários alvos selecionados que aceitam um dispositivo, escolha um com `--target`, ou a execução falha com `TARGET_REQUIRED`. Quando nenhum aceita, é `UNSUPPORTED_CAPABILITY`. `e2e login --device` é outra flag. |
-| `--agent <names>` | Roda os testes sem agente fixado uma vez por agente selecionado, separados por vírgula ou repetidos. Padrão: `default`. Para um teste com `{ agent }`, seleciona os nomes em comum quando eles se sobrepõem, senão mantém os do próprio teste. Um nome desconhecido é `INVALID_CONFIG`. |
+| `--agent <names>` | Roda os testes sem agente fixado uma vez por agente selecionado, separados por vírgula ou repetidos. Padrão: `default`. Para um teste com `{ agent }`, seleciona os nomes em comum quando eles se sobrepõem, caso contrário mantém os do próprio teste. Um nome desconhecido é `INVALID_CONFIG`. |
 | `--retries <n>` | Substitui `config.retries`; um inteiro de 0 a 10. Padrão: a configuração. |
 | `--workers <n>` | Substitui `config.workers`; um inteiro de 1 a 1024. Padrão: a configuração. |
 | `--fully-parallel` | Roda os testes de um arquivo em paralelo em todo alvo, prevalecendo sobre [`fullyParallel`](/reference/config#fullyparallel) na configuração e em um alvo. |
@@ -773,8 +784,8 @@ Arquivos de teste, diretórios ou globs relativos à raiz do projeto:
 | Opção | Descrição |
 | --- | --- |
 | `--reporter <ids>` | Substitui os reporters embutidos em `config.reporters`, separados por vírgula: `list`, `dot`, `line`, `json`, `junit`, `markdown`, `ctrf`. Padrão: a configuração. Um reporter embutido definido na configuração, como `junit({ outputFile })`, mantém as opções dele. Junto com `json`, os reporters `list`, `dot` e `line` imprimem no stderr. Dois de `list`, `dot` e `line` juntos são `INVALID_CONFIG`. [Outros reporters](/reference/reporters) na configuração continuam rodando. |
-| `--output <dir>` | O diretório de resultados desta execução, prevalecendo sobre a opção [`output`](/reference/config#output) da configuração: o relatório, os arquivos dos reporters, o trace de IA, `results/` e `sessions/`. Padrão: a configuração, senão `.e2e`. É resolvido a partir da raiz do projeto e precisa ser um diretório dentro dela, não a própria raiz; a raiz e os outros diretórios que a execução não pode ocupar (listados lá) são `INVALID_CONFIG`. `results/` é limpo assim que os testes começam; uma reexecução com `--last-failed` mantém o que o relatório anterior nomeia. |
-| `--cache-dir <dir>` | O diretório do cache de replay desta execução, prevalecendo sobre [`E2E_CACHE_DIR`](/reference/environment#replay-cache) e [`cache.dir`](/reference/config#cache). Padrão: `E2E_CACHE_DIR`, senão `cache.dir`, senão `.e2e/cache`. É resolvido a partir da raiz do projeto; `~` ou um `~/` no início é o diretório home. O modo do cache continua como configurado. Com um `cache.store` personalizado, é `INVALID_CONFIG`. |
+| `--output <dir>` | O diretório de resultados desta execução, prevalecendo sobre a opção [`output`](/reference/config#output) da configuração: o relatório, os arquivos dos reporters, o trace de IA, `results/` e `sessions/`. Padrão: a configuração, ou `.e2e`. É resolvido a partir da raiz do projeto e precisa ser um diretório dentro dela, não a própria raiz; a raiz e os outros diretórios que a execução não pode ocupar (listados lá) são `INVALID_CONFIG`. `results/` é limpo assim que os testes começam; uma reexecução com `--last-failed` mantém o que o relatório anterior nomeia. |
+| `--cache-dir <dir>` | O diretório do cache de replay desta execução, prevalecendo sobre [`E2E_CACHE_DIR`](/reference/environment#replay-cache) e [`cache.dir`](/reference/config#cache). Padrão: `E2E_CACHE_DIR`, depois `cache.dir`, depois `.e2e/cache`. É resolvido a partir da raiz do projeto; `~` ou um `~/` no início é o diretório home. O modo do cache continua como configurado. Com um `cache.store` personalizado, é `INVALID_CONFIG`. |
 | `--timings <file>` | O [histórico de tempos](/ci#cache-the-timings-history) a atualizar quando a execução termina, no lugar de `<output>/timings.json`. Com mais de um worker, os arquivos sem tempo registrado começam primeiro, depois os demais, dos mais longos para os mais curtos. É resolvido a partir da raiz do projeto. Um arquivo ausente ou inválido conta como sem histórico, nunca como erro. |
 | `--debug` | Tempos por fase e uma tabela de passos do agente no stderr depois da execução; veja [Saída de depuração](#debug-output). |
 | `--ai-trace` | Registra toda chamada ao modelo em `<output>/ai-trace.json`; veja [Saída](#output). |
@@ -794,7 +805,7 @@ cujo pai é a raiz do projeto ou fica fora dela corresponde a `--output .e2e`.
 
 `--last-failed` seleciona os testes que não passaram na execução anterior.
 Ela os lê do `report.json` que esta execução sobrescreve,
-`<output>/report.json` (`--output`, senão a opção
+`<output>/report.json` (`--output`, ou a opção
 [`output`](/reference/config#output) da configuração):
 
 - Testes que falharam, excederam o tempo limite ou foram interrompidos.
@@ -1090,7 +1101,7 @@ bunx e2e explore 'Hunt for broken forms and dead links' --agent thorough --video
 | `--timeout <ms>` | O tempo total da execução, um inteiro de 180000 a 7200000. Padrão: `600000`. O último minuto fica reservado para a avaliação final. Fora do intervalo, sai com código 2. |
 | `--headed` | Pede UI visível quando a engine oferece suporte. |
 | `--reporter <ids>` | Como em `run`. Padrão: o valor resolvido da configuração. `list` imprime as linhas da exploração abaixo do resumo, `json` traz o registro no relatório, e `markdown` escreve os achados em `<output>/summary.md`. |
-| `--output <dir>` | Como em `run`. Padrão: a configuração, senão `.e2e`. A captura de tela de evidência de um achado é um artefato da tentativa em `<output>/results`. |
+| `--output <dir>` | Como em `run`. Padrão: a configuração, ou `.e2e`. A captura de tela de evidência de um achado é um artefato da tentativa em `<output>/results`. |
 | `--debug` | Como em `run`: tempos por fase e a tabela de passos do agente. |
 | `--ai-trace` | Como em `run`. |
 | `--trace [mode]` | Como em `run`: uma página de trace da exploração. Padrão: a configuração. |
@@ -1253,7 +1264,7 @@ bunx e2e doctor --target web --headed
 | `node` | `pass`: a versão do Node.js ou do Bun. Em um runtime sem suporte, `--json` ainda imprime um relatório com `node` como `fail`. |
 | `config` | `pass` com `path` e `targets` (`name`, `platform`, `engine`), ou `fail` com o código `CONFIG_*` ou `UNKNOWN_TARGET`. Um `config` com falha é a última verificação. |
 | Verificações da engine, com `target` | O que a engine do alvo informa, como o `browser` da engine web: `pass` quando instalado, `warn` quando a primeira execução vai baixá-lo, `fail` no Linux quando o chromium ou o firefox instalado não consegue resolver as bibliotecas de sistema dele (a mensagem as nomeia e indica a [instalação com `--with-deps`](/reference/web#installing-browsers)), `skip` com um provedor de navegador ou `connect`; ou as verificações do agent-device da engine mobile (`agent-device`, `toolchain`, `ios-runner-cache`, `device` por dispositivo configurado, `target-app`) e `app-path` e, para um provedor de dispositivos, só `device`, como `skip`. Uma engine que não informa nada não adiciona verificação. `engine` é `skip` quando a engine não tem o hook `doctor`, e `fail` quando o hook lançou um erro, excedeu o tempo limite ou retornou uma verificação malformada. |
-| `model`, com `agent` | `model` e `judge` como `provider` e `modelId`, os nomes que a instância do AI SDK informa. `pass` ou `fail` para um modelo de um [`e2e login`](/subscriptions), a partir do login salvo ou da variável de chave de API do provedor, com `login` definido quando os modelos do agente leem um login. `warn` para um modelo do Vercel AI Gateway ou do OpenRouter cuja variável de chave não está definida (`AI_GATEWAY_API_KEY` ou `VERCEL_OIDC_TOKEN`; `OPENROUTER_API_KEY`): os passos do agente que chamam o modelo falham com `MODEL_PROVIDER_FAILED`, a menos que o modelo obtenha a chave de outro jeito, como uma chave passada onde ele é construído ou um projeto da Vercel vinculado. `unknown` para qualquer outro modelo, porque o modelo lê a própria credencial. Com `--check-model`, `pass` quando todos os modelos responderam, senão `fail` com o código de erro, com a mensagem prefixada por `model:` ou `judge:` quando o agente tem os dois. `skip` quando o agente não tem modelo. `unknown` com `executor` quando um executor personalizado traz o próprio agente e não declara modelo nem juiz; qualquer modelo que ele declare é verificado como o de um agente. |
+| `model`, com `agent` | `model` e `judge` como `provider` e `modelId`, os nomes que a instância do AI SDK informa. `pass` ou `fail` para um modelo de um [`e2e login`](/subscriptions), a partir do login salvo ou da variável de chave de API do provedor, com `login` definido quando os modelos do agente leem um login. `warn` para um modelo do Vercel AI Gateway ou do OpenRouter cuja variável de chave não está definida (`AI_GATEWAY_API_KEY` ou `VERCEL_OIDC_TOKEN`; `OPENROUTER_API_KEY`): os passos do agente que chamam o modelo falham com `MODEL_PROVIDER_FAILED`, a menos que o modelo obtenha a chave de outro jeito, como uma chave passada onde ele é construído ou um projeto da Vercel vinculado. `unknown` para qualquer outro modelo, porque o modelo lê a própria credencial. Com `--check-model`, `pass` quando todos os modelos responderam, caso contrário `fail` com o código de erro, com a mensagem prefixada por `model:` ou `judge:` quando o agente tem os dois. `skip` quando o agente não tem modelo. `unknown` com `executor` quando um executor personalizado traz o próprio agente e não declara modelo nem juiz; qualquer modelo que ele declare é verificado como o de um agente. |
 
 Por padrão, o doctor imprime uma linha por verificação: uma marca, o id da
 verificação, o alvo ou o agente entre colchetes e os detalhes. A última linha
@@ -1304,7 +1315,7 @@ bunx e2e cache ls --config packages/web/e2e.config.ts
 | Opção | Descrição |
 | --- | --- |
 | `--config <path>` | Caminho explícito da configuração. Padrão: o `e2e.config.ts`, `.mts`, `.js` ou `.mjs` mais próximo (veja [Carregamento](/reference/config#loading)). |
-| `--cache-dir <dir>` | O diretório do armazenamento. Padrão: `E2E_CACHE_DIR`, senão `cache.dir`, senão `.e2e/cache/`. |
+| `--cache-dir <dir>` | O diretório do armazenamento. Padrão: `E2E_CACHE_DIR`, depois `cache.dir`, depois `.e2e/cache/`. |
 
 ```text
 TEST                             TARGET  INSTRUCTION   AGE  ACTIONS
@@ -1420,14 +1431,18 @@ Updated the agent skill in .agents/skills/e2e/ (12 files)
   não instala nada. Sem `node_modules`, como no Yarn Plug'n'Play, ele compara
   as especificações do `package.json` no lugar disso.
 - **O registry.** `npm_config_registry` quando o gerenciador de pacotes o
-  define, senão `https://registry.npmjs.org/`.
+  define, caso contrário `https://registry.npmjs.org/`.
 - **A skill do agente.** Uma cópia em `.agents/skills/e2e` ou
   `.claude/skills/e2e` é atualizada para a da versão instalada depois da
   instalação, e também quando tudo já estava atualizado. Um link simbólico
-  `.claude/skills/e2e` para a cópia em `.agents/skills` acompanha essa cópia.
-  Os arquivos que a nova skill não traz mais ficam. Nada é escrito através de
-  um link simbólico para uma cópia fora do projeto e, sem `node_modules`, como no
-  Yarn Plug'n'Play, o comando indica `e2e init` no lugar disso.
+  `.claude/skills/e2e` para a cópia em `.agents/skills` acompanha essa cópia. Um
+  arquivo que uma versão anterior trazia e a nova não traz é removido; um
+  arquivo que você adicionou fica. Um link que o pnpm mantém apontando para a
+  skill instalada fica como está, e uma cópia ao lado de um link desses é
+  indicada como uma segunda skill ([Deixe o pnpm criar o link da
+  skill](/coding-agents)). Nada é escrito através de um link simbólico para uma
+  cópia fora do projeto e, sem `node_modules`, como no Yarn Plug'n'Play, o
+  comando indica `e2e init` no lugar disso.
 
 | Código de saída | Quando |
 | --- | --- |
@@ -1563,6 +1578,57 @@ E2E_TELEMETRY_DEBUG=1 bunx e2e run
   `e2e telemetry`, imprime um aviso uma única vez. Na CI, nada é impresso e
   nenhum arquivo é escrito.
 
+#### `e2e merge-reports`
+
+```sh
+e2e merge-reports <directories...> --output <dir>
+```
+
+Passe um diretório de saída de cada shard da mesma execução. Diretórios de
+entrada relativos são resolvidos a partir do diretório de trabalho. Baixe os
+shards da mesma execução e tentativa do workflow. Os relatórios não trazem um ID
+de execução do workflow em comum. Um `report-with-reruns.json` correspondente
+prevalece sobre o `report.json`. O comando verifica os índices e os totais dos
+shards, o projeto, a versão do runner, os commits registrados, os alvos e os
+ambientes deles, e a seleção de testes e de agentes. Shards sem reexecução que
+têm testes para rodar precisam ter o mesmo número de repetições. Um shard sem
+commit registrado pode ser mesclado com shards que concordam em um commit.
+Digests de configuração ou metadados de engine diferentes geram um aviso. Shards
+com a mesma configuração podem usar portas atribuídas diferentes no mesmo
+endereço de loopback. Um shard ausente faz a mesclagem falhar. Um shard que
+ainda deve resultados depois de uma reexecução exige o relatório combinado
+correspondente.
+
+| Flag | Significado |
+| --- | --- |
+| `--output <dir>` | Obrigatório. Um diretório novo para o `report.json`, os artefatos locais copiados, as páginas de trace e a saída dos reporters. Relativo à raiz do projeto. Com `--config`, a raiz do projeto é o diretório que contém essa configuração. |
+| `--config <path>` | A configuração a carregar para os reporters de execução concluída. Padrão: a configuração mais próxima, se houver. Com uma configuração em um subdiretório, os reporters usam como raiz dos caminhos de código-fonte e de trace a configuração padrão mais próxima nesse diretório ou acima dele. |
+| `--reporter <ids>` | Reporters de execução concluída, separados por vírgula (`json`, `junit`, `markdown` ou `ctrf`). Substitui os reporters embutidos escolhidos na configuração e mantém os reporters de terceiros configurados. `list`, `dot` e `line` imprimem a partir dos eventos ao vivo de uma execução, então a flag os recusa. Um deles citado na configuração carrega mesmo assim, e imprime só onde os outros reporters escreveram os arquivos deles. |
+
+Os reporters precisam implementar um hook de execução concluída. O comando lê
+relatórios concluídos e não reproduz eventos ao vivo. O veredito final do
+comando vai para o stderr, então o reporter JSON pode escrever só o documento no
+stdout.
+
+Baixe as saídas inteiras dos shards. Os arquivos referenciados precisam estar
+presentes e corresponder ao tamanho e ao digest registrados. A mesclagem gera
+de novo as páginas de trace a partir das tentativas registradas, incluindo
+reexecuções anteriores de shards e shards rodados com `--trace off`. A
+execução mesclada conta cada teste de preparação uma vez, mantém as
+tentativas dele por shard e fica com o pior veredito desse teste de
+preparação. Um resultado interrompido que vem de antes da reexecução de um
+shard dá à execução mesclada o código de saída 130. Um shard encerrado por
+`--max-failures` ou `--max-duration` mantém o veredito de falha. A duração
+registrada vai do início do shard que começou primeiro ao fim do shard que
+terminou por último. O relatório mesclado deixa `run.shard` sem valor e
+registra os shards de origem e a soma das durações deles em
+[`run.merge`](/reference/reporters#merged-shard-reports). O comando retorna o
+[código de saída](#exit-codes) da execução mesclada, ou 2 se não foi possível
+fazer a mesclagem.
+
+Veja [Sharding](/ci#sharding) para o upload dos artefatos e para rodar de
+novo as falhas da matriz inteira.
+
 #### `e2e report`
 
 Abre o relatório HTML escrito por [`htmlReporter()`](/reference/reporters#htmlreporter)
@@ -1594,7 +1660,7 @@ bunx e2e report --output out
 | --- | --- |
 | `[path]` | Arquivo HTML ou diretório que contém `report.html` (padrão: `<output>/report.html`; mutuamente exclusivo com `--output`) |
 | `--config <path>` | Arquivo de configuração (padrão: o `e2e.config.ts`, `.mts`, `.js` ou `.mjs` mais próximo) |
-| `--output <dir>` | Diretório de resultados que contém `report.html` (padrão: `output` na configuração, senão `.e2e`) |
+| `--output <dir>` | Diretório de resultados que contém `report.html` (padrão: `output` na configuração, ou `.e2e`) |
 
 - Se [`htmlReporter({ outputFile })`](/reference/reporters#htmlreporter) escreve a página em outro lugar, passe esse caminho como `[path]`: `e2e report` verifica só `<output>/report.html`.
 

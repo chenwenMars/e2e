@@ -30,8 +30,12 @@ export function locateProjectConfig(options: ProjectOptions): string {
 
 /** What `open_session` names to open a session where the project has no config file: the engine's factory call, and the app. */
 export interface EngineSession extends FactoryRef {
-  /** The target's app: the URL it opens, or the installed app or build a device launches. */
-  readonly app?: Pick<TargetApp, 'url' | 'bundleId' | 'appPath'> | undefined;
+  /**
+   * The target's app, as the call wrote it: any key of a config target's
+   * `app`. Unchecked here: `resolveConfig` checks it field by field, as it
+   * does a config file's.
+   */
+  readonly app?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /**
@@ -53,7 +57,7 @@ export async function loadEngineConfig(
   }
   const engine = await loadEngine(session, { cwd: options.cwd, enginesDir: options.enginesDir });
   return resolveConfig(
-    { targets: [{ engine, ...(session.app === undefined ? {} : { app: session.app }) }] },
+    { targets: [{ engine, ...(session.app === undefined ? {} : { app: session.app as TargetApp }) }] },
     { projectRoot: path.resolve(options.cwd), env: options.env },
   );
 }

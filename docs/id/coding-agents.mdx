@@ -1,0 +1,298 @@
+---
+title: Coding agent
+description: Berikan skill, sesi aplikasi aktif, dan laporan kepada coding agent agar dapat menulis serta men-debug tes.
+"og:image": "https://e2e.com/docs/images/og/coding-agents.png?v=c6990935d7"
+"twitter:image": "https://e2e.com/docs/images/og/coding-agents.png?v=c6990935d7"
+---
+
+Coding agent seperti Claude Code, Codex, atau Cursor dapat menulis, menjalankan,
+dan men-debug tes e2e. Agent mempelajari e2e dari skill, menggunakan aplikasi
+melalui server `e2e mcp`, dan membaca halaman trace dari tes yang gagal.
+
+## Instal skill
+
+<CodeGroup>
+```bash npm
+npx e2e init
+```
+
+```bash pnpm
+pnpm dlx e2e init
+```
+
+```bash bun
+bunx e2e init
+```
+</CodeGroup>
+
+| Jalur | Digunakan oleh |
+| --- | --- |
+| `.agents/skills/e2e/` | Codex, Cursor, OpenCode, dan agent lain yang membaca `.agents/skills` |
+| `.claude/skills/e2e/` | Claude Code. Symlink ke `.agents/skills/e2e/` jika keduanya dipasang. |
+
+Salinan ini berisi `SKILL.md` dan referensi tiap topik.
+[`e2e upgrade`](/reference/cli#e2e-upgrade) memperbaruinya, termasuk setelah Anda
+melakukan upgrade dengan pengelola paket. Tanpa `init`, `npx skills add e2e-inc/e2e`
+menginstal skill, sementara `npx e2e guide [topic]` menampilkan skill dari paket
+yang telah diinstal. Plugin di bawah ini memasang ketiga skill e2e di setiap proyek.
+
+`init` juga menambahkan baris ini ke `AGENTS.md`, sehingga prompt seperti
+"tambahkan tes untuk checkout" dapat mengarahkan agent ke skill. Untuk Claude
+Code, baris di `CLAUDE.md` menggunakan jalur `.claude/skills`; jika file belum
+ada, `init` akan membuatnya. Tambahkan baris ini sendiri jika Anda memasang
+skill dengan cara lain:
+
+```md title="AGENTS.md"
+End-to-end tests use e2e; read .agents/skills/e2e/SKILL.md before writing or running one.
+```
+
+Paket e2e juga menyertakan dokumentasi ini sebagai halaman `.mdx` agar dapat
+dibaca offline, di `node_modules/e2e/docs` untuk proyek satu paket. Tautan
+seperti `/reference/cli` mengarah ke `docs/reference/cli.mdx`.
+
+<Accordion title="Instal plugin Claude Code, Codex, atau Cursor">
+
+Repository e2e menyediakan marketplace plugin untuk Claude Code, Codex, dan
+Grok Build yang membaca file Claude Code. Cursor memuat plugin dari folder
+plugin lokal:
+
+<CodeGroup>
+```bash Claude
+claude plugin marketplace add e2e-inc/e2e
+claude plugin install e2e@e2e
+```
+
+```bash Codex
+codex plugin marketplace add e2e-inc/e2e
+codex plugin add e2e@e2e
+```
+
+```bash Cursor
+repo=$(mktemp -d)
+git clone --depth 1 https://github.com/e2e-inc/e2e "$repo"
+mkdir -p ~/.cursor/plugins/local
+rm -rf ~/.cursor/plugins/local/e2e
+cp -R "$repo/plugins/e2e" ~/.cursor/plugins/local/
+```
+</CodeGroup>
+
+Mulai sesi baru. Di Cursor, jalankan **Developer: Reload Window**. Di Cursor
+Teams dan Enterprise, plugin lokal memerlukan pengaturan admin **Allow Local
+Plugin Imports**, atau admin dapat mengimpor `e2e-inc/e2e` sebagai marketplace
+untuk tim. Plugin menambahkan skill `e2e`, `create-verification-skill`, dan
+`migrate-to-e2e`, bukan paket npm. Di Codex dan Cursor, plugin juga menambahkan
+[MCP server](/mcp-server); di Claude Code dan Grok Build, daftarkan server itu
+pada proyek. Panggil dua skill lainnya dengan nama plugin: `/e2e:<skill>` di
+Claude Code, `$e2e:<skill>` di Codex, dan `/<skill>` di Cursor.
+
+Versi plugin mengikuti rilis e2e. Untuk memperbaruinya, jalankan perintah
+berikut lalu mulai sesi baru. Di Cursor, jalankan kembali perintah di atas.
+
+<CodeGroup>
+```bash Claude
+claude plugin marketplace update e2e
+claude plugin update e2e@e2e
+```
+
+```bash Codex
+codex plugin marketplace upgrade e2e
+```
+</CodeGroup>
+
+</Accordion>
+
+<Accordion title="Instal di OpenClaw atau Hermes Agent">
+
+Ketiga skill diterbitkan di [ClawHub](https://clawhub.ai/) dengan nama
+`@e2e`. Hermes Agent membaca repository sebagai tap:
+
+<CodeGroup>
+```bash OpenClaw
+openclaw skills install @e2e/e2e
+openclaw skills install @e2e/create-verification-skill
+openclaw skills install @e2e/migrate-to-e2e
+```
+
+```bash Hermes
+hermes skills tap add e2e-inc/e2e
+hermes skills install e2e-inc/e2e/e2e
+```
+</CodeGroup>
+
+</Accordion>
+
+## Izinkan agent menggunakan aplikasi
+
+`e2e mcp` memberi agent sesi aktif pada aplikasi Anda. Sebelum menulis locator,
+server memeriksanya terhadap layar dan memeriksa perubahan UI yang dibuat agent.
+`init` mendaftarkan server tersebut. Lihat [MCP server](/mcp-server) untuk
+penyiapan dan prompt.
+
+## Cara agent menulis dan menjalankan tes
+
+Skill mengarahkan agent untuk membaca konfigurasi dan tes yang sudah ada terlebih
+dahulu. Dengan `e2e mcp`, agent menjalani alur dalam sebuah sesi dan menulis
+setiap langkah saat melakukannya. Untuk kolom yang diketahui dan nilai pasti,
+agent menggunakan pemanggilan `screen` dari locator yang cocok dengan satu node:
+
+```ts title="tests/checkout.e2e.ts"
+import { test, expect, credentials } from 'e2e';
+
+test('a signed-in user reaches checkout', async ({ screen, app, agent }) => {
+  const user = credentials.user('customer');
+  await app.open('/login');
+  await screen.getByLabel('Email').fill(user.username);
+  await screen.getByLabel('Password').fill(user.password);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', 'Welcome back')).toBeVisible();
+
+  await agent.act('Add the cheapest item on the page to the cart');
+  await expect(screen.getByRole('status', 'Cart')).toHaveText('1 item');
+  await agent.act('Open the cart');
+  await expect(screen.getByRole('heading', 'Your cart')).toBeVisible();
+});
+```
+
+- **Satu `agent.act` untuk setiap [tujuan atomik](/core-concepts#goals), lalu
+  gunakan `expect`.** `expect` gagal jika agent melakukan hal yang salah. Matcher
+  locator atau [pemeriksaan verifikasi](/cache#when-a-recording-is-written)
+  lain juga memungkinkan cache memutar ulang langkah.
+- **Jangan gunakan jeda.** Locator terus memeriksa, tindakan menunggu targetnya,
+  dan `expect` mencoba ulang sampai batas waktunya tercapai.
+- **Berikan secret melalui `credentials.user(name)`.** Deklarasikan secret di
+  konfigurasi. Jangan pernah menuliskannya dalam tes.
+
+Saat melakukan iterasi, agent hanya menjalankan tes yang sedang dikerjakannya,
+berdasarkan nomor baris tempat `test(` dimulai. Dengan `--action-timeout 5000`,
+locator yang salah gagal setelah 5 detik, bukan 30 detik:
+
+<CodeGroup>
+```bash npm
+npx e2e run tests/checkout.e2e.ts:3 --action-timeout 5000
+```
+
+```bash pnpm
+pnpm exec e2e run tests/checkout.e2e.ts:3 --action-timeout 5000
+```
+
+```bash bun
+bunx e2e run tests/checkout.e2e.ts:3 --action-timeout 5000
+```
+</CodeGroup>
+
+Sebelum menjalankan tes lagi, agent memperbaiki error CLI, konfigurasi, dan
+pengumpulan tes. Agent tidak mengubah rekaman cache.
+
+Agent membiarkan cache replay aktif agar tujuan yang pemeriksaannya berhasil
+dapat diputar ulang tanpa pemanggilan model. Agent menonaktifkan retry karena
+setiap retry menjalankan semua tujuan secara langsung. Setelah tes berhasil,
+agent menghapus `--action-timeout` dan menjalankannya sekali dengan `--no-cache`
+untuk memastikan agent langsung mencapai setiap tujuan. Lihat
+[Jalankan ulang tes saat memperbaikinya](/cache#rerun-a-test-while-you-fix-it).
+
+## Cara agent membaca kegagalan
+
+Secara default ([`trace`](/reference/config#trace)), setiap eksekusi membuat halaman
+trace untuk tes yang gagal, melewati batas waktu, terinterupsi, atau flaky. File
+tersebut disimpan di direktori tes di bawah `.e2e/results/`. `.e2e` adalah nilai
+`output` default. Terminal menampilkan lokasi halaman di bawah setiap tes gagal,
+misalnya `❯ trace .e2e/results/<test>/trace.md`.
+
+Agent membaca halaman itu, bukan `.e2e/report.json`, yang menyimpan fakta sama
+untuk [script](/debugging). Halaman tersebut mencantumkan baris yang gagal dan
+semua langkah beserta tindakannya: node yang disentuh, nilai yang dibaca oleh
+assertion, keputusan cache, error console, dan request yang gagal. Halaman itu
+juga memuat percakapan terakhir agent dan tampilan layar saat kegagalan terjadi.
+
+Agent memperbaiki tes berdasarkan bukti tersebut. Agent memperbaiki semua baris
+yang terkait dengan bukti, bukan hanya baris yang gagal. Tes berhenti pada
+langkah pertama yang gagal, jadi sebelum eksekusi berikutnya agent juga memeriksa
+baris-baris setelahnya.
+
+Untuk melihat layar yang tidak ditampilkan di halaman trace, agent membukanya
+dalam sesi MCP melalui cara tercepat, misalnya langsung memakai URL di web.
+Agent tidak mengulangi alur dari awal.
+
+Untuk detail pemanggilan model, agent menambahkan `--ai-trace` lalu membaca trace
+dengan [unbox-ai](/debugging#agent-steps). Gunakan bersama `--no-cache` untuk
+merekam setiap pemanggilan model dalam alur. Jangan membuka trace mentah di
+konteks agent. Isinya mengulang prompt dan ukurannya dapat mencapai beberapa
+megabyte.
+
+## Buat skill verifikasi untuk aplikasi
+
+Skill e2e mengajarkan cara menggunakan runner, bukan aplikasi Anda. Skill
+`create-verification-skill` membuat skill `.agents/skills/verify-<app>/` khusus
+proyek yang mengenali aplikasi Anda, lalu mengujinya sekali sebelum diserahkan.
+
+<CodeGroup>
+```bash npm
+npx skills add e2e-inc/e2e --skill create-verification-skill
+```
+
+```bash pnpm
+pnpm dlx skills add e2e-inc/e2e --skill create-verification-skill
+```
+
+```bash bun
+bunx skills add e2e-inc/e2e --skill create-verification-skill
+```
+</CodeGroup>
+
+Lalu minta agent menjalankan `/create-verification-skill`.
+
+<Accordion title="Isi skill yang dihasilkan">
+- Perintah launch dan doctor dari konfigurasi Anda.
+- Dua cara mengendalikan aplikasi: sesi `e2e mcp` aktif dan tes.
+- Bukti yang disimpan sebagai hasil verifikasi.
+- Peta fitur dengan satu charter `e2e explore` untuk setiap fitur, sehingga
+  [bug bash](/bug-bash) dapat dijalankan berdasarkan peta tersebut.
+
+Skill yang dihasilkan hanya menyatakan hal yang benar tentang aplikasi Anda
+serta menautkan skill e2e untuk hal lainnya. Skill ini didasarkan pada
+[create-verification-skill](https://github.com/cursor/plugins/tree/main/pstack/skills/create-verification-skill)
+dari pstack milik poteto, dengan e2e sebagai pengganti harness buatan sendiri.
+</Accordion>
+
+## Migrasikan rangkaian tes yang sudah ada
+
+Skill `migrate-to-e2e` memigrasikan rangkaian tes Playwright, Cypress, Selenium,
+Appium, Detox, Maestro, atau TesterArmy ke e2e sedikit demi sedikit dalam setiap
+sesi. Rangkaian tes lama tetap berjalan bersama tes baru, sehingga Anda dapat
+berhenti setelah sesi mana pun.
+
+<CodeGroup>
+```bash npm
+npx skills add e2e-inc/e2e --skill migrate-to-e2e
+```
+
+```bash pnpm
+pnpm dlx skills add e2e-inc/e2e --skill migrate-to-e2e
+```
+
+```bash bun
+bunx skills add e2e-inc/e2e --skill migrate-to-e2e
+```
+</CodeGroup>
+
+Lalu minta agent menjalankan `/migrate-to-e2e`. Agent memigrasikan bagian yang
+Anda pilih dan menjalankan setiap tes hasil migrasi tiga kali pada tiap target.
+File `MIGRATION.md` mencatat progres untuk sesi berikutnya. Jika diinginkan,
+agent menanam bug sementara di aplikasi, seperti total checkout yang salah,
+lalu memeriksa apakah kedua rangkaian tes mendeteksinya. Agent hanya menghapus
+tes lama setelah Anda mengonfirmasi. Agent terlebih dahulu membaca panduan
+migrasi untuk runner Anda:
+[Playwright](/migrate/playwright), [Cypress](/migrate/cypress),
+[Selenium](/migrate/selenium), [Appium](/migrate/appium), [Detox](/migrate/detox),
+[Maestro](/migrate/maestro), atau [TesterArmy](/migrate/testerarmy).
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Referensi CLI" icon="terminal" href="/reference/cli">
+    Penjelasan setiap flag untuk init, guide, mcp, dan perintah `run`.
+  </Card>
+  <Card title="Men-debug eksekusi" icon="bug" href="/debugging">
+    Laporan, artefak, dan flag agent.
+  </Card>
+</CardGroup>

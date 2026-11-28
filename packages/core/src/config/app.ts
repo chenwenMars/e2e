@@ -81,6 +81,11 @@ const ENVIRONMENTS: ReadonlySet<unknown> = new Set(['test', 'staging', 'producti
 
 const PERMISSION_STATES: ReadonlySet<unknown> = new Set(['grant', 'deny', 'reset']);
 
+/** True for a permission state `permissions` takes. */
+function isPermissionState(value: unknown): value is AppPermissionState {
+  return PERMISSION_STATES.has(value);
+}
+
 /** Every key a target's `app` takes, kept equal to `TargetApp` by the compiler. */
 const TARGET_APP_KEYS: readonly string[] = Object.keys({
   url: true,
@@ -134,7 +139,7 @@ export function checkTargetApp(targetName: string, engine: EngineHandle | undefi
       `target "${targetName}" declares app without an engine; only an engine can drive an app, so name one: engine: web() or mobile({ platform })`,
     );
   }
-  const { environment, permissions } = app;
+  const { environment } = app;
   if (environment !== undefined && !ENVIRONMENTS.has(environment)) {
     throw new ConfigurationError('INVALID_CONFIG', `${where}.environment must be one of test, staging, production, got ${JSON.stringify(environment)}`);
   }
@@ -145,16 +150,7 @@ export function checkTargetApp(targetName: string, engine: EngineHandle | undefi
       `${where}.launchArguments is an object, and engine "${engine.name}" takes only a list of strings: write the arguments as a list, or use an engine version that supports the object syntax`,
     );
   }
-  if (permissions !== undefined && permissions !== 'all') {
-    if (!isRecord(permissions)) {
-      throw new ConfigurationError('INVALID_CONFIG', `${where}.permissions must be 'all' or an object of permission name to grant, deny, or reset`);
-    }
-    for (const [permission, state] of Object.entries(permissions)) {
-      if (!PERMISSION_STATES.has(state)) {
-        throw new ConfigurationError('INVALID_CONFIG', `${where}.permissions.${permission} must be grant, deny, or reset, got ${JSON.stringify(state)}`);
-      }
-    }
-  }
+  const permissions = checkPermissions(app.permissions, where);
   // An engine that predates 'all' would read the string as a map of names.
   if (permissions === 'all' && engine !== undefined && engine.grantsAllPermissions !== true) {
     throw new ConfigurationError(
@@ -184,6 +180,36 @@ export function checkTargetApp(targetName: string, engine: EngineHandle | undefi
   }
   engine?.validateApp?.(obj({ url, bundleId, appPath, ...engineLaunchArguments(launchArguments), ...enginePermissions(permissions) }) satisfies EngineAppDeclaration, { targetName, ...(file ? { fileApp: true } : {}) });
   return checked;
+}
+
+/**
+ * A target's `permissions`: `'all'`, or a map of permission name to grant,
+ * deny, or reset without its `undefined` entries, which a config writes for
+ * a permission it leaves out.
+ */
+function checkPermissions(declared: unknown, where: string): Readonly<Record<string, AppPermissionState>> | 'all' | undefined {
+  if (declared === undefined || declared === 'all') {
+    return declared;
+  }
+
+  if (!isRecord(declared)) {
+    throw new ConfigurationError('INVALID_CONFIG', `${where}.permissions must be 'all' or an object of permission name to grant, deny, or reset`);
+  }
+
+  const permissions: (readonly [string, AppPermissionState])[] = [];
+  for (const [permission, state] of Object.entries(declared)) {
+    if (state === undefined) {
+      continue;
+    }
+
+    if (!isPermissionState(state)) {
+      throw new ConfigurationError('INVALID_CONFIG', `${where}.permissions.${permission} must be grant, deny, or reset, got ${JSON.stringify(state)}`);
+    }
+
+    permissions.push([permission, state]);
+  }
+
+  return Object.fromEntries(permissions);
 }
 
 /**

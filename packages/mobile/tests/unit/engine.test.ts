@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppError } from 'agent-device';
+import { AppError, formatPinnedRef } from 'agent-device';
 import { decodePng, encodePng } from '../helpers/png.ts';
 import type { EngineFixtureContext, EngineSnapshot, FixtureOperations, LocatorExpression, OperationContext, SemanticNode } from '@e2e-dev/core/engine';
 import { describeEngine } from '@e2e-dev/core/engine';
@@ -114,7 +114,7 @@ describe('manifest', () => {
     expect(Object.keys(pinned.session!).toSorted()).toEqual(['back', 'openLink', 'reset', 'restart']);
     // No `open`: a device app has no URL. No select verb either: the touch surface has no option lists to pick from.
     expect(pinned.session!.open).toBeUndefined();
-    expect(pinned.actions).toEqual(['tap', 'doubleTap', 'multiTap', 'longPress', 'fill', 'clear', 'press', 'check', 'uncheck', 'focus', 'hover', 'dragTo', 'swipe']);
+    expect(pinned.actions).toEqual(['tap', 'doubleTap', 'multiTap', 'longPress', 'fill', 'clear', 'press', 'check', 'uncheck', 'focus', 'hover', 'dragTo', 'swipe', 'scrollTo']);
     expect(pinned.state).toBeUndefined();
   });
 
@@ -4008,7 +4008,8 @@ describe('reference lifetime and cancellation', () => {
 describe('snapshot generations', () => {
   /**
    * agent-device's ref admission: every capture starts a new generation, and
-   * a ref pinned with `~s<generation>` is refused unless it names the newest.
+   * a pinned ref is refused unless it names the newest capture. The installed
+   * SDK owns the pin grammar; the fake must not accept an adapter's old spelling.
    */
   function generations(h: Harness, nodes: () => readonly RawNode[] = () => SETTINGS_NODES): void {
     let generation = 6;
@@ -4017,8 +4018,8 @@ describe('snapshot generations', () => {
       return { ...SETTINGS_SNAPSHOT, nodes: nodes(), refsGeneration: generation };
     });
     const admit = (ref: string): void => {
-      const pinned = /~s(\d+)$/.exec(ref);
-      if (pinned !== null && Number(pinned[1]) !== generation) {
+      const current = new Set(nodes().map((node) => formatPinnedRef(node.ref!, generation)));
+      if (!current.has(ref)) {
         throw new AppError('COMMAND_FAILED', `Ref ${ref} was minted from a superseded snapshot generation`, { reason: 'ref_generation_mismatch', dispatched: 'no' });
       }
     };
@@ -4043,9 +4044,9 @@ describe('snapshot generations', () => {
     await h.engine.perform!(toggle!.ref, { kind: 'check' }, op);
     await h.engine.perform!(about!.ref, { kind: 'dragTo', target: back!.ref }, op);
     expect(h.fake.calls.slice(before).map((call) => [call.method, call.args])).toEqual([
-      ['interactions.press', { ref: '@e4~s7', settle: true, settleQuietMs: 150 }],
-      ['interactions.press', { ref: '@e6~s7', settle: true, settleQuietMs: 150 }],
-      ['interactions.drag', { source: '@e4~s7', destination: '@e3~s7' }],
+      ['interactions.press', { ref: formatPinnedRef('@e4', 7), settle: true, settleQuietMs: 150 }],
+      ['interactions.press', { ref: formatPinnedRef('@e6', 7), settle: true, settleQuietMs: 150 }],
+      ['interactions.drag', { source: formatPinnedRef('@e4', 7), destination: formatPinnedRef('@e3', 7) }],
     ]);
   });
 
@@ -4056,7 +4057,7 @@ describe('snapshot generations', () => {
     const about = await observed(h, 'About');
     await h.engine.locate!(testIdQuery('BackButton'), operation());
     await expect(h.engine.perform!(about.ref, { kind: 'tap' }, operation())).rejects.toMatchObject({ code: 'NODE_STALE', retryable: true });
-    expect(h.fake.lastArgs('interactions.press')).toMatchObject({ ref: '@e4~s7' });
+    expect(h.fake.lastArgs('interactions.press')).toMatchObject({ ref: formatPinnedRef('@e4', 7) });
   });
 
   it('drags between nodes located in separate captures from the newest one', async () => {
@@ -4067,7 +4068,7 @@ describe('snapshot generations', () => {
     const [about] = await h.engine.locate!(testIdQuery('ABOUT'), step);
     const [back] = await h.engine.locate!(testIdQuery('BackButton'), step);
     await h.engine.perform!(about!.ref, { kind: 'dragTo', target: back!.ref }, step);
-    expect(h.fake.lastArgs('interactions.drag')).toEqual({ source: '@e4~s8', destination: '@e3~s8' });
+    expect(h.fake.lastArgs('interactions.drag')).toEqual({ source: formatPinnedRef('@e4', 8), destination: formatPinnedRef('@e3', 8) });
   });
 
   it('pins a control found again after a transition to the capture it was found in', async () => {
@@ -4078,7 +4079,7 @@ describe('snapshot generations', () => {
     const step: OperationContext = { ...operation(), origin: 'test' };
     const about = await observed(h, 'About');
     await h.engine.perform!(about.ref, { kind: 'tap' }, step);
-    expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: '@e4~s8' });
+    expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: formatPinnedRef('@e4', 8) });
   });
 
   it('drags from a source found again after a transition to a target located before it', async () => {
@@ -4091,7 +4092,7 @@ describe('snapshot generations', () => {
     const [back] = await h.engine.locate!(testIdQuery('BackButton'), step);
     await h.engine.perform!(about!.ref, { kind: 'dragTo', target: back!.ref }, step);
     // The launch leaves the source in transition, so it is found again in a third capture.
-    expect(h.fake.lastArgs('interactions.drag')).toEqual({ source: '@e4~s9', destination: '@e3~s9' });
+    expect(h.fake.lastArgs('interactions.drag')).toEqual({ source: formatPinnedRef('@e4', 9), destination: formatPinnedRef('@e3', 9) });
   });
 
   it('refuses a drag whose source a newer capture lists nowhere it was, before sending it', async () => {

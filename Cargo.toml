@@ -1,0 +1,10 @@
+# Every Rust crate in the repository: logic crates and the NAPI bindings over them, one lock file and one toolchain
+# (rust-toolchain.toml). `crates/` holds sources only: the build scripts place each addon in its npm package.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

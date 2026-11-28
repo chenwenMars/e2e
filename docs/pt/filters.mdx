@@ -1,0 +1,283 @@
+---
+title: Filtros de testes
+description: Rode só os testes que um pull request pode afetar.
+"og:image": "https://e2e.com/docs/images/og/filters.png?v=2de53e0ea4"
+"twitter:image": "https://e2e.com/docs/images/og/filters.png?v=2de53e0ea4"
+---
+
+import { Video } from '../snippets/video.jsx';
+
+Com `--changed-since <ref>`, um filtro de testes deixa de fora os testes que a
+mudança desde essa ref não pode afetar e começa pelos arquivos dos testes com
+mais chance de falhar. O filtro de decisão pergunta a um
+[modelo de decisão](/decision-models), como o Jev, sobre cada teste. Sem a
+flag, como na `main` e localmente, todos os testes rodam.
+
+<Video>
+  <video src="/images/filters.mp4" aria-label="Duas execuções lado a lado. Com --changed-since, o filtro de decisão deixa de fora 25 de 27 testes e a execução passa em 12 segundos. A execução completa ainda está rodando depois de 30 segundos." muted loop playsInline controls />
+
+  Com `--changed-since origin/main`, o filtro de decisão deixa de fora 25 de 27 testes.
+</Video>
+
+## Adicione o filtro de decisão
+
+<CodeGroup>
+```bash npm
+npm install -D @e2e-dev/decision ai
+```
+
+```bash pnpm
+pnpm add -D @e2e-dev/decision ai
+```
+
+```bash bun
+bun add -d @e2e-dev/decision ai
+```
+</CodeGroup>
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { gateway } from 'ai';
+import { decisionFilter } from '@e2e-dev/decision';
+
+export default {
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+  filters: [decisionFilter({ model: gateway.decisionModel('typesafe-ai/jev') })],
+} satisfies E2EConfig;
+```
+
+Na CI, passe `--changed-since` nos pull requests e dê ao step do e2e a chave
+do AI Gateway:
+
+```yaml title=".github/workflows/e2e.yml"
+steps:
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      fetch-depth: 0
+  # ...
+  - run: npx e2e run ${{ github.event_name == 'pull_request' && format('--changed-since origin/{0}', github.base_ref) || '' }}
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+```
+
+Passe `--changed-since` só em eventos `pull_request`, para que pushes, filas
+de merge e execuções agendadas continuem rodando a suíte completa. Nunca use
+a flag em `pull_request_target` (em que diffs não confiáveis de forks rodam
+ao lado dos seus segredos). `fetch-depth: 0` dá ao git o histórico da branch
+base de que ele precisa para calcular a base de merge; sem isso, a execução
+falha.
+
+O filtro de decisão compara os commits da sua branch com a base de merge, lê
+o diff e os seus arquivos de teste e de preparação (com os segredos estáticos
+ocultados, exceto os valores retornados por um provedor de segredos) e pula
+os testes com menos de 20% de chance de terem sido afetados. Tudo o que o
+modelo não consegue julgar (um diff muito grande, um arquivo de teste grande
+demais ou uma chamada que falhou, como a falta de uma chave de API no PR de
+um fork) roda mesmo assim, com um aviso na saída e com os testes editados
+diretamente priorizados primeiro. Requer `ai` 7.0.134 ou posterior.
+
+Qualquer [modelo de decisão](/decision-models) que responda a perguntas
+`boolean` funciona (por exemplo, `typeSafeAi.decisionModel('jev-latest')`
+direto pelo `@ai-sdk/typesafe-ai` com `TYPESAFE_AI_API_KEY`). Passe
+`providerOptions` para configurações do gateway, como
+`{ gateway: { zeroDataRetention: true } }`.
+
+## Visualize localmente
+
+<CodeGroup>
+```bash npm
+npx e2e list --changed-since origin/main
+```
+
+```bash pnpm
+pnpm exec e2e list --changed-since origin/main
+```
+
+```bash bun
+bunx e2e list --changed-since origin/main
+```
+</CodeGroup>
+
+`e2e list` imprime cada teste que um filtro pulou, junto com o motivo. Ele
+não inicia o seu app e faz as mesmas chamadas ao modelo que uma execução. Faça
+commit das suas mudanças antes, para que o filtro consiga ler o diff.
+
+## O que sempre roda
+
+- A suíte completa sempre que `--changed-since` não é passada (ou nada mudou
+  desde a base de merge).
+- As reexecuções com `--last-failed` e as reexecuções seguintes com `--watch`.
+
+O filtro de decisão também sempre roda:
+
+- Todo teste cujo arquivo de teste, arquivo de preparação ou capturas de tela
+  armazenadas mudaram.
+- A suíte completa sempre que o seu `e2e.config.*` ou um lockfile de
+  dependências muda (como `pnpm-lock.yaml`, `Podfile.lock`, `gradle.lockfile`,
+  `Gemfile.lock`, `go.sum`, `Cargo.lock` ou `libs.versions.toml`).
+
+Se um filtro lançar um erro, retornar um resultado inválido ou estourar o
+tempo limite de 5 minutos, o e2e registra um aviso e esse filtro não exclui
+nada (os filtros seguintes da cadeia rodam mesmo assim). Em outros serviços de
+CI, passe `--changed-since origin/main` nos builds de PR com histórico do git
+suficiente para a base de merge (veja
+[GitLab](/ci/gitlab#run-only-affected-tests)). Com `--shard`, cada shard
+filtra só a própria fatia.
+
+## Comece pelos mais prováveis
+
+O filtro de decisão pontua cada teste mantido pela chance de ele ter sido
+afetado (100% para testes, arquivos de preparação e snapshots editados
+diretamente; nos demais casos, a probabilidade do modelo) e roda primeiro os
+arquivos de maior risco, para que as falhas apareçam cedo, principalmente com
+`--max-failures` ou com o padrão da CI de um único worker. Dentro de cada
+faixa de prioridade, as execuções com vários workers também ordenam pelo
+[histórico de tempos](/ci#cache-the-timings-history).
+
+Filtros personalizados podem dar a mesma ordem retornando pontuações
+`relevance` entre 0 e 1 ([veja abaixo](#write-your-own)).
+
+## O que você vê
+
+- **Terminal**: uma linha por filtro, como
+  `decision kept 7 of 77 tests, left out 70 (1 call, 17.6k tokens, $0.0007)`. A
+  nota do filtro de decisão termina com o gasto dele: chamadas ao modelo, tokens
+  e o custo quando o provedor o informa, como faz o AI Gateway. Uma linha como
+  `ranked 7 of 7 tests by relevance, likeliest first` vem em seguida quando as
+  pontuações colocam os testes em mais de uma faixa. Em seguida, o resumo mostra
+  uma linha `Left out`. Quando os filtros não deixam nada para rodar, a execução
+  passa e não inicia nenhum app.
+- **[Comentário no pull request](/github) e `summary.md`**: o título
+  `7 passed, 70 left out by filters` e uma tabela recolhida dos testes com os
+  motivos.
+- **`junit.xml` e `report.json`**: cada teste deixado de fora é um caso
+  pulado, com `skip.filter` no relatório, ao lado de `run.filters` e
+  `run.changes`. Veja [Reporters](/reference/reporters#test-filters).
+
+## Ajuste o filtro de decisão
+
+Envolva o filtro de decisão para mudar o que ele julga. Este roda todos os
+testes quando `infra/` muda, tira da mudança `apps/mobile/`, que estes testes
+não alcançam, e sempre roda os testes `smoke`:
+
+```ts title="tuned-filter.ts"
+import type { TestFilter } from 'e2e';
+import { gateway } from 'ai';
+import { decisionFilter } from '@e2e-dev/decision';
+
+const decision = decisionFilter({ model: gateway.decisionModel('typesafe-ai/jev') });
+
+export const tuned = {
+  name: 'decision',
+  filter(tests, context) {
+    if (context.changes.files.some((file) => file.startsWith('infra/'))) return { exclude: {}, note: 'infra/ changed' };
+    const judged = tests.filter((test) => !test.tags.includes('smoke'));
+    const files = context.changes.files.filter((file) => !file.startsWith('apps/mobile/'));
+    if (files.length === 0) return { exclude: Object.fromEntries(judged.map((test) => [test.id, 'only apps/mobile/ changed'])) };
+    return decision.filter(judged, { ...context, changes: { ...context.changes, files } });
+  },
+} satisfies TestFilter;
+```
+
+Coloque `tuned` em `filters` no lugar de `decisionFilter(...)`. Para rodar
+todos os testes em um pull request específico, omita `--changed-since` quando
+ele tiver a label `all-tests`. Adicione `labeled` aos eventos, para que
+adicionar a label inicie uma execução:
+
+```yaml title=".github/workflows/e2e.yml"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+# ...
+      - run: npx e2e run ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'all-tests') && format('--changed-since origin/{0}', github.base_ref) || '' }}
+```
+
+## Escreva o seu
+
+Um filtro é `{ name, filter }`: `filter` recebe os testes e a mudança e
+retorna os testes a deixar de fora, com um motivo para cada um. Ele também
+pode pontuar os demais de 0 a 1 com `relevance`. Este mapeia os caminhos
+alterados para tags de teste e começa pelos testes cuja área a mudança
+alcança:
+
+```ts title="areas-filter.ts"
+import type { TestFilter } from 'e2e';
+
+/** The test tags each part of the app reaches, by path from the repository root. */
+const AREAS: Readonly<Record<string, readonly string[]>> = {
+  'src/todos/': ['todos'],
+  'src/auth/': ['auth', 'smoke'],
+  'src/checkout/': ['checkout'],
+};
+/** Every tag an area reaches; a test without one always runs. */
+const AREA_TAGS: ReadonlySet<string> = new Set(Object.values(AREAS).flat());
+
+export const areas = {
+  name: 'areas',
+  filter(tests, { changes }) {
+    const reached = new Set<string>();
+    let unmapped: string | undefined;
+    for (const file of changes.files) {
+      const area = Object.keys(AREAS).find((prefix) => file.startsWith(prefix));
+      if (area === undefined) unmapped = file;
+      else for (const tag of AREAS[area] ?? []) reached.add(tag);
+    }
+    const exclude: Record<string, string> = {};
+    const relevance: Record<string, number> = {};
+    for (const test of tests) {
+      const tags = test.tags.filter((tag) => AREA_TAGS.has(tag));
+      if (tags.some((tag) => reached.has(tag))) relevance[test.id] = 1;
+      else if (tags.length > 0 && unmapped === undefined) exclude[test.id] = 'the change reaches none of its areas';
+    }
+    if (unmapped === undefined) return { exclude, relevance };
+    return { exclude, relevance, note: `${unmapped} is in no area, so areas leaves nothing out` };
+  },
+} satisfies TestFilter;
+```
+
+Coloque esse filtro antes do filtro de decisão, para que o modelo julgue só os
+testes que `areas` manteve:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { gateway } from 'ai';
+import { decisionFilter } from '@e2e-dev/decision';
+import { areas } from './areas-filter.ts';
+
+export default {
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+  filters: [areas, decisionFilter({ model: gateway.decisionModel('typesafe-ai/jev') })],
+} satisfies E2EConfig;
+```
+
+- Todo teste que você não lista em `exclude` roda (assim como todo teste
+  excluído que compartilha um grupo serial com um teste mantido).
+- `relevance` mapeia IDs de teste para pontuações de 0 a 1 (entre vários
+  filtros, a maior pontuação prevalece). Até um filtro que lança um erro pode
+  anexar um mapa `relevance` ao erro, para que os testes alterados
+  diretamente rodem primeiro mesmo assim.
+- Os filtros se encadeiam em ordem, então cada um só vê os testes mantidos
+  pelo filtro anterior.
+- Passe `signal` para todo trabalho assíncrono e passe os prompts por
+  `redact` antes de enviá-los a um modelo. `redact` mascara os segredos
+  estáticos e as senhas de credenciais (incluindo qualquer trecho de 8 ou
+  mais caracteres de uma delas), mas os valores retornados por um provedor de
+  segredos passam sem alteração.
+- Mantenha o trabalho de filtragem dentro de `filter()`, e não no nível
+  superior do módulo, já que os processos dos workers também importam o seu
+  arquivo de configuração.
+
+Veja os tipos em [`TestFilter`](/reference/config#testfilter).
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Integração contínua" icon="rotate" href="/ci">
+    Bloqueie o merge de pull requests, use shards e reexecute as falhas.
+  </Card>
+  <Card title="Reporters" icon="file-lines" href="/reference/reporters">
+    Leia `run.changes`, `run.filters` e `skip.filter` no seu próprio reporter.
+  </Card>
+</CardGroup>

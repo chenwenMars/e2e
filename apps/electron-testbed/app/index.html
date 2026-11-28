@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Sign In</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 24px; }
+      form { display: grid; gap: 12px; max-width: 320px; }
+      label { display: grid; gap: 4px; }
+      #items { height: 160px; overflow: auto; border: 1px solid #ccc; margin: 0; padding: 0 16px; }
+      #items li { padding: 6px 0; }
+    </style>
+  </head>
+  <body>
+    <h1 id="greeting">Welcome</h1>
+    <div id="badge-host"></div>
+    <form id="sign-in">
+      <label>Username <input name="username" data-testid="username" autocomplete="username" placeholder="ada" /></label>
+      <label>Password <input name="password" type="password" data-testid="password" autocomplete="current-password" /></label>
+      <label><input type="checkbox" name="remember" /> Remember me</label>
+      <label>Plan
+        <select name="plan" data-testid="plan">
+          <option>Free</option>
+          <option selected>Pro</option>
+          <option>Team</option>
+          <optgroup label="Retired" disabled><option>Legacy</option></optgroup>
+        </select>
+      </label>
+      <button type="submit" data-testid="sign-in">Sign in</button>
+    </form>
+    <p role="status" data-testid="status">Not signed in</p>
+    <section aria-labelledby="counter-heading">
+      <h2 id="counter-heading">Counter</h2>
+      <button type="button" id="increment">Add one</button>
+      <output data-testid="count">0</output>
+      <p data-testid="price"><span>Price</span> <span>$10</span></p>
+      <div id="spinner" hidden>Loading</div>
+      <ul id="rows">
+        <li class="row" id="row-first" data-testid="row" hidden>First row</li>
+        <li class="row" id="row-second" data-testid="row">Second row</li>
+      </ul>
+      <input type="password" id="stashed-key" value="stashed-secret" hidden />
+      <div aria-disabled="true">
+        <button type="button" id="locked">Locked action</button>
+        <input aria-label="Locked field" data-testid="locked-field" />
+        <button type="button" id="unlocked" aria-disabled="false">Unlocked action</button>
+      </div>
+      <fieldset disabled><legend>Archived</legend><a href="#archive" id="archive-link">Open archive</a></fieldset>
+      <output data-testid="link-result"></output>
+    </section>
+    <section aria-labelledby="fields-heading">
+      <h2 id="fields-heading">Tricky fields</h2>
+      <label>Handoff <input data-testid="handoff" /></label>
+      <label>Invite code <input data-testid="invite" /></label>
+      <label>Slow <input data-testid="slow" /></label>
+      <label>Laggy <input data-testid="laggy" /></label>
+      <div contenteditable="true" role="textbox" aria-label="Rich notes" data-testid="rich"><p>First <b>bold</b></p><p>Second paragraph</p></div>
+      <div contenteditable="true" data-testid="plain-notes">Plain notes</div>
+      <!-- aria-owns moves the second button into the group, ahead of the first in Chromium's tree; a CSS index counts in document order. -->
+      <div role="group" aria-label="Reordered" aria-owns="dom-second"></div>
+      <button type="button" class="ordered">DOM first</button>
+      <button type="button" class="ordered" id="dom-second">DOM second</button>
+      <label>Due <input type="date" data-testid="due" value="2026-01-02" /></label>
+      <label>Seats <input type="number" data-testid="seats" value="7" /></label>
+      <label>Attachment <input type="file" data-testid="attachment" /></label>
+      <output data-testid="attachment-name"></output>
+      <label>Notes <textarea data-testid="notes">Bring the badge</textarea></label>
+      <label>Room <select data-testid="room"><option>Loading…</option></select></label>
+      <label>Region
+        <select data-testid="region">
+          <option value="eu-1">Europe</option>
+          <option value="us-1">America</option>
+        </select>
+      </label>
+      <div style="overflow-x: auto"><button type="button" id="wide" style="width: 1500px">Wide action</button></div>
+      <output data-testid="wide-result"></output>
+    </section>
+    <section aria-labelledby="settings-heading">
+      <h2 id="settings-heading">Windows</h2>
+      <button type="button" id="open-settings">Open settings</button>
+    </section>
+    <section aria-labelledby="items-heading">
+      <h2 id="items-heading">Items</h2>
+      <ul id="items" aria-label="Items" tabindex="0"></ul>
+    </section>
+    <section aria-labelledby="drag-heading">
+      <h2 id="drag-heading">Drag</h2>
+      <button type="button" id="drag-source">Drag me</button>
+      <output data-testid="drag-result">Nothing dropped</output>
+      <div style="height: 1400px"></div>
+      <button type="button" id="drop-zone">Drop here</button>
+      <div style="position: relative; display: inline-block">
+        <button type="button" id="covered-zone">Covered zone</button>
+        <div style="position: absolute; inset: 0; background: white"></div>
+      </div>
+    </section>
+    <section aria-labelledby="markup-heading">
+      <h2 id="markup-heading">Markup</h2>
+      <span data-testid="inline">inline text</span>
+      <p data-testid="sentence">Signed in as <b>ada</b>.</p>
+      <p data-testid="amount"><span>€</span><span>20</span></p>
+      <div role="img" aria-label="Company logo" style="width: 16px; height: 16px"></div>
+      <div style="display: contents" data-testid="contents"><span>wrapped</span></div>
+      <label>Pick <select data-testid="tier"><option label="Basic">Pro</option><option>Pro</option></select></label>
+      <div role="checkbox" tabindex="0" aria-checked="false" aria-label="Late check" data-testid="late-check">Late check</div>
+      <div tabindex="-1" data-testid="key-target">Key target</div>
+      <output data-testid="key-result"></output>
+      <word-button><span>Save</span></word-button>
+      <output data-testid="word-result"></output>
+      <button type="button" id="ask">Ask</button>
+      <output data-testid="ask-result"></output>
+    </section>
+    <button type="button" id="open-vault">Open vault dialog</button>
+    <dialog id="vault-dialog" aria-label="Vault"><label>Vault PIN <input type="password" data-testid="vault-pin" /></label></dialog>
+    <script src="index.js"></script>
+  </body>
+</html>

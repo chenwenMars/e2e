@@ -1,0 +1,829 @@
+---
+title: Servidor MCP (e2e mcp)
+description: Deixe um agente de código inspecionar o seu app e interagir com ele por MCP.
+"og:image": "https://e2e.com/docs/images/og/reference/mcp.png?v=3d3880edad"
+"twitter:image": "https://e2e.com/docs/images/og/reference/mcp.png?v=3d3880edad"
+---
+
+`e2e mcp` permite que agentes de código, como Claude Code e Cursor, inspecionem
+seu app, experimentem localizadores, rodem linhas de teste e tirem capturas de
+tela mascaradas enquanto escrevem testes. Ele roda por stdio e usa a engine
+configurada no projeto. Para a configuração e o que pedir ao agente, veja o
+guia [Servidor MCP](/mcp-server).
+
+```json title=".mcp.json"
+{
+  "mcpServers": {
+    "e2e": { "command": "npx", "args": ["e2e", "mcp"] }
+  }
+}
+```
+
+Quatro ferramentas MCP gerenciam a sessão e chamam as ferramentas do app
+disponíveis nela. O catálogo de ferramentas do app é recarregado da
+configuração sempre que uma sessão abre.
+
+## Referência
+
+### Flags
+
+<CodeGroup>
+```bash npm
+npx e2e mcp [--config <path>] [--target <name>] [--headed] [--max-sessions <n>]
+```
+
+```bash pnpm
+pnpm exec e2e mcp [--config <path>] [--target <name>] [--headed] [--max-sessions <n>]
+```
+
+```bash bun
+bunx e2e mcp [--config <path>] [--target <name>] [--headed] [--max-sessions <n>]
+```
+</CodeGroup>
+
+| Flag | Padrão |
+| --- | --- |
+| [`--config <path>`](#config) | descoberta como no `e2e run` |
+| [`--target <name>`](#target) | o único alvo |
+| [`--headed`](#headed) | headless |
+| [`--max-sessions <n>`](#max-sessions) | `4`, `1` no Bun |
+
+#### `--config`
+
+A configuração que toda sessão carrega, a menos que `open_session` indique
+uma. Cada sessão a carrega de novo ([Várias sessões](#several-sessions)) com o
+ambiente do servidor: `process.env` na configuração lê as variáveis com que o
+cliente MCP iniciou o `e2e mcp`, não o shell do agente.
+
+#### `--target`
+
+O alvo em que uma sessão abre quando `open_session` não indica nenhum.
+
+- Sem a flag e sem um nome, o único alvo é usado.
+- Com vários alvos e nenhum nome, o erro é `TARGET_REQUIRED`.
+
+#### `--headed`
+
+Mostra o navegador ou o simulador, quando a engine suporta isso, em toda
+sessão cujo `open_session` não define `headed`.
+
+- As sessões são headless por padrão, como no `e2e run`.
+
+#### `--max-sessions`
+
+Quantas sessões podem ficar abertas ao mesmo tempo, de 1 a 16. No
+[Bun](/reference/cli#bun), uma. Veja [Várias sessões](#several-sessions).
+
+```bash
+e2e mcp --max-sessions 8 # default: 4
+```
+
+### Ferramentas
+
+| Ferramenta | Descrição |
+| --- | --- |
+| [`open_session`](#open_session) | Abre uma sessão |
+| [`tools`](#tools-2) | Lista o catálogo ou uma ferramenta |
+| [`call`](#call) | Roda uma ferramenta do catálogo |
+| [`close_session`](#close_session) | Encerra a sessão e a engine dela |
+
+`session` pode ser omitido enquanto exatamente uma sessão está aberta. Veja
+[Várias sessões](#several-sessions).
+
+#### `open_session`
+
+Sem `attach`, inicia uma nova tentativa usando a configuração, a engine e o
+comando do app do alvo. O app abre na URL dele ou inicia do zero em um
+dispositivo a partir do [app fixado](/mobile#point-at-your-app). Nenhum build
+é instalado, então um alvo de dispositivo local precisa de `app.bundleId`.
+Retorna o id da sessão, o catálogo e uma linha que identifica a primeira tela:
+revisão, caminho e contagem de nós. [`observe`](#observe) lista os nós, e os
+resultados das ações informam mudanças em relação a essa tela. O catálogo na
+resposta traz as ações individuais só pelo nome e pelos argumentos;
+[`tools`](#tools-2) descreve cada uma. O resumo diz ao agente para ler o guia
+`writing-tests` (`e2e://guide/writing-tests`) antes de escrever ou editar um
+teste; as instruções do servidor dizem o mesmo.
+
+O resumo indica a URL do app, com a porta atribuída a uma `url` de porta
+livre, e o comando do app: o executável, a URL de prontidão, os nomes em `env`
+e `inheritEnv` e o arquivo de log. Ele não imprime `args`, nem valores de
+`env`, nem o userinfo ou a query da URL. O e2e não inicia nenhum outro
+processo do app, então um banco de dados que o app usa roda fora do e2e.
+
+```text wrap
+App: http://127.0.0.1:57162/ (port 57162, assigned for the declared port 0).
+Process: app.command "node" (ready at http://127.0.0.1:57162/; env PORT, DATABASE_URL; log .e2e/app.log). e2e starts no other app process for this session; a database or other service the app uses runs outside e2e.
+```
+
+```txt
+open_session {target: "web", headed: true}
+```
+
+| Entrada | Tipo | Obrigatório | Faz |
+| --- | --- | --- | --- |
+| `target` | string | não | O alvo a abrir. Na falta dele, usa `--target` e depois o único alvo. |
+| `config` | string (caminho) | não | A configuração desta sessão, absoluta ou relativa ao diretório de trabalho do servidor (`cwd` na configuração MCP do cliente). Na falta dela, usa `--config` e depois a descoberta normal do `e2e run`. |
+| `headed` | boolean | não | `true` mostra o navegador ou o simulador desta sessão, `false` os esconde. Sem essa entrada, a sessão segue `--headed`. |
+| `path` | string | não | Onde abrir na URL do app em vez da raiz, como `/settings/members`. A sessão abre nessa página. Incompatível com `test`. |
+| `test` | string | não | Um teste para rodar primeiro, indicado como um argumento posicional do `e2e run`. A sessão fica onde o teste parou. Veja [Rodar um teste](#running-a-test). |
+| `engine` | string ou objeto | não | A engine da sessão em um diretório sem arquivo de configuração, como nome de pacote ou `{package, export, options}`. Veja [Sem uma configuração](#without-a-config). |
+| `app` | objeto | não | O app em teste de uma sessão com `engine`, como `url`, `bundleId` ou `appPath`. |
+| `attach` | string | não | ID do cabeçalho da pausa de um [teste pausado](#attaching-to-a-held-test). Passe só este campo. |
+
+#### `tools`
+
+Retorna o catálogo, uma linha por ferramenta.
+
+```txt
+tools {tool: "locate"}
+```
+
+| Entrada | Tipo | Obrigatório | Faz |
+| --- | --- | --- | --- |
+| `tool` | string | não | Uma ferramenta do catálogo. Retorna a descrição completa e o schema dos argumentos dessa ferramenta. |
+| `session` | string | quando várias estão abertas | O id da sessão. |
+
+#### `call`
+
+Roda uma ferramenta do catálogo.
+
+```txt
+call {tool: "tap", args: {target: "n42"}, session: "<id>"}
+```
+
+| Entrada | Tipo | Obrigatório | Faz |
+| --- | --- | --- | --- |
+| `tool` | string | sim | O nome de uma ferramenta do catálogo. |
+| `args` | objeto | não | Os argumentos da ferramenta. |
+| `session` | string | quando várias estão abertas | O id da sessão. |
+
+- Os argumentos da ferramenta também podem ficar ao lado de `tool`, sem `args`:
+  `call {tool: "tap", target: "n42"}`. Passar as duas formas é `INVALID_ARGUMENT`.
+- Os argumentos são validados primeiro contra o schema fechado da ferramenta.
+  Um tipo errado, ou um argumento que uma ferramenta com argumentos declarados
+  não declara, é `INVALID_ARGUMENT`, e nada roda. `back` e `dismiss_keyboard`
+  não recebem argumentos; ignoram os que receberem e rodam.
+- Uma ação que falha é um resultado de erro que mesmo assim traz a tela que ela
+  observou de novo. O resultado começa com a ferramenta, o alvo dela e o código:
+  `navigate file:///etc/passwd failed: POLICY_DENIED: forbidden URL scheme: file:`.
+- As ferramentas do projeto respeitam o renderizador `toModelOutput` do AI SDK
+  delas, inclusive quando `execute` retorna uma string. As saídas `error-text` e
+  `error-json` renderizadas são resultados de erro do MCP (`isError: true`). O
+  agente de código consegue distinguir uma chamada de ferramenta que falhou de
+  uma bem-sucedida.
+
+#### `close_session`
+
+Salva uma gravação ainda em andamento, encerra a tentativa e descarta a
+engine. Encerra os processos do app que a sessão iniciou assim que nenhuma
+outra sessão os usar. Use essa ferramenta em uma sessão conectada para se
+desconectar e deixar o teste pausado.
+
+```txt
+close_session {session: "<id>"}
+```
+
+| Entrada | Tipo | Obrigatório | Faz |
+| --- | --- | --- | --- |
+| `session` | string | quando várias estão abertas | O id da sessão. |
+
+### O catálogo
+
+O que `call` pode rodar depende do alvo da sessão.
+
+| Ferramenta do catálogo | Descrição |
+| --- | --- |
+| [`observe`](#observe) | Retorna uma observação nova |
+| [Ações](#actions) | Agem sobre um nó observado |
+| [`dismiss_keyboard`](#dismiss_keyboard) | Esconde o teclado virtual |
+| [`locate`](#locate) | Experimenta um localizador semântico |
+| [`run_code`](#run_code) | Roda JavaScript sobre a API de teste |
+| [`test_lines`](#test_lines) | Retorna as linhas de teste da sessão |
+| [`screenshot`](#screenshot) | Retorna o viewport mascarado, opcionalmente salvo em um arquivo |
+| [Ferramentas de ponto](#point-tools) | Agem em um ponto da captura de tela |
+| [`start_recording`, `stop_recording`](#recording) | Gravam um vídeo do app |
+| [Ferramentas do projeto](#project-tools) | Suas ferramentas de `defineTool` |
+
+#### `observe`
+
+Uma observação nova, um nó por linha no formato `#id role "name" ...`, com o
+caminho e a revisão atuais. Não recebe argumentos.
+
+- O `href` de um link é o caminho dele quando está na origem da URL do app;
+  caso contrário, origem e caminho.
+- Destinos `mailto:`, `tel:` e `blob:` mantêm o esquema.
+- `…` marca o que foi omitido: `?…` uma query, `#…` um fragmento, `data:…` ou
+  `javascript:…` um payload inline, um `…` no final um destino cortado em 256
+  caracteres.
+
+#### Ações
+
+`tap`, `double_tap`, `long_press`, `right_click`, `hover`, `type`, `press`,
+`select`, `check`, `scroll`, `scroll_to`, `drag`, `upload`, `navigate`,
+`back`, `resize_viewport`, `switch_tab`, `close_tab`, `type_secret`. Cada uma retorna o resumo da ação, a
+[linha de teste](#test_lines) que a repete ou o motivo de não haver uma, e o
+que mudou na tela.
+
+| Entrada | Faz |
+| --- | --- |
+| Um id de nó | Da observação mais recente. |
+| O valor, a tecla, o estado `checked`, a direção, o alvo onde soltar, caminhos relativos ao projeto ou `sample:` em `files`, a URL, `width` e `height`, ou o nome do segredo | O que o verbo precisa. |
+| `modifiers` (opcional) | Em `tap`, `double_tap` e `right_click`, quando a engine declara `tapModifiers`: uma lista de `Shift`, `Control`, `Alt`, `Meta`, `ControlOrMeta`, mantidas pressionadas durante o clique. |
+
+- Um verbo que a engine não declara não aparece no catálogo.
+- `upload` recusa um caminho fora do projeto, um arquivo oculto ou um arquivo
+  dentro de um diretório oculto com `POLICY_DENIED`. Um arquivo `sample:` não
+  tem linha de teste: salve um arquivo no projeto para ter uma.
+- `type_secret` aparece quando a configuração declara `credentials` ou `secrets`
+  e a engine declara a ação `fill`. O valor em texto puro nunca chega ao agente
+  como texto; veja [capturas de tela depois do preenchimento de um
+  segredo](/reference/security#screenshots-after-a-secret-fill).
+
+#### `dismiss_keyboard`
+
+Esconde o teclado virtual. Não recebe argumentos. Aparece quando o teclado da
+engine declara `dismiss`, como fazem as engines de dispositivo.
+
+#### `locate`
+
+Retorna quantos nós correspondem a um localizador semântico, quais são eles e
+a chamada `screen.*` a escrever.
+
+| Entrada | Faz |
+| --- | --- |
+| `role` (com `name` opcional), `text`, `label`, `placeholder`, `testId` | Exatamente uma delas. |
+| `exact` | Correspondência exata; `false` para substring, sem diferenciar maiúsculas de minúsculas. |
+
+- Zero ou várias correspondências indicam o erro que um teste receberia.
+- Um `name` corresponde só ao nome acessível. `observe` mostra um `status`,
+  `alert` ou `listitem` pelo texto dele, então, para um desses com um nome que
+  não corresponde a nada, o resultado também aponta para
+  `getByRole(role).filter({ hasText })` e `getByText`.
+- O que o resultado mostra de um nó passa pelo registro de segredos, como em
+  `observe`: um segredo preenchido aparece como `<secret:name>`.
+
+#### `run_code`
+
+Roda JavaScript na sessão ao vivo e retorna o que o código retornou, o que ele
+registrou no log, cada linha que ele rodou no app e o que mudou na tela. Use
+essa ferramenta para ler valores, fazer cálculos com eles e agir em uma única
+chamada, e para rodar uma linha antes de escrevê-la em um teste.
+
+```txt
+call {tool: "run_code", args: {code: "const rows = screen.getByRole('listitem');\nconst prices = (await rows.allTextContents()).map((text) => Number(text.match(/\\$([\\d.]+)/)[1]));\nawait expect(rows).toHaveCount(12);\nreturn prices;"}}
+```
+
+| Entrada | Faz |
+| --- | --- |
+| `code` | O corpo de uma função assíncrona. `screen`, `app`, `expect`, `credentials`, `secrets`, `services`, `console` e a fixture da engine (`browser` ou `device`) estão no escopo. Uma sessão conectada a um teste pausado não tem a fixture da engine. |
+| `timeout` | Opcional. Quanto tempo cada ação ou matcher em `screen` espera por padrão, em ms, de 1 a 120000. Sem ele: `5000`, ou o tempo limite da configuração quando for menor. |
+
+```txt
+Returned: [12.5,18,24]
+Test lines: 2, 1 read not listed.
+1. await expect(screen.getByRole('listitem')).toHaveCount(12);
+```
+
+- O código é JavaScript comum no processo Node do servidor, e os objetos no
+  escopo são os que o corpo de um teste recebe. Uma chamada espera, corresponde
+  e falha como em um teste, e uma função que você passa, como um handler de
+  `browser.route`, é chamada como a de um teste.
+- Use `return` com um valor JSON para recebê-lo de volta. As linhas de
+  `console.log` também voltam.
+- Uma linha que falha lança o erro que um teste recebe, com o `code` dele. Sem
+  captura, o erro interrompe o código, e o resultado é um resultado de erro. O
+  app fica onde as linhas que passaram o deixaram.
+- Use `await` em cada linha. Linhas sem `await` começam juntas e não rodam em
+  ordem, então uma leitura pode terminar antes do toque acima dela. Uma falha
+  não aguardada faz a chamada falhar. O mesmo vale para uma
+  promise que o código deixou rejeitar e para um erro que um callback de
+  `setTimeout` lança: a chamada termina ali. Um erro que um handler deixa
+  depois que a chamada dele terminou vira um aviso no log do servidor.
+- O código que ainda está rodando depois que a chamada retorna, como uma função
+  assíncrona que o código iniciou e não aguardou, continua agindo no app. Essas
+  ações não aparecem no resultado nem no rascunho.
+- `expect.soft` guarda as falhas para o fim da chamada, que então falha com
+  elas.
+- O resultado lista as linhas que rodaram. Uma leitura mostra o valor dela ali
+  quando o código não retorna nada e não registra nada no log. Caso contrário,
+  use `return` com o valor.
+- As linhas que passam, exceto as leituras, entram no rascunho de
+  [`test_lines`](#test_lines) na ordem em que rodaram. Uma leitura é uma
+  chamada em `screen` ou em um localizador que resolve com um valor. Uma
+  chamada em `app` ou na fixture da engine entra no rascunho seja qual for o
+  retorno, já que ela também pode agir. Um objeto com que uma chamada resolve,
+  como uma nova aba, ganha uma linha `const` que o nomeia. Uma linha que passa
+  uma função que o servidor chama, como um handler de rota, entra no rascunho
+  com o texto da função e um comentário: declare no teste as variáveis que a
+  função usa. O que a própria função chama não entra no rascunho de novo. Um
+  `expect(value)` que passa não deixa linha.
+- Cada ação ou matcher em `screen` espera `timeout` por padrão. Um `timeout`
+  nas opções da própria linha o substitui. Sem `timeout`, cada um espera
+  5000 ms, ou o [`actionTimeout`](/reference/config#actiontimeout) ou o
+  [`assertionTimeout`](/reference/config#assertiontimeout) da configuração
+  quando esse valor é menor. `app` e a fixture da engine esperam como em um
+  teste.
+- `await import()` aceita um módulo nativo do Node ou o caminho absoluto de um
+  arquivo. Um caminho relativo é resolvido a partir da instalação do próprio
+  e2e, não do projeto.
+- A chamada inteira pode rodar por até 5 minutos, incluindo as linhas que ela deixou rodando. Um código que nunca cede o controle, como
+  `while (true) {}`, bloqueia o servidor.
+- O resultado mostra `<secret:name>` onde há um valor de segredo configurado.
+
+O código não fica isolado. Ele tem a autoridade de um arquivo de teste: pode
+importar módulos, ler arquivos e ler os valores que o app mostra, inclusive um
+segredo. `run_code` vem ativado por padrão: todo servidor `e2e mcp` o oferece,
+nenhuma flag o desativa, e um cliente que aprova `call` aprova `run_code`
+junto. Veja [Segurança](/reference/security).
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Código que não passa na análise sintática. A mensagem indica a linha, e nada roda. |
+| `ASSERTION_FAILED` | Um `expect` que não se confirma. |
+| `POLICY_DENIED` | Uma leitura de um campo seguro, como um campo de senha. |
+
+Um erro que não é do runner, como um `TypeError`, volta pelo nome, com a linha
+em que foi lançado.
+
+#### `test_lines`
+
+Retorna, em ordem, as linhas de teste das ações da sessão e das instruções de
+[`run_code`](#run_code) que passaram. Não recebe argumentos.
+
+Para um fluxo novo, divida o rascunho em testes com um comportamento cada e
+verifique o resultado no fim de cada teste (quando o agente da sessão configura
+um modelo ou um executor personalizado, o rascunho também recomenda usar
+`agent.act` para os fluxos do usuário). Se você abriu um teste existente com
+`open_session {test}`, use as linhas para continuar esse teste de onde ele
+parou. Se você se conectou a um teste pausado com `open_session {attach}`,
+coloque as linhas no ponto de pausa desse teste.
+
+O resultado de cada ação traz a linha dela depois do resumo:
+
+```txt
+Tapped #n31.
+Test line: await screen.getByRole("button", "Sign in").tap();
+```
+
+- O localizador vem do alvo como a observação mais recente o listou, antes de
+  a ação rodar. Papel e nome, rótulo, placeholder, texto e test id são
+  testados nessa ordem, e prevalece o primeiro que corresponde ao alvo e a
+  nada mais na tela ao vivo, como [`locate`](#locate) o informaria.
+- Um localizador que também corresponde a nós gêmeos é restringido: aos nós
+  que renderizam (`{ visible: true }`), depois dentro de um contêiner
+  (`getByRole("listitem").filter({ hasText: "Offer B" })`), depois pela posição
+  (`.nth(1)`, com um comentário que diz isso). Uma posição só é usada quando os
+  gêmeos ao vivo são os que a observação listou, cada um no lugar ou todos
+  movidos juntos.
+- Um controle sem nome, rótulo, placeholder, texto ou test id é encontrado
+  pelo papel: sozinho quando é o único (`getByRole("spinbutton")`, com
+  um comentário), caso contrário restringido como os gêmeos.
+- No máximo 10 localizadores são testados por alvo. Em um dispositivo, cada
+  verificação lê a tela inteira.
+- Quando nada alcança só o alvo, o resultado diz `No test line:` e o motivo.
+  Uma linha que falharia nunca é impressa.
+- Uma ação que falhou não imprime nem registra linha. O rascunho mostra uma
+  ação sem linha como um comentário `//`.
+
+| Ação | Linha |
+| --- | --- |
+| Abrir a sessão, sem [`test`](#running-a-test) | `app.open()` |
+| `tap`, `double_tap`, `long_press`, `right_click`, `hover` | `tap()`, `doubleTap()`, `longPress()`, `secondaryTap()`, `hover()`, com quaisquer `modifiers` |
+| `type` em um nó | `fill(value)`; o nome de usuário de uma credencial como `credentials.user(name).username` |
+| `type_secret` | `fill(credentials.user(name).password)` ou `fill(secrets.get(name))`, nunca o valor |
+| `press` em um nó, uma vez | `press(key)` |
+| `select`, `check` | `selectOption(label)`, `check()` ou `uncheck()` |
+| `drag`, `upload` | `dragTo(locator)`, `setInputFiles(files)` |
+| `scroll_to` até um nó | `scrollIntoView()` |
+| `navigate`, `back` | `app.open(url)`, com uma URL na origem do app escrita como caminho; `app.back()` |
+
+Sem linha: `type` ou `press` sem alvo, `press` com `times` acima de 1,
+`scroll`, `scroll_to` até um texto, `dismiss_keyboard`, `resize_viewport`
+(defina o tamanho com a fixture embutida da engine, `browser.setViewport` na
+web), `switch_tab`
+e `close_tab` (`browser.tabs()[tab - 1].activate()` e `.close()` na
+web), e um `type` que o
+nó recebeu pelo teclado. As [ferramentas de ponto](#point-tools) não imprimem nada.
+
+#### `screenshot`
+
+O viewport mascarado como imagem.
+
+| Argumento | Tipo | Descrição |
+| --- | --- | --- |
+| `path` | `string` | Opcional. Também salva a captura de tela como um arquivo PNG, resolvido em relação à raiz do projeto, e retorna o caminho absoluto desse arquivo. Um caminho fora do projeto, um arquivo oculto ou um arquivo dentro de um diretório oculto é `POLICY_DENIED`. |
+
+```json
+{ "tool": "screenshot", "args": { "path": "screenshots/checkout.png" } }
+```
+
+- A partir daí, todo resultado de ação traz uma captura de tela nova.
+- A captura mascara só campos seguros, também depois do preenchimento de um
+  segredo.
+- O arquivo é uma segunda captura, em resolução total, mascarada como
+  `app.screenshot` a mascara. A imagem anexada pode vir reduzida.
+
+#### Ferramentas de ponto
+
+Cada uma recebe `x` e `y` em pixels da captura de tela mais recente. `drag_at`
+recebe o ponto onde soltar como `to_x` e `to_y`.
+
+| Ferramenta | Entradas | Faz | Listada quando a engine declara |
+| --- | --- | --- | --- |
+| `tap_at` | `x`, `y` | Toca o ponto diretamente pelo `performAt` da engine. Sem `performAt`, o ponto precisa cair em um controle listado, que é tocado pelo id. | `tap` ou `performAt` |
+| `hover_at` | `x`, `y` | Passa o mouse da mesma forma: no ponto diretamente pelo `performAt`, com o tipo `hover`; caso contrário, sobre um controle listado sob o ponto, pelo id. | a ação ou o tipo de ponteiro `hover` |
+| `drag_at` | `x`, `y`, `to_x`, `to_y` | Arrasta do primeiro ponto ao segundo pelo `performAt`, com o tipo `dragTo`. Sem esse tipo, os pontos precisam cair em dois controles listados diferentes, que são arrastados pelo id, ou a chamada falha com `UNSUPPORTED_CAPABILITY`. | a ação ou o tipo de ponteiro `dragTo` |
+| `type_at` | `x`, `y`, `value`; `replace` em uma engine com teclado | Preenche pelo id um input listado sob o ponto. Com teclado, qualquer outra coisa é tocada para receber o foco e recebe o texto digitado, na posição do cursor, a menos que `replace` esteja definido. Sem teclado, um ponto sobre nada listado falha. | `type` ou um teclado |
+| `press_at` | `x`, `y`, `key` | Envia a tecla pelo id a um controle listado sob o ponto. Com teclado, qualquer outra coisa é tocada para receber o foco, e a tecla passa pelo teclado. | `press` ou um teclado |
+| `select_at` | `x`, `y`, `value` (o rótulo visível da opção) | Escolhe a opção no controle do tipo select listado sob o ponto. Um ponto sem nada listado falha. | `select` |
+
+<Note>
+Antes do primeiro `screenshot` da sessão, cada ferramenta de ponto responde
+com a linha que diz para tirar uma captura, sem custo.
+</Note>
+
+#### Gravação
+
+`start_recording` e `stop_recording` gravam um vídeo do app. As duas aparecem
+quando a engine grava vídeo.
+
+```txt
+call {tool: "start_recording", args: {name: "checkout-flow"}}
+call {tool: "stop_recording"}
+```
+
+| Ferramenta | Entrada | Faz |
+| --- | --- | --- |
+| `start_recording` | `name` (opcional): até 64 letras, dígitos, `-` e `_`, começando com uma letra ou um dígito | Uma gravação por vez. Um segundo início informa a gravação em andamento. |
+| `stop_recording` | nenhuma | Salva o vídeo e retorna o caminho absoluto de cada arquivo, ou a URL onde um provedor o guarda. |
+
+- Uma sessão grava vídeo só entre `start_recording` e `stop_recording`,
+  quantas vezes forem necessárias. O modo [`video`](/reference/config#video)
+  configurado vale para execuções, não para sessões, e uma sessão não escreve
+  nenhum [trace](/reference/config#trace).
+- Cada gravação é salva em `<output>/videos/<session>/<n>[-<name>].webm`
+  (`.mp4` no mobile, e [`output`](/reference/config#output) é `.e2e` por
+  padrão), em que `n` conta as gravações da sessão.
+- Uma gravação na web que atravessa um reinício ou uma redefinição de estado
+  tem um arquivo por página, `-part2`, `-part3` e assim por diante, na ordem
+  de reprodução.
+- Quando um provedor de navegadores ou de dispositivos grava a própria
+  reserva, é ele quem grava a sessão. O [Kernel](/integrations/kernel) baixa
+  o replay que gravou, salvo aqui como `<n>[-<name>].mp4`, como qualquer outro
+  arquivo. Um provedor que guarda as próprias gravações aparece pela URL em
+  vez de um arquivo.
+- `close_session`, o tempo limite de inatividade e o TTL da sessão salvam uma
+  gravação ainda em andamento, e o resultado do fechamento lista os arquivos
+  dela.
+
+<Warning>
+As gravações não são mascaradas: são arquivos para uma pessoa assistir, e
+nenhuma ferramenta retorna os pixels delas. Um segredo digitado em um input
+comum durante a gravação fica legível no vídeo.
+</Warning>
+
+#### Ferramentas do projeto
+
+As ferramentas do projeto em `agents.default.tools` vêm em seguida no
+catálogo, com os próprios nomes, restritas à plataforma do alvo. Um projeto
+mobile que passa `mobileTools(...)` também recebe `open_app`, `swipe` e
+`alert`, e um que passa `foldTools(...)` recebe `fold` para um dispositivo
+dobrável.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Uma ferramenta do projeto com o nome de uma embutida, ao carregar a configuração. |
+| `UNKNOWN_TOOL` | Um nome que não está no catálogo. A mensagem lista os nomes. |
+
+## Configuração
+
+O servidor vem com o `e2e`. O `e2e init` se oferece para registrá-lo em
+`.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor) e
+`.codex/config.toml` (Codex). Instale as dependências e inicie o cliente MCP
+no diretório do projeto para que o `npx` (`bunx` em um projeto Bun) use a versão do e2e instalada. Manualmente:
+
+<CodeGroup>
+```bash npm
+claude mcp add --scope project e2e -- npx e2e mcp
+```
+
+```bash pnpm
+claude mcp add --scope project e2e -- pnpm exec e2e mcp
+```
+
+```bash bun
+claude mcp add --scope project e2e -- bunx e2e mcp
+```
+</CodeGroup>
+
+Para clientes que usam uma configuração `mcpServers`, adicione a entrada
+mostrada acima. O Codex lê o `.codex/config.toml` do projeto assim que o
+projeto é marcado como confiável. Inicie uma nova sessão depois de registrar o
+servidor:
+
+```toml title=".codex/config.toml"
+[mcp_servers.e2e]
+command = "npx"
+args = ["e2e", "mcp"]
+```
+
+O OpenCode lê o servidor de `mcp` no `opencode.json` do projeto. Veja a aba
+OpenCode em [Servidor MCP](/mcp-server#set-it-up).
+
+O servidor também está listado no
+[MCP Registry](https://registry.modelcontextprotocol.io) como
+`io.github.e2e-inc/e2e`. Um cliente que o instala de lá roda a release listada
+com `npx` e precisa iniciá-la no diretório do projeto. Mesmo assim, o projeto
+precisa ter o e2e e a engine instalados, já que a configuração os importa.
+Uma release listada em uma versão diferente da do e2e do projeto pode rejeitar
+chaves de configuração que não conhece; a configuração de registro mostrada
+acima sempre usa a versão do projeto.
+
+O servidor não precisa de modelo: um projeto sem o pacote opcional `ai` abre
+sessões e controla o app com as ferramentas determinísticas. Um teste que uma
+sessão [roda](#running-a-test) chama o modelo configurado para um passo do
+agente que o cache de replay não consegue atender.
+
+Inicie o servidor no diretório do projeto. A descoberta da configuração
+funciona como no `e2e run`. Para outra configuração, veja
+[`--config`](#config) e [`open_session`](#open_session).
+
+## Sem uma configuração
+
+Em um diretório sem arquivo de configuração, `open_session` precisa de
+`engine`. A sessão tem um alvo nessa engine. Todas as outras opções ficam no
+padrão, então a sessão não tem credenciais, segredos nem ferramentas do projeto.
+
+```txt
+open_session {engine: "@e2e-dev/web", app: {url: "http://localhost:3000"}}
+open_session {engine: {package: "@e2e-dev/mobile", options: {platform: "ios"}}, app: {bundleId: "com.example.app"}}
+```
+
+Um nome de pacote basta para uma engine que não precisa de opções. Para passar
+opções, ou para indicar um export, escreva `engine` como um objeto:
+
+| Campo | Tipo | Faz |
+| --- | --- | --- |
+| `package` | string | O pacote a carregar. Pode trazer um subcaminho, como `@e2e-dev/testmu/web`. |
+| `export` | string | O export a chamar. Padrão: o export default. |
+| `options` | objeto | As opções que a factory recebe, como em um `e2e.config.ts`. |
+
+- **Só um nome de pacote** chama o export default do pacote sem opções.
+  `@e2e-dev/web`, `@e2e-dev/mobile` e `@e2e-dev/desktop` exportam a própria
+  factory dessa forma. [Sua própria engine](/writing-an-engine#open-it-by-name) pode fazer o mesmo.
+- **Uma opção pode ser outra chamada de factory.** O servidor lê o valor de
+  uma opção como uma chamada quando o valor tem `package` e nenhuma chave além
+  de `export` e `options`. O servidor faz essa chamada primeiro e passa o
+  resultado como a opção. Use isso para dar a uma engine um provedor de
+  dispositivos ou de navegadores:
+
+  ```txt
+  open_session {
+    engine: {package: "@e2e-dev/mobile", options: {
+      platform: "ios",
+      device: {package: "@e2e-dev/limrun", export: "limrun", options: {region: "eu"}}
+    }},
+    app: {bundleId: "com.example.app"}
+  }
+  ```
+
+  A chamada acima monta
+  `mobile({ platform: 'ios', device: limrun({ region: 'eu' }) })`. O
+  provedor lê a chave de API dele do ambiente do servidor.
+- **Busca.** O servidor procura cada pacote no projeto, depois ao lado do
+  `e2e` em execução, depois em `~/.e2e/engines`. Quando o pacote não está em
+  nenhum desses lugares, o erro indica o comando que o instala para todos os
+  projetos: `npm install --prefix ~/.e2e/engines @e2e-dev/web`. Um agente que
+  não consegue rodar o comando, como um em um sandbox sem acesso à rede, pede
+  que você o rode.
+- **`app`** aceita `url`, `bundleId` e `appPath`, como o
+  [`app`](/reference/config#the-app-under-test) de um alvo. `@e2e-dev/web`
+  precisa de `url`. `@e2e-dev/mobile` e `@e2e-dev/desktop` precisam de
+  `bundleId` ou `appPath`.
+- **Arquivos.** A raiz do projeto é o diretório de trabalho do servidor, e a
+  sessão escreve `.e2e/` ali.
+- **Testes.** `e2e run` e `open_session {test}` precisam de uma configuração.
+  Para manter as linhas de teste da sessão como um teste, escreva uma
+  configuração com [`e2e init`](/reference/cli#e2e-init).
+- **Várias sessões.** Sessões abertas com `engine` rodam lado a lado. Uma
+  sessão com uma configuração não abre ao lado delas e falha com
+  `CONFIG_IN_USE`.
+
+| Lança | Quando |
+| --- | --- |
+| `CONFIG_NOT_FOUND` | `open_session` sem `engine`, e o diretório não tem configuração. |
+| `ENGINE_NOT_INSTALLED` | Um pacote que `engine` indica não está em nenhum dos três lugares da busca. |
+| `INVALID_ARGUMENT` | `package` não é um nome de pacote, `export` não é um nome de export, `engine` vem com `target`, `config` ou `test`, ou o diretório tem uma configuração. Também `app` sem `engine`. |
+| `INVALID_CONFIG` | O export indicado não é uma função, uma factory recusou as `options` dela, a factory da engine não retornou nenhuma engine, ou a engine recusou `app`. Para um export que não é uma função, a mensagem lista as funções do pacote. |
+
+## Saída
+
+- A saída para o operador vai para o stderr, com o prefixo `e2e mcp:`. O
+  stdout leva só o protocolo.
+- O que o seu código escreve por `console`, `process.stdout` ou
+  `process.stderr` (o código de nível superior da configuração, as ferramentas
+  do projeto, um teste que uma sessão roda) vai para o stderr com os valores
+  de segredos ocultados.
+- A saída impressa enquanto uma configuração carrega aparece depois que ela
+  termina de carregar. Se o carregamento falha, essa saída é retida, já que os
+  segredos da configuração são desconhecidos.
+- Uma promise que o teste de uma sessão deixa rejeitada faz esse teste falhar,
+  como em uma execução. Uma que rejeita depois que o corpo do teste terminou
+  vira uma linha `UNHANDLED_REJECTION` no resultado de `close_session` e um
+  aviso no stderr depois que a sessão fecha. Qualquer outro erro que ninguém
+  capturou, inclusive uma rejeição antes de qualquer sessão rodar um teste, é
+  registrado no log com os segredos ocultados e encerra o servidor.
+
+<Note>
+Um processo filho que herda o stdio do servidor escreve sem passar por essas
+regras.
+</Note>
+
+## Sessões
+
+Uma sessão é uma tentativa em um alvo. Um `call` antes de qualquer sessão
+abrir falha com `NO_SESSION`.
+
+Uma sessão fecha:
+
+- com `close_session`,
+- depois de 30 minutos de inatividade,
+- depois de 4 horas,
+- quando o cliente se desconecta,
+- com SIGINT ou SIGTERM.
+
+Os limites de inatividade e de duração valem para sessões que abrem a própria
+tentativa.
+
+O cliente se desconecta quando fecha o stdin do servidor ou cai. Então todas
+as sessões fecham, os comandos do app que as sessões iniciaram são encerrados
+e o servidor termina.
+
+As sessões impõem as mesmas regras que os testes:
+
+- Ids de nó valem só para a observação mais recente.
+- As ações individuais preenchem um segredo só por `type_secret`.
+  [`run_code`](#run_code) preenche um como um teste faz.
+- Depois que a configuração carrega, os valores de segredos dela são ocultados
+  de todo texto que uma ferramenta retorna, de um nó que `locate` encontrou, do
+  resultado de uma ação, de uma falha de `open_session` ou `close_session`, de
+  uma linha de limpeza e das próprias linhas de log do servidor.
+- Nada que uma sessão faz é registrado como resultado de teste. Só um teste
+  que a sessão roda lê ou escreve o cache de replay
+  ([Rodar um teste](#running-a-test)). Os artefatos da sessão ficam em
+  `<output>/results/mcp/<target>-<attemptId>/`, e os vídeos em
+  `<output>/videos/`. Um `e2e run` posterior limpa `<output>/results`; os
+  vídeos ficam.
+- Uma chamada na fila que o cliente cancelou não roda quando chega a vez
+  dela.
+
+## Conectar a um teste pausado
+
+Use o ID do cabeçalho da pausa. Ele é o mesmo em todas as pausas de uma
+tentativa. Inicie o MCP a partir do diretório da execução, com a mesma versão
+do e2e.
+
+```txt
+open_session {attach: "k3f9"}
+```
+
+Passe só `attach`. Uma sessão conectada tem as mesmas ferramentas de uma
+sessão normal nesse alvo. Use `start_recording` e `stop_recording` para salvar
+um vídeo em `<output>/videos/<session>/`. Se a execução já grava a tentativa,
+`start_recording` retorna um erro com o diretório de vídeos da execução.
+
+Use `close_session` para se desconectar e deixar o teste pausado. A resposta
+inclui o caminho de qualquer gravação salva ao se desconectar.
+
+Pressione Enter ou rode `npx e2e run --step next` para retomar o teste e
+encerrar a conexão na hora. Qualquer gravação ainda em andamento é salva em
+segundo plano. O runner registra no log o caminho salvo ou o erro. O servidor
+MCP registra o mesmo resultado se ainda estiver conectado.
+
+O relatório e o trace registram os passos do próprio teste. Logs do app e
+atualizações de tela de uma chamada da sessão conectada podem aparecer no trace se
+chegarem depois que a chamada termina.
+
+## Rodar um teste
+
+`open_session {test}` roda um teste do projeto na tentativa da sessão e depois
+entrega a sessão na tela onde o teste parou. Um agente de código corrige um
+teste que falha a partir dali, sem percorrer o fluxo clicando de novo.
+
+```txt
+open_session {test: "tests/checkout.e2e.ts:12"}
+```
+
+- **Seleção.** `test` aceita o que `e2e run` aceita como argumento posicional:
+  um arquivo com `:line` para o teste declarado nessa linha, um arquivo, um
+  diretório, um glob ou um nome. Ele precisa selecionar exatamente um teste no
+  alvo da sessão. A linha é aquela em que está a chamada `test(`; uma linha
+  dentro do teste não seleciona nada.
+- **O que roda.** Os hooks `beforeAll` do teste, as fixtures de
+  `test.extend()` dele, os hooks `beforeEach` e o corpo do teste, com as mesmas
+  fixtures, localizadores, `expect`, `timeout`, `actionTimeout` e
+  `assertionTimeout` de uma execução. A sessão não abre a URL do app nem
+  inicia o app fixado antes; o próprio teste abre o app.
+- **Onde ele fica parado.** Na primeira falha ou no fim do corpo. Nada é
+  desmontado. O texto de abertura começa com o resultado: passou, ou falhou
+  com o código, a mensagem, a linha que falhou e o código ao redor dela, a
+  URL, os nós mais próximos de um localizador que não correspondeu a nada e os
+  últimos 15 passos. Em seguida vêm o resumo da sessão, o catálogo e a linha que identifica a tela.
+- **Linhas de teste.** Os passos do próprio teste não imprimem
+  [linha de teste](#test_lines). As linhas da sessão começam com a primeira
+  ação do agente, e `test_lines` as retorna como as linhas que continuam o
+  teste.
+- **Desmontagem.** Os hooks `afterEach`, as desmontagens das fixtures e os
+  hooks `afterAll` rodam em `close_session` ou quando a sessão fecha sozinha.
+  As falhas deles aparecem como linhas `Cleanup (afterEach)` e
+  `Cleanup (afterAll)`.
+- **Reexecução.** `close_session` e depois `open_session {test}` de novo. Cada
+  sessão carrega a configuração e os arquivos de teste do zero, incluindo os
+  arquivos que eles importam.
+- **Cache de replay.** O teste lê e escreve o cache como a primeira tentativa
+  de uma execução: os passos são reproduzidos, e uma gravação nova é salva
+  assim que uma verificação posterior passa. Uma falha remove as entradas que
+  nenhuma verificação confirmou. O cache se consolida quando o corpo termina,
+  então uma verificação em `afterEach` não confirma nada.
+  [`cache.strict`](/reference/config#cache) vale como em uma execução.
+- **O que fica de fora.** Nenhum resultado de teste, relatório ou página de
+  trace. As novas tentativas e os modos `trace` e `video` do teste não se
+  aplicam. A captura de tela da falha e `screen-at-failure.txt` vão para o
+  diretório de artefatos da sessão.
+- **Capturas de tela.** Cada sessão conta como uma execução própria para
+  `toHaveScreenshot`: uma captura de tela armazenada que uma sessão escreve
+  serve de comparação na próxima.
+- **Várias sessões.** O código de teste em duas sessões se reveza: uma sessão
+  por vez roda o teste ou a desmontagem dela, já que `expect.poll`,
+  `expect.soft` e `test.skip` encontram o teste em execução por um slot por
+  processo. Uma abertura cancelada enquanto o teste dela espera a vez não
+  roda nada do código do teste.
+
+| Lança | Quando |
+| --- | --- |
+| `NO_TESTS` | `test` não seleciona nenhum teste que possa rodar. A mensagem indica a causa, como no `e2e run`. |
+| `TEST_AMBIGUOUS` | `test` seleciona vários testes. A mensagem os lista como `file:line`. |
+| `SESSION_TEST_UNSUPPORTED` | O teste está em um grupo serial, começa a partir da `session` de um teste de preparação ou roda como vários agentes. |
+| `COLLECTION_ERROR` | Um arquivo de teste falha na coleta, como no `e2e run`. |
+
+## Várias sessões
+
+Várias sessões podem ficar abertas ao mesmo tempo, até `--max-sessions`, cada
+uma na própria tentativa e com o próprio navegador ou dispositivo. Agentes em
+paralelo, como os subagentes de um agente de código, compartilham um servidor
+assim: cada um abre uma sessão e passa o id dela em todo `tools`, `call` e
+`close_session`. Os [Bug bashes](/bug-bash) usam isso: um subagente de
+verificação que transforma uma reprodução em um teste roteirizado controla a
+própria sessão.
+
+| Lança | Quando |
+| --- | --- |
+| `SESSION_REQUIRED` | Uma chamada sem `session` enquanto várias estão abertas. A mensagem lista as sessões abertas. |
+| `NO_SESSION` | Um id de `session` que não está aberto. Para uma sessão que está fechando ou já terminou, a mensagem diz o motivo. |
+| `SESSION_OPEN` | Um `open_session` além do limite, ou enquanto o servidor está sendo encerrado. |
+| `CONFIG_IN_USE` | Um `open_session` com outra configuração enquanto há sessões abertas, ou com uma configuração ao lado de sessões abertas com `engine`. |
+| `ENGINE_IN_USE` | Uma segunda sessão em uma engine criada dentro de um pacote. |
+| `CANCELLED` | Um `open_session` que o cliente cancelou ou do qual se desconectou, ou durante o qual o servidor foi encerrado, assim que o que a abertura iniciou tiver parado. |
+
+- Uma sessão ocupa o slot dela de `open_session` até a tentativa dela fechar,
+  então as sessões que ainda estão inicializando ou fechando contam para o
+  limite.
+- As sessões abertas ao mesmo tempo compartilham uma configuração: credenciais e
+  segredos são resolvidos por um registro de credenciais por processo.
+- Enquanto o servidor é encerrado, ele cancela as sessões que ainda estão
+  abrindo e espera por elas, fecha todas as sessões e recusa novas. Uma
+  abertura cancelada falha depois que o que ela iniciou (um comando do app que
+  ainda espera pela `readyUrl` dele, por exemplo) foi encerrado.
+- Cada sessão carrega a configuração de novo, até os arquivos que a configuração
+  importa por caminho, como uma configuração base incluída por spread, então
+  cada sessão recebe as próprias instâncias de engine. Uma sessão que roda um
+  teste carrega os arquivos de teste da mesma forma. Uma engine criada dentro de
+  um pacote é uma instância só, que todas as sessões compartilham.
+- Sessões no mesmo comando do app compartilham o processo dele: a primeira
+  sessão o inicia, e ele é encerrado quando a última delas fecha. Uma URL
+  declarada com a porta `0` recebe uma porta própria em cada sessão e,
+  portanto, um processo próprio. Uma inicialização compartilhada da qual todas
+  as sessões em espera desistiram é cancelada, e a próxima sessão a inicia do
+  zero.
+- No mobile, cada sessão precisa do próprio simulador ou emulador: declare um
+  alvo por dispositivo, cada um indicando o seu `device`, e abra cada sessão
+  no próprio alvo.
+
+## Recursos
+
+| URI | Conteúdo |
+| --- | --- |
+| `e2e://guide` | A visão geral da skill do agente, o texto que `e2e guide` imprime. |
+| `e2e://guide/{topic}` | Um tópico: `setup`, `writing-tests`, `agent`, `running`, `explore`, `debugging`, `mcp`, `bug-bash`. |
+
+## Códigos de saída
+
+| Código | Quando |
+| --- | --- |
+| `0` | O cliente se desconecta, com ou sem uma sessão aberta, ou um sinal encerra o servidor. |
+| `1` | Um erro não capturado encerra o servidor. |
+| `2` | A linha de comando é inválida. |
+| O [código de categoria](/reference/cli#exit-codes) do erro | Uma falha na inicialização. |
+
+Falhas de configuração e de engine voltam como erros de ferramenta com os
+mesmos códigos que a CLI imprime.

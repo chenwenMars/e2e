@@ -89,34 +89,6 @@
         },
         "ref_id": "@s1y1hxmo5pexrl:e5",
         "role": "button"
-      },
-      {
-        "available_actions": [
-          "Click"
-        ],
-        "name": "Close",
-        "ref_id": "@s1y1hxmo5pexrl:e6",
-        "role": "button"
-      },
-      {
-        "available_actions": [
-          "Click",
-          "RightClick"
-        ],
-        "name": "Full Screen",
-        "ref_id": "@s1y1hxmo5pexrl:e7",
-        "role": "button"
-      },
-      {
-        "available_actions": [
-          "Click"
-        ],
-        "name": "Minimize",
-        "ref_id": "@s1y1hxmo5pexrl:e8",
-        "role": "button",
-        "states": [
-          "disabled"
-        ]
       }
     ],
     "name": "Spike Form",

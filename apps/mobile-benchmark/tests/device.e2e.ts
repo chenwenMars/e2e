@@ -87,6 +87,27 @@ test('isKeyboardShown follows the keyboard up and through a dismissal', { platfo
   await expect.poll(() => device.isKeyboardShown()).toBe(false);
 });
 
+// With the keyboard up, Continue sits in the keyboard's band, so it reads as
+// hidden, and a tap on it is refused before anything is sent: an action
+// failure, and no key is pressed in its place, so the email stays as typed. Once the keyboard is gone the same
+// button reads and taps.
+// iOS only, for the same reason as the test above.
+test('a control under the keyboard reads hidden and refuses a tap until the keyboard is dismissed', { platforms: ['ios'] }, async ({ app, device, screen }) => {
+  await openScenario({ app, device, screen }, 'Sequential Onboarding');
+  await screen.getByTestId('email-input').fill('jane@example.com');
+  const continueButton = screen.getByTestId('continue-button');
+  await expect(continueButton).toBeHidden();
+  const error = await continueButton.tap().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: 'ACTION_FAILED', message: expect.stringContaining('keyboard') });
+  await expect(screen.getByTestId('email-input')).toHaveValue('jane@example.com');
+  await expect(screen.getByTestId('onboarding-step-email')).toBeVisible();
+
+  await device.dismissKeyboard();
+  await expect(continueButton).toBeVisible();
+  await continueButton.tap();
+  await expect(screen.getByTestId('first-name-input')).toBeVisible();
+});
+
 // The benchmark is a release build with no shake handler, so nothing on screen
 // answers a shake. This checks only that the simulator and the emulator take
 // the command without an error and that the screen reads afterwards; that a

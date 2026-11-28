@@ -823,13 +823,16 @@ describe('app steering hooks', () => {
     expect(calls).toEqual(['restart', 'reset']);
   });
 
-  /** A device: no address, no `open`, a pinned app `restart` launches fresh. */
-  function device(pinned = true) {
+  /** A device: no address, no `open`, a pinned app `restart` launches fresh, and links it opens; `links: false` is a desktop app's engine, which opens none. */
+  function device(pinned = true, links = true) {
     const calls: string[] = [];
     const engine = defineEngine({
       name: 'fake', version: '1', spiVersion: 1,
       observe: async () => snapshot([]),
-      session: pinned ? { restart: async () => { calls.push('restart'); } } : {},
+      session: {
+        ...(pinned ? { restart: async () => { calls.push('restart'); } } : {}),
+        ...(links ? { openLink: async () => { calls.push('openLink'); } } : {}),
+      },
     });
     return { engine, calls };
   }
@@ -849,6 +852,15 @@ describe('app steering hooks', () => {
       code: 'APP_URL_REQUIRED',
       message: expect.stringContaining('device.openLink'),
     });
+    expect(calls).toEqual([]);
+  });
+
+  it('app.open(path) on an engine that opens no links is APP_URL_REQUIRED and names no device', async () => {
+    const { engine, calls } = device(true, false);
+    const { fixtures } = runtime(engine);
+    const refused = await fixtures.app.open('/settings').then(() => undefined, (error: unknown) => error);
+    expect(refused).toMatchObject({ code: 'APP_URL_REQUIRED', message: expect.stringContaining('takes no path') });
+    expect(String((refused as Error).message)).not.toContain('device');
     expect(calls).toEqual([]);
   });
 

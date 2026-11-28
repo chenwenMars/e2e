@@ -3,6 +3,7 @@
 import { isStepExecutor, type StepExecutor } from '../agent/executor.ts';
 import { GRAMMAR_TOOL_NAMES, HARNESS_TOOL_NAMES } from '../agent/action-names.ts';
 import { AgentError } from '../agent/error.ts';
+import { INSTRUCTION_RESERVE, MIN_OBSERVATION_BYTES } from '../agent/observation-budget.ts';
 import { isDefinedTool } from '../agent/tool.ts';
 import { boundedInt, timerMs } from './validate.ts';
 import { ConfigurationError, TestError } from '../internal/errors.ts';
@@ -69,6 +70,8 @@ export interface ResolvedAgentConfig {
   /** Input tokens one model request of this agent may carry; observations are clamped under it. */
   readonly maxInputTokens: number;
   readonly context: string | undefined;
+  /** Bytes this agent's `context` may take. */
+  readonly maxContextBytes: number;
   /**
    * Provider options sent with every model call, judgments included. This is
    * how a reasoning model's effort is lowered project-wide; an executor that
@@ -102,6 +105,7 @@ const AGENT_KEYS = [
   'judgmentTimeout',
   'maxObservationBytes',
   'maxInputTokens',
+  'maxContextBytes',
   'providerOptions',
 ] as const;
 
@@ -112,7 +116,8 @@ const REMOVED_AGENT_KEYS: ReadonlyMap<string, string> = new Map([
   ['timeout', 'use judgmentTimeout, the deadline of one assert, waitFor, or extract call'],
   ['maxTurns', 'use maxModelCalls, the model requests one agent call may make'],
   ['maxModelTokensPerCall', 'use maxInputTokens'],
-  ['limits', 'set maxInputTokens on the agent; the runner fixes the other limits'],
+  ['limits', 'set maxInputTokens and maxContextBytes on the agent; the runner fixes the other limits'],
+  ['maxAgentContextBytes', 'use maxContextBytes'],
 ]);
 
 /** The keys only the built-in agent reads; a custom executor brings its own. */
@@ -131,8 +136,11 @@ const DEFAULT_OBSERVATION_BYTES = 262_144;
 /** Default per-request input token ceiling; `maxInputTokens` moves it per agent. */
 const DEFAULT_INPUT_TOKENS = 64_000;
 
-/** Trusted agent context, config and test context joined, in bytes. */
-const MAX_AGENT_CONTEXT_BYTES = 16_384;
+/** Default byte ceiling of an agent's `context`; `maxContextBytes` moves it per agent. */
+const DEFAULT_CONTEXT_BYTES = 16_384;
+const MIN_CONTEXT_BYTES = 1_024;
+/** The report schema's ceiling for `limits.maxAgentContextBytes`. */
+const MAX_CONTEXT_BYTES = 65_536;
 /** The prior-step ledger an act step reads, in bytes. */
 const MAX_LEDGER_BYTES = 8_192;
 /** Events recorded per step; later ones are dropped. */
@@ -147,7 +155,7 @@ const DEFAULT_JUDGMENT_TIMEOUT_MS = 30_000;
 
 /** The limits of a run no agent config has shaped: every value at its default. */
 export const DEFAULT_LIMITS: ResolvedLimits = {
-  maxAgentContextBytes: MAX_AGENT_CONTEXT_BYTES,
+  maxAgentContextBytes: DEFAULT_CONTEXT_BYTES,
   maxLedgerBytes: MAX_LEDGER_BYTES,
   maxObservationBytes: DEFAULT_OBSERVATION_BYTES,
   maxEventsPerStep: MAX_EVENTS_PER_STEP,
@@ -165,6 +173,7 @@ export function runLimits(agents: Iterable<ResolvedAgentConfig>): ResolvedLimits
   if (all.length === 0) return DEFAULT_LIMITS;
   return {
     ...DEFAULT_LIMITS,
+    maxAgentContextBytes: Math.max(...all.map((agent) => agent.maxContextBytes)),
     maxObservationBytes: Math.max(...all.map((agent) => agent.maxObservationBytes)),
     maxModelTokensPerCall: Math.max(...all.map((agent) => agent.maxInputTokens)),
   };
@@ -201,6 +210,8 @@ export function resolveAgentConfig(
     DEFAULT_OBSERVATION_BYTES;
   const maxInputTokens =
     boundedInt(agent?.maxInputTokens, `${label}.maxInputTokens`, 1, 1_000_000) ?? DEFAULT_INPUT_TOKENS;
+  const maxContextBytes =
+    boundedInt(agent?.maxContextBytes, `${label}.maxContextBytes`, MIN_CONTEXT_BYTES, MAX_CONTEXT_BYTES) ?? DEFAULT_CONTEXT_BYTES;
 
   const model = resolveCanonicalModel(agent?.model, executor?.model, label, 'model');
   return {
@@ -214,7 +225,8 @@ export function resolveAgentConfig(
     judgmentTimeout,
     maxObservationBytes,
     maxInputTokens,
-    context: validateContext(agent?.context, `${label}.context`),
+    context: validateContext(agent?.context, { maxContextBytes, maxInputTokens }, label),
+    maxContextBytes,
     providerOptions: resolveProviderOptions(agent?.providerOptions, label),
   };
 }
@@ -318,7 +330,8 @@ function resolveTools(value: unknown, label: string): Readonly<Record<string, Ag
       `${label}.tools must be an object of tools by name, each from defineTool`,
     );
   }
-  for (const [name, defined] of Object.entries(value)) {
+  const tools = definedEntries(value);
+  for (const [name, defined] of Object.entries(tools)) {
     const key = `${label}.tools.${name}`;
     if (!isDefinedTool(defined)) {
       throw new ConfigurationError(
@@ -337,7 +350,7 @@ function resolveTools(value: unknown, label: string): Readonly<Record<string, Ag
       throw new ConfigurationError('INVALID_CONFIG', `${key} has no execute function`);
     }
   }
-  return value as Readonly<Record<string, AgentTool>>;
+  return tools as Readonly<Record<string, AgentTool>>;
 }
 
 /**
@@ -353,7 +366,8 @@ function resolveProviderOptions(value: unknown, label: string): ProviderOptions 
       `${label}.providerOptions must be an object keyed by provider name`,
     );
   }
-  for (const [provider, options] of Object.entries(value)) {
+  const providers = definedEntries(value);
+  for (const [provider, options] of Object.entries(providers)) {
     if (!isPlainObject(options)) {
       throw new ConfigurationError(
         'INVALID_CONFIG',
@@ -361,7 +375,12 @@ function resolveProviderOptions(value: unknown, label: string): ProviderOptions 
       );
     }
   }
-  return value as ProviderOptions;
+  return providers as ProviderOptions;
+}
+
+/** `record` without its `undefined` entries, which a config writes for an entry it leaves out. */
+function definedEntries(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([, entry]) => entry !== undefined));
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -445,17 +464,33 @@ function resolveModel(model: ModelInstance | undefined, label: string): Resolved
   return { provider: model.provider, id: model.modelId, model };
 }
 
-/** The agent's app vocabulary: a string within the trusted context budget. */
-function validateContext(context: unknown, label: string): string | undefined {
+/** The agent's app vocabulary: a string within the agent's context budget. */
+function validateContext(
+  context: unknown,
+  limits: { readonly maxContextBytes: number; readonly maxInputTokens: number },
+  agent: string,
+): string | undefined {
+  const label = `${agent}.context`;
   if (context === undefined) return undefined;
   if (typeof context !== 'string') {
     throw new ConfigurationError('INVALID_CONFIG', `${label} must be a string`);
   }
   const bytes = new TextEncoder().encode(context).byteLength;
-  if (bytes > MAX_AGENT_CONTEXT_BYTES) {
+  if (bytes > limits.maxContextBytes) {
+    const raise =
+      limits.maxContextBytes < MAX_CONTEXT_BYTES ? `, raise it with ${agent}.maxContextBytes (up to ${MAX_CONTEXT_BYTES})` : '';
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `${label} is ${bytes} bytes; the maximum is ${MAX_AGENT_CONTEXT_BYTES}`,
+      `${label} is ${bytes} bytes; the maximum is ${limits.maxContextBytes}${raise}`,
+    );
+  }
+  // The context rides in every model request, and `maxInputTokens` counts a
+  // request in bytes: past this point the screen is already cut to its floor.
+  const needed = bytes + INSTRUCTION_RESERVE + MIN_OBSERVATION_BYTES;
+  if (needed > limits.maxInputTokens) {
+    throw new ConfigurationError(
+      'INVALID_CONFIG',
+      `${label} is ${bytes} bytes, which leaves no room for the screen under ${agent}.maxInputTokens ${limits.maxInputTokens} (a request is counted in bytes); set ${agent}.maxInputTokens to at least ${needed}, more for dense screens`,
     );
   }
   return context;

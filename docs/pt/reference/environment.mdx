@@ -1,0 +1,229 @@
+---
+title: Variáveis de ambiente
+description: Todas as variáveis que o runner e as engines oficiais leem, e o que cada uma faz.
+"og:image": "https://e2e.com/docs/images/og/reference/environment.png?v=67a4d71e70"
+"twitter:image": "https://e2e.com/docs/images/og/reference/environment.png?v=67a4d71e70"
+---
+
+Estas variáveis configuram o runner e os pacotes oficiais. Nas tabelas, `set`
+significa que a variável existe, `value` significa que ela não está em branco,
+e `flag` significa que ela não está em branco e não é `0` nem `false`. Os
+valores de flag não diferenciam maiúsculas de minúsculas.
+
+```bash
+export E2E_USER_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+export E2E_CACHE_DIR=~/.cache/e2e
+export E2E_TELEMETRY_DISABLED=1
+```
+
+## Referência
+
+### Modelo
+
+Configure um modelo em `e2e.config.ts`. O provedor do modelo lê a chave de API:
+`gateway()` usa `AI_GATEWAY_API_KEY`, `openrouter()` usa
+`OPENROUTER_API_KEY`, e `openai()` usa `OPENAI_API_KEY`. Sem
+`AI_GATEWAY_API_KEY`, `gateway()` usa um
+[token OIDC da Vercel](/models#vercel-oidc-instead-of-a-key). Uma
+credencial ausente falha na primeira chamada ao modelo. Os modelos de
+assinatura usam um login salvo em vez disso. O preset de agente de código
+`codex()` de `@e2e-dev/acp` também lê o primeiro valor não em branco entre
+`CODEX_API_KEY` e `OPENAI_API_KEY` para fazer o login do Codex quando ele não
+tem login próprio e `DEFAULT_AUTH_REQUEST` não está definida, está vazia ou só
+tem espaços. O Codex então salva a chave como o próprio login, no
+armazenamento de credenciais padrão dele. Enquanto `APP_SERVER_LOGS` está
+definida, `codex()` não passa nenhuma requisição de login. Veja
+[Use seu agente de código](/subscriptions#use-your-coding-agent).
+Veja [Modelos](/models) e [Assinaturas](/subscriptions).
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| [`E2E_OAUTH_CREDENTIALS`](#e2e_oauth_credentials) | `E2E_OAUTH_CREDENTIALS="$(cat oauth.json)"` | value | Os logins de assinatura salvos, em JSON |
+| [`OPENCODE_API_KEY`](#opencode_api_key) | `OPENCODE_API_KEY=<key>` | value | Substitui o login salvo de `opencode-console` |
+| `XDG_CONFIG_HOME` | `XDG_CONFIG_HOME=~/.config` | value | Diretório dos logins salvos, `$XDG_CONFIG_HOME/e2e/oauth.json`; padrão `~/.config/e2e/oauth.json` |
+
+#### `E2E_OAUTH_CREDENTIALS`
+
+Os logins de assinatura salvos em JSON, o conteúdo de `oauth.json`, para uma
+máquina em que ninguém consegue fazer login.
+
+- Os modelos de `e2e/oauth/*` e `e2e models` a leem no lugar de
+  `$XDG_CONFIG_HOME/e2e/oauth.json`.
+- `e2e login` e `e2e logout` se recusam a alterá-la.
+- Tokens renovados não são escritos de volta.
+
+#### `OPENCODE_API_KEY`
+
+Uma chave de API de conta de serviço do OpenCode Console ou uma chave de API
+de assinatura do OpenCode Go. `opencodeConsole()` e `e2e models opencode-console`
+a usam no lugar do login salvo de `opencode-console`. O OpenCode lê a mesma
+variável.
+
+### Credenciais e segredos
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| `E2E_USER_<NAME>_USERNAME` | `E2E_USER_ADMIN_USERNAME=admin@example.test` | set | Substitui `credentials.<name>.username` |
+| `E2E_USER_<NAME>_PASSWORD` | `E2E_USER_ADMIN_PASSWORD="$ADMIN_PASSWORD"` | set | Substitui `credentials.<name>.password` |
+| `E2E_SECRET_<NAME>` | `E2E_SECRET_API_KEY="$API_KEY"` | set | Substitui o valor de `secrets.<name>` |
+
+- `<NAME>` é o nome em maiúsculas, com todo caractere fora de `A-Z0-9`
+  trocado por `_`, então `power-user` vira `E2E_USER_POWER_USER_USERNAME`.
+- Duas credenciais, ou dois segredos, cujos nomes correspondem a um mesmo
+  `<NAME>` resultam em `INVALID_CONFIG` ao carregar a configuração, com a
+  variável definida ou não. Assim, uma rotação nunca substitui duas entradas.
+  A mensagem indica as entradas e as variáveis.
+  Por exemplo, `api-key` e `api_key` leem ambos `E2E_SECRET_API_KEY`;
+  `svc-a` e `svc_a` leem ambos `E2E_USER_SVC_A_USERNAME` e `_PASSWORD`.
+- Uma credencial e um segredo podem ter o mesmo nome, já que os prefixos são
+  diferentes.
+- Uma variável para um nome ausente da configuração é ignorada.
+- Uma senha ou um segredo vazio é `INVALID_CONFIG`, assim como uma senha ou um
+  segredo com menos de 6 caracteres (pontos de código). A ocultação reescreve
+  toda ocorrência de um valor, e um valor tão curto levaria texto comum junto.
+  Um nome de usuário vazio é aceito.
+
+### Modo de execução
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| [`CI`](#ci) | `CI=1` | flag | Modo CI |
+
+#### `CI`
+
+Liga o modo CI:
+
+- O padrão de `retries` é 1, e o de `workers` também é 1.
+- O padrão de `cache` é `read-only`.
+- Um teste focado resulta em `ONLY_IN_CI`.
+- `reuseExisting` em um comando de app é ignorado.
+
+### Cache de replay
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| [`E2E_CACHE_DIR`](#e2e_cache_dir) | `E2E_CACHE_DIR=~/.cache/e2e` | value | Substitui [`cache.dir`](/reference/config#cache) |
+
+#### `E2E_CACHE_DIR`
+
+Substitui [`cache.dir`](/reference/config#cache) em `e2e run` e
+`e2e cache`, com o caminho resolvido a partir da raiz do projeto.
+
+- `~` ou um `~/` no início é o diretório home.
+- `--cache-dir` prevalece sobre ela.
+- Um `cache.store` personalizado a ignora.
+- O modo do cache continua como configurado, e `--no-cache` desliga o cache
+  mesmo assim.
+
+### Diagnósticos
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| `NO_COLOR` | `NO_COLOR=1` | set | Saída da CLI sem cores. Sem ela, as cores ficam ligadas em um TTY ou na CI, e desligadas quando a saída é redirecionada por pipe |
+| `FORCE_COLOR` | `FORCE_COLOR=1` | set | Saída da CLI colorida mesmo quando redirecionada por pipe |
+| `TERM` | `TERM=dumb` | value | `dumb` desenha o logo do `e2e init` parado, sem animação, como na CI |
+| `GITHUB_SHA`, `GITHUB_HEAD_REF`, `GITHUB_REF_NAME` | `GITHUB_REF_NAME=main` | value | O commit e a branch que o relatório registra em `run.vcs` quando o `git` não consegue ler a raiz do projeto. `GITHUB_HEAD_REF` prevalece sobre `GITHUB_REF_NAME` |
+| `NODE_DEBUG` | `NODE_DEBUG=child_process` | value | A saída de depuração do próprio Node. Com `child_process` ligado, o Node imprime o ambiente de todo processo que a execução inicia, e com `net`, os cabeçalhos das requisições de `node:http`, incluindo chaves de API. Na saída que o e2e escreve, só os segredos do e2e e as [chaves de provedor](/reference/security#provider-keys) são ocultados; um programa que chama `openHost` mantém o próprio stderr. `e2e run`, `e2e mcp` e `openHost` avisam uma vez no stderr e continuam. Os agentes que `acp()` inicia nunca recebem a variável |
+
+`--debug` e `--ai-trace` são flags, não variáveis; veja
+[CLI](/reference/cli#e2e-run).
+
+### Telemetria
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| `E2E_TELEMETRY_DISABLED` | `E2E_TELEMETRY_DISABLED=1` | flag | Desliga a telemetria anônima de uso e a [verificação de atualizações](/reference/cli#help-and-version). `e2e telemetry disable` salva a mesma escolha para a telemetria no arquivo de preferências |
+| `DO_NOT_TRACK` | `DO_NOT_TRACK=1` | flag | O mesmo que `E2E_TELEMETRY_DISABLED` |
+| `E2E_UPDATE_CHECK_DISABLED` | `E2E_UPDATE_CHECK_DISABLED=1` | flag | Desliga a verificação diária de uma release mais nova do e2e |
+| `NO_UPDATE_NOTIFIER` | `NO_UPDATE_NOTIFIER=1` | flag | O mesmo que `E2E_UPDATE_CHECK_DISABLED` |
+| `npm_config_registry` | `npm_config_registry=https://npm.example.com/` | value | O registry de onde [`e2e upgrade`](/reference/cli#e2e-upgrade) lê as versões; padrão `https://registry.npmjs.org/`. Os gerenciadores de pacotes a definem para os comandos que rodam |
+| `E2E_TELEMETRY_DEBUG` | `E2E_TELEMETRY_DEBUG=1` | flag | Imprime cada evento de telemetria no stderr em vez de enviá-lo |
+| [`E2E_TELEMETRY_FLEET`](#e2e_telemetry_fleet) | `E2E_TELEMETRY_FLEET=acme` | value | Nomeia a plataforma que roda o e2e para os usuários dela |
+| `XDG_CONFIG_HOME` | `XDG_CONFIG_HOME=~/.config` | value | Diretório do arquivo de preferências e do `update-check.json` da verificação de atualizações, `$XDG_CONFIG_HOME/e2e`; padrão `~/.config/e2e` |
+| `APPDATA` | `APPDATA=C:\Users\ada\AppData\Roaming` | value | O mesmo no Windows, `%APPDATA%\e2e`; padrão `~/AppData/Roaming/e2e` |
+
+#### `E2E_TELEMETRY_FLEET`
+
+Nomeia a plataforma que roda o e2e para os usuários dela.
+
+- Os eventos são atribuídos a `fleet:<name>` em vez de a um id por máquina.
+- Nenhum arquivo de preferências é escrito, e nenhum aviso é impresso.
+- Um valor que não é um token simples é enviado como `other`.
+
+#### Ambientes detectados
+
+A telemetria também verifica os marcadores que os fornecedores de CI e os
+agentes de código definem. Só o nome derivado é enviado.
+
+| Marcadores | Informado como |
+| --- | --- |
+| `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `BUILDKITE`, `JENKINS_URL`, `TRAVIS`, `BITBUCKET_BUILD_NUMBER`, `TF_BUILD`, `TEAMCITY_VERSION`, `CODEBUILD_BUILD_ID`, `VERCEL`, `NETLIFY`, `DRONE`, `SEMAPHORE`, `APPVEYOR`, `WOODPECKER`, `EAS_BUILD`, `BITRISE_IO`, `CM_BUILD_ID`, `CI_XCODE_CLOUD` | `ci_name`: `github-actions`, `gitlab`, `circleci`, `buildkite`, `jenkins`, `travis`, `bitbucket`, `azure-pipelines`, `teamcity`, `aws-codebuild`, `vercel`, `netlify`, `drone`, `semaphore`, `appveyor`, `woodpecker`, `eas`, `bitrise`, `codemagic`, `xcode-cloud`; `unknown` quando só `CI` está definida |
+| `CLAUDECODE`, `CLAUDE_CODE`, `CURSOR_AGENT`, `CURSOR_TRACE_ID`, `CODEX_SANDBOX`, `CODEX_THREAD_ID`, `CODEX_CI`, `GEMINI_CLI`, `COPILOT_GITHUB_TOKEN`, `COPILOT_MODEL`, `COPILOT_ALLOW_ALL`, `OPENCODE_CLIENT`, `AUGMENT_AGENT`, `ANTIGRAVITY_AGENT`, `REPL_ID`, `AI_AGENT` | `coding_agent`: `claude-code`, `cursor`, `codex`, `gemini-cli`, `copilot`, `opencode`, `augment`, `antigravity`, `replit`, `other` |
+| `WSL_DISTRO_NAME` | `wsl: true` |
+| `npm_config_user_agent` | `package_manager`: o gerenciador de pacotes que invocou o e2e. `e2e init` lê a mesma variável para escolher o comando de instalação |
+
+O que é enviado e como interpretar esses dados estão na página
+[Telemetria](/telemetry).
+
+### Reporters
+
+`@e2e-dev/github` lê as variáveis que o GitHub Actions define, quando uma
+execução termina:
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| `GITHUB_ACTIONS` | `GITHUB_ACTIONS=true` | value | Sem ela, o reporter não publica nada e avisa isso |
+| `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_EVENT_NAME`, `GITHUB_WORKFLOW`, `GITHUB_JOB` | `GITHUB_REPOSITORY=acme/shop` | value | Sempre definidas pelo runner. A falta de uma delas faz o reporter falhar, e a mensagem indica a variável. O repositório e o id da execução montam o link dos artefatos. O nome do evento aparece na linha “not a pull request”. O workflow e o job entram no marcador pelo qual uma reexecução encontra o próprio comentário |
+| `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_TOKEN=<token>` | value | Publica o comentário; prevalece a primeira que estiver definida. Sem nenhuma definida, o resumo do job é escrito mesmo assim. O token de `pull_request` de um fork é somente leitura e não consegue publicar; veja [Quando nada é publicado](/github#when-nothing-is-posted) |
+| `GITHUB_EVENT_PATH`, `GITHUB_REF` | `GITHUB_REF=refs/pull/42/merge` | value | O número e o commit head do pull request, do payload do evento, ou o número de `refs/pull/N/merge` |
+| `GITHUB_SHA` | `GITHUB_SHA=<commit>` | value | O commit para o qual os links de código-fonte apontam quando o evento não é sobre um pull request |
+| `GITHUB_WORKSPACE` | `GITHUB_WORKSPACE=/home/runner/work/shop/shop` | value | A raiz do checkout. Os links de código-fonte acrescentam o caminho do projeto dentro dela, então uma suíte em um subdiretório aponta para o arquivo certo |
+| `GITHUB_SERVER_URL`, `GITHUB_API_URL` | `GITHUB_SERVER_URL=https://github.example.com` | value | O host do GitHub, para o Enterprise Server. Padrão `https://github.com` e `https://api.github.com` |
+| `GITHUB_STEP_SUMMARY` | `GITHUB_STEP_SUMMARY=<file>` | value | O arquivo do resumo do job ao qual o texto do comentário é acrescentado |
+
+### Engines
+
+| Variável | Exemplo | Leitura | Efeito |
+| --- | --- | --- | --- |
+| `PLAYWRIGHT_BROWSERS_PATH` | `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright` | value | O cache de navegadores do Playwright, respeitado pelo hook `prepare` da engine |
+| `PLAYWRIGHT_SKIP_BROWSER_GC` | `PLAYWRIGHT_SKIP_BROWSER_GC=0` | value | O padrão é `1` na instalação de navegadores da engine, o que mantém outros navegadores no cache. `0` deixa a instalação removê-los |
+| `KERNEL_API_KEY` | `KERNEL_API_KEY=<key>` | value | A chave de API com que `kernel()` de `@e2e-dev/kernel` cria navegadores. Se não estiver definida, a reserva do navegador falha. Veja [Kernel](/integrations/kernel) |
+| `NOTTE_API_KEY` | `NOTTE_API_KEY=<key>` | value | A chave de API com que `notte()` de `@e2e-dev/notte` inicia sessões. Se não estiver definida, a reserva do navegador falha. Veja [Notte](/integrations/notte) |
+| `NOTTE_API_URL` | `NOTTE_API_URL=<url>` | value | A URL da API da Notte que `notte()` chama. Padrão `https://api.notte.cc` |
+| `LIGHTPANDA_PATH` | `LIGHTPANDA_PATH=/opt/lightpanda` | value | O binário com que `lightpanda()` de `@e2e-dev/lightpanda` inicia um servidor CDP. Se não estiver definida, `lightpanda` no `PATH`, em `~/.lightpanda` ou em `~/.local/bin`. Veja [Lightpanda](/integrations/lightpanda) |
+| `MOLI_PATH` | `MOLI_PATH=/opt/moli` | value | O executável que `moli()` de `@e2e-dev/moli` inicia quando `binary` não está definido. Sem `MOLI_PATH`, ele procura no `PATH` e depois em `~/.local/bin/moli`. Veja [Moli](/integrations/moli) |
+| [`EXPO_TOKEN`](#expo_token) | `EXPO_TOKEN=<token>` | value | O token de acesso da Expo que `expoSimulators()` de `@e2e-dev/eas` usa |
+| `HOME`, `USERPROFILE` | `HOME=/home/ada` | value | Onde `expoSimulators()` encontra o login do eas-cli sem `EXPO_TOKEN`: `USERPROFILE` no Windows, `HOME` nos demais sistemas, o diretório home do usuário do sistema operacional quando a variável não está definida |
+| `LIMRUN_API_KEY` | `LIMRUN_API_KEY=<key>` | value | A chave de API com que `limrun()` de `@e2e-dev/limrun` reserva dispositivos. Se não estiver definida, a reserva falha com `INVALID_CONFIG`. Veja [Limrun](/integrations/limrun) |
+| `LIMRUN_BASE_URL` | `LIMRUN_BASE_URL=<url>` | value | O host da API da Limrun. Padrão `https://api.limrun.com` |
+| `BROWSERSTACK_USERNAME`, `BROWSERSTACK_ACCESS_KEY` | `BROWSERSTACK_USERNAME=acme_AbC123` | value | O nome de usuário e a chave de acesso do BrowserStack com que `browserstack()` de `@e2e-dev/browserstack` reserva dispositivos. Se qualquer um dos dois não estiver definido, a reserva do dispositivo falha. Veja [BrowserStack](/integrations/browserstack) |
+| `BROWSERSTACK_API_ENDPOINT` | `BROWSERSTACK_API_ENDPOINT=<url>` | value | A URL base da API do App Automate para a qual `browserstack()` envia builds `https` e na qual consulta as gravações de sessão. Padrão `https://api-cloud.browserstack.com/app-automate`. Um valor que não é uma URL http(s), ou que traz um nome de usuário ou uma senha, falha com `INVALID_CONFIG` |
+| `LT_USERNAME`, `LT_ACCESS_KEY` | `LT_USERNAME=acme` | value | O nome de usuário e a chave de acesso da TestMu AI com que `testmu()` de `@e2e-dev/testmu` reserva dispositivos. Se qualquer um dos dois não estiver definido, a reserva do dispositivo falha. `testmuBrowsers()` de `@e2e-dev/testmu/web` os coloca só na URL CDP de cada sessão de navegador, e, se qualquer um dos dois não estiver definido, a reserva do navegador falha. Veja [TestMu AI](/integrations/testmu) |
+| `TESTMU_API_ENDPOINT` | `TESTMU_API_ENDPOINT=<url>` | value | A URL base da API de sessões da TestMu AI em que `testmu()` consulta as gravações de sessão. Padrão `https://mobile-api.lambdatest.com/mobile-automation/api/v1`. Um valor que não é uma URL http(s), ou que traz um nome de usuário ou uma senha, faz a consulta falhar com `INVALID_CONFIG`. O plugin TestMu AI do agent-device também a lê |
+| `REVYL_API_KEY` | `REVYL_API_KEY=<key>` | value | A chave de API com que `revyl()` de `@e2e-dev/revyl` reserva dispositivos e `revylBrowsers()` de `@e2e-dev/revyl/web` inicia sessões web. Se não estiver definida, a reserva falha. Veja [Revyl](/integrations/revyl) |
+| `REVYL_API_URL` | `REVYL_API_URL=<url>` | value | O backend da Revyl do qual `revyl()` reserva dispositivos e no qual `revylBrowsers()` inicia sessões web. Padrão `https://backend.revyl.ai`. O plugin Revyl do agent-device a lê |
+| `E2B_API_KEY` | `E2B_API_KEY=<key>` | value | A chave de API com que `e2b()` de `@e2e-dev/e2b` e `e2bBrowsers()` de `@e2e-dev/e2b/web` criam sandboxes. Se não estiver definida, a reserva falha com `INVALID_CONFIG`. Veja [E2B](/integrations/e2b) |
+| `E2B_DOMAIN` | `E2B_DOMAIN=e2b.example.com` | value | O domínio da E2B em que os provedores criam sandboxes. Padrão `e2b.app`. Defina-a para um cluster dedicado da E2B |
+| `E2B_API_URL` | `E2B_API_URL=<url>` | value | A URL da API da E2B que os provedores chamam. Padrão `https://api.<E2B_DOMAIN>` |
+| `E2B_SANDBOX_URL` | `E2B_SANDBOX_URL=<url>` | value | A URL para a qual os provedores enviam comandos e uploads do sandbox. Padrão: o SDK da E2B a monta a partir de `E2B_DOMAIN`. Se o shell que inicia o e2e a define, o ambiente da execução precisa definir o mesmo valor, ou a reserva falha com `INVALID_CONFIG` |
+| `E2E_WEB_BROWSERS_<TARGET>_<digest>` | - | value | `@e2e-dev/web` a escreve em `prepare`; cada worker a lê para encontrar o próprio navegador reservado. Não a defina manualmente |
+| `E2E_AGENT_DEVICE_POOL_<TARGET>_<digest>` | - | value | `@e2e-dev/mobile` a escreve em `prepare`; cada worker a lê para encontrar o próprio dispositivo inicializado. Não a defina manualmente |
+
+#### `EXPO_TOKEN`
+
+O token de acesso da Expo com que `expoSimulators()` de `@e2e-dev/eas` inicia
+e encerra sessões de simulador. Veja [Expo Simulators](/integrations/eas).
+
+- Se o token não estiver definido, o provedor usa o login do eas-cli em
+  `.expo/state.json` no diretório home ([`HOME`, `USERPROFILE`](#engines)).
+- Sem nenhum dos dois, a reserva do dispositivo falha.
+
+## O que os processos do app herdam
+
+Um `command` de app recebe `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`,
+`SystemRoot` e `COMSPEC`, mais as variáveis que correspondem a
+`command.inheritEnv` e o que `command.env` definir.
+
+Quem lê `APP_URL` é o módulo de configuração gerado ao criar a estrutura do
+projeto, não o runner. Se o servidor de desenvolvimento também precisar dela,
+passe-a por `command.env`.

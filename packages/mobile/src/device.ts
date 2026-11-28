@@ -134,10 +134,12 @@ export interface Device {
    */
   enrollBiometrics(sensor: 'faceid' | 'touchid', enrolled: boolean): Promise<void>;
   /**
-   * Installs a build (an iOS `.app` bundle or an Android `.apk`, resolved
-   * against the project root) on the device; without a path, the target's
-   * `app.appPath`. The engine installs nothing on its own, so a suite that runs
-   * against a build calls this once per device, in a fixture or a test.
+   * Installs an iOS `.app` bundle or Android `.apk` on the device. Relative paths
+   * resolve against the project root. With no path, installs the target's
+   * `app.appPath`. With a remote agent-device daemon from a device provider,
+   * a path absolute on the runner can also name a build on that daemon. It
+   * reports the install error if the build is missing. The engine installs
+   * nothing on its own, so call this once per device in a fixture or test.
    * `reinstall: true` removes the app first so it starts with no data; a
    * plain install replaces the binary and keeps its data. Resolves to the
    * identity to `openApp` it by, which becomes the app `app.open()` launches

@@ -44,6 +44,27 @@ test.describe('scrolling', { platforms: ['web'], tags: ['scroll'] }, () => {
     await expect.poll(async () => Number(await position.textContent())).toBeLessThan(afterSwipe + 600);
   });
 
+  // The Pane sits under the viewport's center: the screen still scrolls the page.
+  test('scrollTo jumps the page to its bottom and back to its top', async ({ screen }) => {
+    const position = screen.getByRole('status', 'Scroll position');
+    await screen.scrollTo('bottom');
+    await expect(position).not.toHaveText('0');
+    await screen.getByRole('button', { name: 'Row 120', exact: true }).tap();
+    await expect(screen.getByRole('status', 'Picked row')).toHaveText('picked Row 120');
+    await expect(screen.getByRole('status', 'Pane position')).toHaveText('0');
+
+    await screen.scrollTo('top');
+    await expect(position).toHaveText('0');
+  });
+
+  test('scrollTo on a node scrolls that node to its end and leaves the page where it was', async ({ screen }) => {
+    await screen.getByRole('list', 'Pane').scrollTo('bottom');
+    await expect(screen.getByRole('status', 'Pane position')).not.toHaveText('0');
+    await expect(screen.getByRole('status', 'Scroll position')).toHaveText('0');
+    await screen.getByRole('button', { name: 'Item 40', exact: true }).tap();
+    await expect(screen.getByRole('status', 'Picked row')).toHaveText('picked Item 40');
+  });
+
   test('a node swipe scrolls only inside a scrollable node', async ({ screen }) => {
     await screen.getByRole('list', 'Pane').swipe({ direction: 'down', momentum: 'slow' });
     await expect(screen.getByRole('status', 'Pane position')).not.toHaveText('0');

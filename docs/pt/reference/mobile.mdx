@@ -1,0 +1,1749 @@
+---
+title: Mobile
+description: Opções da engine mobile e a fixture device para iOS e Android.
+"og:image": "https://e2e.com/docs/images/og/reference/mobile.png?v=3da450961d"
+"twitter:image": "https://e2e.com/docs/images/og/reference/mobile.png?v=3da450961d"
+---
+
+`@e2e-dev/mobile` é a engine para simuladores iOS, emuladores Android e
+aparelhos conectados, controlados pelo
+[agent-device](https://github.com/callstack/agent-device). Ela fornece a fixture
+`device`. `agent`, `app`, `screen` e `expect` funcionam como em qualquer lugar;
+esta página cobre o que é específico de um alvo de dispositivo.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+
+export default {
+  targets: [
+    { name: 'iphone', engine: mobile({ platform: 'ios' }), app: { bundleId: 'com.apple.Preferences' } },
+  ],
+} satisfies E2EConfig;
+```
+
+```ts title="tests/settings.e2e.ts"
+import { expect } from 'e2e';
+import { test } from '@e2e-dev/mobile';
+
+test('General opens in dark mode', async ({ app, device, screen }) => {
+  await device.setAppearance('dark');
+  await app.open();
+  await screen.getByText('General').tap();
+  await expect(screen.getByText('About')).toBeVisible();
+});
+```
+
+- Importe `test` de `@e2e-dev/mobile` para ter `device` tipado. Declare
+  `platforms: ['ios', 'android']` em uma suíte que também roda na web.
+- Escolha **Mobile (iOS/Android)** no `e2e init` para adicionar o pacote com
+  um exemplo do app Settings. O iOS precisa do Xcode e de um simulador; o
+  Android precisa do Android SDK e de um emulador.
+- O pacote inclui uma versão compatível do `agent-device`; não é preciso
+  instalá-lo separadamente.
+
+## Referência
+
+### Engine
+
+`mobile(options)` cria uma engine para uma plataforma. Crie uma para cada
+plataforma que você testa e use `platforms: ['ios']` ou `platforms: ['android']`
+em testes com rótulos ou operações específicos de uma plataforma.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+import { mobileTools } from '@e2e-dev/mobile/tools';
+import { gateway } from 'ai';
+
+const iphone = mobile({ platform: 'ios' });
+const pixel = mobile({ platform: 'android' });
+
+export default {
+  targets: [
+    { name: 'iphone', engine: iphone, app: { bundleId: 'Settings' } },
+    { name: 'pixel', engine: pixel, app: { bundleId: 'com.android.settings' } },
+  ],
+  workers: 1,
+  agents: {
+    default: {
+      model: gateway('openai/gpt-6-luna-fast'),
+      tools: mobileTools(iphone, pixel),
+    },
+  },
+} satisfies E2EConfig;
+```
+
+`mobile()` recebe `MobileOptions`: quais dispositivos a engine controla e como.
+O app em teste é o `app` do alvo, não uma opção da engine; veja
+[O app em teste](#the-app-under-test).
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| [`platform`](#platform) | `'ios' \| 'android'` | obrigatório |
+| [`device`](#device-option) | `string \| readonly string[] \| DeviceProvider` | todo dispositivo inicializado |
+| [`session`](#session) | `string` | `e2e-<target name>`, com `-<hostId>` para um host de `launch()` |
+| [`snapshot`](#snapshot) | `'full' \| 'interactive'` | `'full'` |
+| [`settle`](#settle) | `number \| false` | `150` |
+| [`transition`](#transition) | `number` | `500` |
+| [`videoTouches`](#videotouches) | `boolean` | `true` |
+
+Todo valor opcional também aceita `undefined`, então valores lidos diretamente
+de `process.env` não precisam de spread condicional. Cada entrada abaixo
+mostra a declaração do seu membro.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Uma lista `device` vazia, um nome de `device` em branco, ou uma entrada da lista em branco ou que não é string. |
+| `INVALID_CONFIG` | Um valor de `device` que não é string, lista nem provedor válido: um provedor sem um `name` não vazio, sem `acquire()` ou `release()`, ou com um `record` que não é função. |
+| `INVALID_CONFIG` | `platform` está ausente ou não é `'ios'` nem `'android'`; a comparação diferencia maiúsculas de minúsculas. |
+| `INVALID_CONFIG` | Um valor de `snapshot` fornecido que não é `'full'` nem `'interactive'`, ou um valor de `videoTouches` fornecido que não é booleano. |
+| `INVALID_CONFIG` | Uma opção que `mobile()` não recebe, como `mobile({ app })` e as outras opções antigas de app. Para um provável erro de digitação, a mensagem nomeia a opção conhecida mais próxima; caso contrário, lista todas as opções. |
+| `INVALID_CONFIG` | `settle` ou `transition` não é um inteiro não negativo de milissegundos (`settle` também pode ser `false`). |
+
+#### `platform`
+
+```ts
+/** Platform the target's device runs. */
+readonly platform: MobilePlatform;
+```
+
+```ts
+mobile({ platform: 'android' });
+```
+
+- `'ios'` ou `'android'`. Obrigatório.
+
+#### Opção `device`
+
+```ts
+/**
+ * Device to use: a simulator or emulator by name, simulator UDID, or
+ * emulator serial (`emulator-5554`), or a connected phone by name. A list
+ * is a pool: the engine declares one worker per entry and worker slot `n`
+ * drives the `n`th, so `workers` at or above the pool size runs the target's
+ * files across every device at once. Omitted, the pool is every booted device
+ * of the platform at `prepare` that no other agent-device session holds, as
+ * many as the run has slots. A paired iPhone or iPad that is reachable (USB or network) counts as booted and
+ * joins the pool. With none booted, agent-device boots a shut-down one: on
+ * iOS an iPhone over an iPad over an Apple TV, on Android a phone or tablet
+ * over a TV, then the newest OS, then name order (a stopped Android emulator
+ * reports no OS version, so the name decides). With every booted one held,
+ * `prepare` fails. A `DeviceProvider` leases hosted devices
+ * instead: one per worker slot at `prepare`, each driven through the daemon
+ * and client configuration the lease names. A replacement worker resumes a
+ * healthy agent-device session on the same lease. Forced worker shutdown
+ * can close the session. `device.closeApp()` ends the agent-device session,
+ * allowing another session to take the device. If agent-device has not
+ * confirmed a recording stop, the engine resets the recording before the
+ * next attempt. This reset also ends the session. The provider lease stays
+ * held until run end. At run end, the engine closes its sessions and the
+ * provider releases its leases.
+ */
+readonly device?: string | readonly string[] | DeviceProvider | undefined;
+```
+
+```ts
+mobile({ platform: 'ios' }); // default: every booted iOS device no other agent-device session holds
+mobile({ platform: 'ios', device: 'iPhone 17' });
+mobile({ platform: 'android', device: 'emulator-5554' });
+mobile({ platform: 'ios', device: ['iPhone 17', 'iPhone 17 Pro'] });
+```
+
+- Dois workers nunca controlam o mesmo dispositivo, desde que cada entrada de
+  `device` nomeie um dispositivo diferente.
+- Sem `device`, um simulador inicializado que outra ferramenta detém por uma
+  sessão própria do agent-device é pulado. Um dispositivo inicializado que
+  nada detém, como um que você usa manualmente, continua no pool: nomeie o
+  dispositivo para manter a execução longe dele.
+- Um dispositivo inicializado que outra sessão do agent-device reivindica
+  entre o inventário e o aquecimento, como um host que abriu no mesmo momento,
+  é trocado pelo próximo livre. Sem nenhum livre, uma execução com vários
+  workers continua com um worker a menos. Um dispositivo que só estava ocupado
+  com um comando curto do agent-device, como uma instalação, continua
+  vinculado, e o worker desse dispositivo tenta usá-lo de novo ao iniciar.
+  Nunca se troca um dispositivo nomeado nem a reserva de um provedor.
+- [Dispositivos hospedados](/mobile#hosted-devices) traz o contrato
+  `DeviceProvider` e um provedor de exemplo.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+
+const iphones = mobile({
+  platform: 'ios',
+  device: ['iPhone 17', 'iPhone 17 Pro'],
+});
+
+export default {
+  targets: [{ name: 'ios', engine: iphones, app: { bundleId: 'com.example.app' } }],
+  workers: 2,
+} satisfies E2EConfig;
+```
+
+#### `session`
+
+```ts
+/**
+ * agent-device session name, before the worker slot: slot `n` drives its
+ * device under `<session>-<n>`, `e2e-<target name>-<n>` by default. One run
+ * per session at a time: concurrent runs on the same session interleave
+ * taps. Without this option a `launch()` host
+ * drives `e2e-<target name>-<host token>-<n>`, a session of its own.
+ */
+readonly session?: string | undefined;
+```
+
+```ts
+mobile({ platform: 'ios', session: 'checkout' }); // default: e2e-<target name>
+```
+
+#### `snapshot`
+
+```ts
+/**
+ * What an observation captures. `full` (default) includes static text, so
+ * judgments can read values; `interactive` keeps only actionable nodes and
+ * is cheaper on screens with long lists.
+ */
+readonly snapshot?: 'full' | 'interactive' | undefined;
+```
+
+```ts
+mobile({ platform: 'android', snapshot: 'interactive' }); // default: 'full'
+```
+
+#### `settle`
+
+```ts
+/**
+ * How long the UI must hold still after a tap, fill, screen scroll, or
+ * back before the agent observes again, in milliseconds; `false` skips the
+ * wait. The wait keeps that observation off a transition frame; the runner's
+ * own polling (`expect`, actions waiting for their node) covers the rest,
+ * so a short window suffices. Default 150.
+ * Every frame of a running animation changes the tree, so a 150 ms
+ * window still catches a transition in flight; raise it for slow devices
+ * or apps that settle in stages, or lower it to 0 to keep only the first
+ * re-observation. A test's steps do not settle, except `device.back()`:
+ * `expect` verifies their outcome, and `transition` covers a control that is
+ * still arriving.
+ */
+readonly settle?: number | false | undefined;
+```
+
+```ts
+mobile({ platform: 'ios', settle: 300 }); // default: 150
+```
+
+#### `transition`
+
+```ts
+/**
+ * Wait before acting on a control that just appeared or moved, in
+ * milliseconds. Default 500. Accessibility bounds cannot tell a sliding
+ * control from a landed one (iOS reports the final frame at once, Android
+ * the frame in flight), so the control is found again in a fresh snapshot
+ * once the wait is over and acted on where it landed. Unmoved controls are
+ * acted on immediately only when keyboard visibility is unchanged. Opening
+ * or closing the keyboard also uses the remaining budget. Screen swipes in
+ * tests wait out the remaining budget before scrolling. Raise it for slower
+ * transitions.
+ */
+readonly transition?: number | undefined;
+```
+
+```ts
+mobile({ platform: 'ios', transition: 800 }); // default: 500
+```
+
+Se o controle mudar durante a espera, a ação volta a encontrá-lo dentro do
+próprio tempo limite antes de agir.
+
+`back`, `home`, `pressRemote`, `pressButton`, `shake`, `lock`, `unlock`, `alert`,
+`dismissKeyboard`, `setOrientation` e `fold` em [`device`](#device) mudam a tela, então contam como ações para
+esse orçamento, como um toque. Um controle que chega com a tela que eles
+revelam aguarda o fim do orçamento antes que a próxima ação chegue a ele.
+
+`fill` e `clear` releem o campo antes de digitar. Campo ausente, estado de
+segurança alterado ou captura incompleta retornam `NODE_STALE` antes de
+qualquer alteração, e a ação tenta de novo depois de uma nova observação.
+Elementos que não são campos de entrada retornam `UNSUPPORTED_CAPABILITY`. Um
+`other` do iOS, o tipo de um elemento que a plataforma não classificou, recebe
+a digitação quando tem um valor ou só texto, já que um campo desenhado sob
+medida (Compose Multiplatform, Flutter) pode aparecer assim.
+
+#### `videoTouches`
+
+```ts
+/**
+ * Whether a video recording draws agent-device's touch indicator where a
+ * test tapped. Default `true`. `false` records the plain screen, and skips
+ * the pass that draws the indicator once the recording stops: on a hosted
+ * daemon such as Expo Simulators' that pass can outlast the attempt's
+ * `cleanupTimeout`.
+ */
+readonly videoTouches?: boolean | undefined;
+```
+
+```ts
+mobile({ platform: 'ios', videoTouches: false }); // default: true
+```
+
+#### O app em teste
+
+O app é o `app` do alvo: `bundleId`, `appPath`, `launchArguments`,
+`permissions`, `identity` e `environment` estão documentados na seção
+[O app em teste](/reference/config#the-app-under-test).
+
+```ts title="e2e.config.ts"
+export default {
+  targets: [{ name: 'ios', engine: mobile({ platform: 'ios' }), app: { appPath: './build/MyApp.app' } }],
+} satisfies E2EConfig;
+```
+
+- Um alvo de dispositivo precisa de `app.bundleId` ou `app.appPath`.
+- `app.open()` inicia o app do alvo do zero. Uma tentativa não inicia nada
+  por conta própria, então um teste começa onde o anterior deixou o app.
+- `app.open(path)` abre o caminho como um link no app quando o alvo declara
+  [`app.linkBase`](/reference/config#linkbase); sem essa chave, `app.open`
+  não aceita caminho e um link passa por [`device.openLink`](#openlink).
+- `app.appPath` é o build contra o qual a suíte roda. A engine não instala
+  nada por conta própria: [`device.installApp()`](#installapp) instala esse
+  build onde a suíte indicar. Um provedor de dispositivos instala o build no
+  dispositivo que reserva.
+- Sem `bundleId`, o bundle id ou pacote instalado passa a ser o app que
+  `app.open()` inicia.
+- Declare uma `identity` quando o caminho do build muda a cada execução (com
+  uma versão nele), para que as gravações sobrevivam à mudança de nome.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Ao carregar a configuração: nenhum `app.bundleId` e nenhum `app.appPath`; um `app.url` (ainda não suportado); um link em `bundleId` (um teste abre um link com `device.openLink`); um nome de permissão desconhecido; um argumento de inicialização da Apple como `AppleLocale`, ou um item de lista que `am start` não consegue transportar, em um objeto em um alvo Android. |
+| `UNSUPPORTED_CAPABILITY` | `app.open()`, `app.restart()` ou `app.clearState()` em um alvo sem `app.bundleId` antes de o build ser instalado. |
+
+#### Argumentos de inicialização e permissões
+
+`app.launchArguments` e `app.permissions` acompanham toda nova inicialização
+do app fixado: `app.open()`, `app.restart()` e `app.clearState()`, que
+redefine as permissões junto com os dados.
+
+```ts title="e2e.config.ts"
+export default {
+  targets: [
+    {
+      name: 'pixel',
+      engine: mobile({ platform: 'android' }),
+      app: {
+        bundleId: 'com.example.app',
+        launchArguments: ['--ez', 'e2e', 'true'],
+        permissions: { camera: 'grant', notifications: 'deny' },
+      },
+    },
+  ],
+} satisfies E2EConfig;
+```
+
+- O iOS entrega os argumentos ao processo do app
+  (`ProcessInfo.processInfo.arguments`). O Android os acrescenta ao `am start`,
+  então `['--ez', 'e2e', 'true']` é um extra de intent booleano.
+- Um objeto dá um nome a cada argumento.
+  - No iOS, cada entrada vira `-name value` no formato que o
+    `NSUserDefaults` lê. Uma string que o parser poderia ler como plist ou
+    comentário, como `(draft)`, `a b` ou `//cdn`, ganha aspas. Um app que lê
+    `ProcessInfo.processInfo.arguments` recebe esse formato, com `NO` para
+    `false` e as aspas incluídas. Se o seu app lê
+    `ProcessInfo.processInfo.arguments`, use em vez disso o formato de lista
+    de `launchArguments`:
+
+    ```ts title="e2e.config.ts"
+    export default {
+      targets: [
+        {
+          name: 'iphone',
+          engine: mobile({ platform: 'ios' }),
+          app: {
+            bundleId: 'com.example.app',
+            launchArguments: ['-flag', 'false', '-title', 'a b'],
+          },
+        },
+      ],
+    } satisfies E2EConfig;
+    ```
+  - No Android, cada entrada vira um extra de `am start` do tipo do valor.
+    O app o lê com o getter de `Intent` correspondente. Um valor inteiro, como
+    `1.0`, é um `int`. O Android não lê argumentos da Apple, então
+    `AppleLanguages` ou `AppleLocale` em um objeto, em um alvo Android, falha
+    com `INVALID_CONFIG`. Uma lista de strings vai para o `am start` sem
+    alteração.
+- O `am start` divide um extra de lista em cada vírgula sem barra invertida
+  antes dela e mantém essa barra invertida. Por isso, no Android, uma lista em
+  um objeto falha com `INVALID_CONFIG` quando a lista está vazia, ou quando um
+  item está vazio, contém uma vírgula ou termina com uma barra invertida.
+
+| Valor | iOS | Android |
+| --- | --- | --- |
+| `'fr_FR'` | `-name fr_FR` | `--es name fr_FR` |
+| `'(draft)'` | `-name "(draft)"` | `--es name (draft)` |
+| `true` | `-name YES` | `--ez name true` |
+| `3` | `-name 3` | `--ei name 3`, `--el` fora do `int` do Java |
+| `1.5` | `-name 1.5` | `--ef name 1.5` |
+| `-1` | `-name "-1"` | `--ei name -1` |
+| `['fr', 'de']` | `-name (fr, de)` | `--esa name fr,de` |
+
+- Cada permissão é `grant`, `deny` ou `reset`. `deny` é uma recusa registrada
+  no iOS, onde o app recebe um não sem prompt, e uma revogação no Android,
+  onde o sistema operacional pergunta de novo quando o app solicita a
+  permissão.
+- `permissions: 'all'` concede todas as permissões que a plataforma consegue
+  definir. Ele substitui o mapa; para negar ou redefinir uma permissão,
+  nomeie as permissões em vez disso.
+  - No Android: cada permissão de tempo de execução que o manifest do app
+    declara. Permissões que não podem ser concedidas em tempo de execução,
+    como `INTERNET`, são puladas, então um app que não declara nenhuma inicia
+    sem nada alterado.
+  - Em um simulador iOS: cada serviço de privacidade que o runtime consegue
+    definir, com a localização em `always`. O simulador recusa as
+    notificações, então aceite esse prompt com `device.alert('accept')`.
+- As permissões são definidas no app, pelo nome, antes de ele iniciar, sem
+  abrir o app primeiro, já que o iOS encerra um app em execução cuja
+  permissão mudou e o Android encerra um cuja permissão foi revogada.
+- O aquecimento não passa nenhum argumento de inicialização e não toca em
+  nenhuma permissão.
+- [`device.openApp(app, { relaunch: true, launchArguments, permissions })`](#openapp)
+  faz o mesmo para uma única inicialização de qualquer app.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_CONFIG` | Em `app.permissions`: um nome de permissão fora de `DevicePermission` (nomeando a mais próxima quando é um provável erro de digitação), ou um estado diferente de `grant`, `deny` ou `reset`. Falha antes de qualquer comando no dispositivo. |
+| `INVALID_ARGUMENT` | O mesmo, em `device.openApp`. |
+
+#### Boot e preparação
+
+Os dispositivos fazem o boot em `prepare`, uma vez por execução e antes de a
+contagem de tempo da execução começar, então um boot a frio na CI nunca conta
+para o `launchTimeout`.
+
+- [`device`](#device-option) diz quais dispositivos `prepare` usa e quantos
+  workers a engine declara.
+- No iOS, `prepare` inicia o runner de automação em cada dispositivo com o
+  `prepare ios-runner` do agent-device, então a primeira inicialização do
+  runner é paga antes do primeiro teste.
+- Depois, nas duas plataformas, a preparação abre o `app.bundleId` do alvo uma
+  vez por dispositivo. Um build que a própria suíte instala sobe com o
+  primeiro `app.open()`, que reinicia esse build do zero sempre que um teste
+  pede.
+- Um dispositivo que não consegue fazer o boot, ou um runner ocupado, travado
+  ou que estourou o próprio watchdog, encerra a execução em `prepare`.
+- Um runner que não inicia por outro motivo é registrado no log e fica para a
+  primeira tentativa, e o app desse dispositivo não é aberto na preparação.
+
+Cada dispositivo registra no log uma linha com quanto tempo levou cada etapa
+da preparação, incluindo uma etapa que falhou. Um simulador iOS a frio:
+
+```text
+ℹ booting E93FA5E5-1592-43C7-9149-F1B5FE0AD5F5 (1 of 1)
+ℹ E93FA5E5-1592-43C7-9149-F1B5FE0AD5F5: boot 36.3s, iOS runner 61.6s, open dev.e2e.benchmark 9.2s
+```
+
+- `boot` é o boot do dispositivo, alguns segundos em um dispositivo que já
+  está ligado.
+- `iOS runner` é o início do runner de automação, somente no iOS.
+- `open <app>` traz o app para o primeiro plano e o inicia em um dispositivo a
+  frio. Essa etapa não aparece em um dispositivo em que a abertura é pulada,
+  como descrito acima.
+
+Uma falha comum ao abrir o app é registrada no log em uma linha própria, e a
+execução continua. Essa linha é impressa antes da linha de tempos do
+dispositivo, que mesmo assim lista a etapa `open <app>` que falhou:
+
+```text
+ℹ E93FA5E5-1592-43C7-9149-F1B5FE0AD5F5: dev.e2e.not.installed did not open (open dev.e2e.not.installed failed: Simulator device failed to launch dev.e2e.not.installed. Hint: The app bundle is not installed on this simulator. Run install before open.); the first attempt opens it
+```
+
+<Note>
+Um toque, toque duplo, multitoque, foco, marcação ou desmarcação pendente é
+cancelado quando o passo deixa de esperar por ele ou quando a execução é
+interrompida. Isso também vale para o toque que dispensa uma dica do teclado.
+
+Uma entrada já enviada ao dispositivo pode terminar mesmo assim.
+Outros comandos podem durar mais que o tempo limite de quem os chamou; a
+próxima tentativa espera que eles terminem.
+</Note>
+
+#### Capabilities
+
+| Membro do contrato | Em um dispositivo |
+| --- | --- |
+| `observe` | A árvore de acessibilidade com retângulos. Os tipos de elemento são mapeados para papéis conforme a lista em [Papéis](#roles); um `Switch` ou `CheckBox`, e um `RadioButton` do Android, carregam o estado `checked` que o dispositivo informa, e um `SecureTextField` ou um campo Android que o UIAutomator marca como `password` é um `textbox` seguro. Um campo iOS mantém um valor igual ao seu rótulo (um campo sem rótulo é nomeado pelo seu texto); o eco que o Android faz do rótulo de uma text view como valor dela é descartado. O accessibility identifier (iOS) ou o resource id (Android) é o `testId` do nó. Um nó Android é nomeado pela content description que o app definiu (o `accessibilityLabel` do React Native), ou pelo seu texto, e o `text` do nó é o que ele mostra, então uma text view com rótulo ou um campo preenchido responde a `getByLabel` pelo rótulo e a `getByText` pelo texto. Os nós também carregam os atributos `label`, `resource-id`, `class` e, no Android, `content-desc` (veja [`getAttribute`](/reference/screen#getattribute)). A dica de um campo é o atributo `placeholder` dele, esteja visível ou não. O Compose Multiplatform não informa placeholder no iOS: um campo vazio acrescenta ao rótulo o texto que desenha (`Name, Ada Lovelace`) sobre um único filho `StaticText`, então esse texto é o `placeholder` do campo e o filho fica de fora. Um campo vazio não tem valor: o Android marca uma dica visível, e o XCTest informa o placeholder de um campo iOS vazio como o valor dele, então um campo iOS cujo valor é igual ao placeholder (sem espaços nas extremidades) é lido como vazio, inclusive quando o texto foi digitado para ser exatamente igual ao placeholder. Um fato do Android é do agent-device, não da plataforma: `rect` e todo ponto estão em pixels físicos da tela; a densidade de tela que o agent-device informa ainda não é aplicada. A barra de status e a barra de navegação do Android, as janelas `com.android.systemui` de largura total ao longo das bordas da tela e os ícones de status estreitos (relógio, sinal, bateria) que o agent-device informa isoladamente dentro dessa faixa da borda ficam de fora; o painel de notificações, os diálogos do sistema e uma notificação heads-up ou outro popup recuado das laterais permanecem. Pixels sob demanda, com os limites de todo nó seguro pintados de preto. |
+| `perform` | `tap`, `doubleTap`, `multiTap`, `longPress`, `fill`, `clear`, `hover`, `check`, `uncheck`, `press` (`Enter`, `Space` ou um caractere), `swipe`, `scrollTo`, `dragTo` e `focus` em campos editáveis. `scrollTo` arrasta a partir do meio da caixa do nó, ou da tela na raiz, com até três arrastos entre duas leituras, até que uma leitura depois de um arrasto seja igual à anterior; o agent-device espera o conteúdo ficar parado antes de cada leitura, e um nó `progressbar` ou `status` não conta. Um toque em um `switch` ou `checkbox` cai no controle mais interno, já que o UIKit informa uma linha de ajustes como um único switch rotulado, com o toggle real como filho. `check` e `uncheck` precisam de um estado `checked`. Switches informam um estado nas duas plataformas, assim como um `CheckBox` nativo do Android; um checkbox ou radio do React Native só informa um quando o app define `accessibilityState.checked`. Um controle sem estado é `UNSUPPORTED_CAPABILITY`, então toque nele em vez disso. `doubleTap` são dois toques com 284 a 285 ms de intervalo no iOS (a cadência do toque XCTest do agent-device): o gesto de toque duplo do próprio agent-device chega a um `Pressable` do React Native como um único toque. Um detector com janela de 300 ms ou menos pode ler o par como dois toques simples. `multiTap` são `count` toques na mesma cadência de `doubleTap`, então a mesma ressalva sobre janelas curtas vale; um `count` acima do limite de 200 do agent-device é `UNSUPPORTED_CAPABILITY` antes de qualquer toque. A cerca de 285 ms por toque no iOS, 200 toques levam cerca de um minuto, mais que o tempo limite padrão de ação de 30 s, então passe um `timeout` maior para um `count` grande. `longPress` segura por um segundo, a menos que o teste passe `duration`, acima dos 500 ms que um `Pressable` do React Native usa em `delayLongPress` e dos limiares mais longos que os apps definem; a duração padrão do próprio agent-device é menor e é registrada como toque nesses controles. `blur`, `selectOption`, `setInputFiles`, `scrollIntoView` e `secondaryTap` não são declarados, nem `tapModifiers`, então `tap`, `doubleTap` ou `multiTap` com `modifiers` é `UNSUPPORTED_CAPABILITY`. Uma ação em um nó que um snapshot mais novo substituiu encontra o nó de novo, em vez de agir em outro elemento. |
+| `performAt` | `tap`, `doubleTap`, `longPress` e `swipeTo` em um ponto da tela sem nó, então `screen.tapAt`, `screen.doubleTapAt`, `tap({ position })`, `screen.swipe({ from, to })` e o `tap_at` do agente alcançam um controle que a árvore não lista. No iOS, enquanto o teclado virtual está aberto, um `screen.swipe({ from, to })` sem `duration` precisa ficar acima dele e, quando não fica, falha com `ACTION_FAILED` antes de qualquer envio. Com `duration`, o trajeto sai como foi dado, atravessando o teclado, como precisa um teste da dispensa interativa do teclado. Sem `hover`, `secondaryTap` ou `dragTo` em um ponto: o toque não tem nenhum deles sem um nó, então `hover_at` precisa de um controle listado. |
+| `keyboard` | `type` e `press` no campo em foco, que são o `type` e o `press` do agente sem alvo e o fallback de `type_at` e `press_at`, e `dismiss`, o `dismiss_keyboard` do agente. |
+| `locate` | Toda consulta de `screen`. Consultas por texto e por rótulo respondem com a correspondência mais interna, já que um dispositivo repete os dois nos ancestrais do nó (um input do React Native é uma host view e o campo dentro dela, ambos rotulados). No Android, uma consulta por test id, seja uma string ou uma RegExp, também corresponde a um resource id sem o prefixo `<package>:id/`, para qualquer pacote menos o `android` do framework, quando nada na tela corresponde ao id completo. `screen.locator('id=…')` é o seletor do agent-device e recebe o id completo. |
+| `validateApp` | Exige `app.bundleId` ou `app.appPath` e recusa `app.url` por enquanto, com uma nota sobre como alcançar esta máquina a partir do dispositivo da plataforma. |
+| `session` | `back`, `restart`, `reset` e `openLink`, que fica por trás de `app.open(path)` em um alvo com `app.linkBase`. Sem `open`: `app.open()` sem caminho é atendido com `restart`, a nova inicialização do app fixado; o verbo `navigate` do agente não está disponível, e `device.openLink(url)` abre um deep link ou um link web. |
+| `artifacts` | Capturas de tela com dados ocultados em `screenshots/NNN-<label>.png`; uma captura de tela que não pode ter os dados ocultados falha em vez de ser salva. Vídeo, quando o [modo de vídeo](/reference/config#video) da tentativa grava, como `video/video.mp4`, ou a gravação do próprio provedor de dispositivos. |
+| `location` | `<bundle id> / <screen title>`, a âncora do cache de replay. O título é o da barra de navegação no iOS e o da toolbar no Android. |
+| `state` | Não declarado. `test.setup` e `session:` não estão disponíveis. |
+
+### Dispositivo
+
+A fixture `device` é o gerenciamento determinístico do dispositivo. Um teste a
+chama diretamente para preparar ou verificar o estado do dispositivo.
+
+```ts
+test('offline banner', { platforms: ['android'] }, async ({ app, device, screen }) => {
+  await app.open();
+  await device.setNetwork('offline');
+  await expect(screen.getByText('You are offline')).toBeVisible();
+  await device.setNetwork('online');
+});
+```
+
+| Membro | Retorna |
+| --- | --- |
+| [`unstable_raw`](#unstable_raw) | `DeviceSession` |
+| [`locator`](#locator) | `Locator` |
+| [`setNetwork`](#setnetwork) | `Promise<void>` |
+| [`setAirplaneMode`](#setairplanemode) | `Promise<void>` |
+| [`setPermission`](#setpermission) | `Promise<void>` |
+| [`setLocation`](#setlocation) | `Promise<void>` |
+| [`clearLocation`](#clearlocation) | `Promise<void>` |
+| [`setAppearance`](#setappearance) | `Promise<void>` |
+| [`setOrientation`](#setorientation) | `Promise<void>` |
+| [`fold`](#fold) | `Promise<void>` |
+| [`setBiometrics`](#setbiometrics) | `Promise<void>` |
+| [`enrollBiometrics`](#enrollbiometrics) | `Promise<void>` |
+| [`installApp`](#installapp) | `Promise<InstalledApp>` |
+| [`uninstallApp`](#uninstallapp) | `Promise<boolean>` |
+| [`isAppInstalled`](#isappinstalled) | `Promise<boolean>` |
+| [`openApp`](#openapp) | `Promise<void>` |
+| [`openLink`](#openlink) | `Promise<void>` |
+| [`closeApp`](#closeapp) | `Promise<void>` |
+| [`clearKeychain`](#clearkeychain) | `Promise<void>` |
+| [`foregroundApp`](#foregroundapp) | `Promise<ForegroundApp>` |
+| [`viewport`](#viewport) | `Promise<ViewportSize>` |
+| [`home`](#home) | `Promise<void>` |
+| [`back`](#back) | `Promise<void>` |
+| [`pressRemote`](#pressremote) | `Promise<void>` |
+| [`pressButton`](#pressbutton) | `Promise<void>` |
+| [`shake`](#shake) | `Promise<void>` |
+| [`lock`](#lock) | `Promise<void>` |
+| [`unlock`](#unlock) | `Promise<void>` |
+| [`alert`](#alert) | `Promise<void>` |
+| [`dismissKeyboard`](#dismisskeyboard) | `Promise<void>` |
+| [`isKeyboardShown`](#iskeyboardshown) | `Promise<boolean>` |
+| [`clipboard`](#clipboard) | `Promise<string>` |
+| [`setClipboard`](#setclipboard) | `Promise<void>` |
+
+Todo método assíncrono é um passo registrado chamado `device.<method>`,
+limitado por `config.actionTimeout`. `back`, `home`, `pressRemote`, `pressButton`, `shake`, `lock`, `unlock`, `alert`, `dismissKeyboard`,
+`setOrientation` e `fold` contam como ações para o orçamento de
+[`transition`](#transition). Cada entrada abaixo mostra a declaração do seu
+membro; os tipos que elas usam estão em [Tipos](#device-fixture).
+
+| Lança | Quando |
+| --- | --- |
+| `APP_NOT_OPEN` | A sessão foi perdida. |
+| `ACTION_FAILED` | O `actionTimeout` se esgota. |
+| `UNSUPPORTED_CAPABILITY` | A plataforma não consegue rodar o comando. |
+| `ENGINE_FAILURE` | Qualquer outra coisa, com a mensagem do agent-device. Um tempo limite que o próprio dispositivo informa (um boot, o runner se conectando) mantém nessa mensagem o próprio texto e a própria dica. Um runner de automação do iOS ocupado ou travado se identifica e indica a recuperação (veja [Solução de problemas](/mobile#troubleshooting)). |
+
+#### `unstable_raw`
+
+```ts
+/**
+ * The raw driver session this test drives, for what the methods here do
+ * not cover. Calls through `client` bypass e2e: they are not steps, so the
+ * report and trace leave them out, the agent's cache does not replay them,
+ * their arguments reach the driver unredacted, and nothing waits for the
+ * screen to settle after one. Unstable: it may change or go away in any
+ * release.
+ */
+readonly unstable_raw: DeviceSession;
+```
+
+```ts
+const { client, selection } = device.unstable_raw;
+await client.apps.list(selection);
+```
+
+`client` é tipado como `DeviceSessionClient`, exportado de `@e2e-dev/mobile`.
+As operações dele são instáveis e podem mudar em qualquer versão.
+Depois que o worker descarta a sessão, ler `unstable_raw` ou `client`
+lança `INVALID_STATE`.
+
+#### `locator`
+
+```ts
+/**
+ * A locator from an agent-device selector (`'id=SW_VERSION_SPECIFIER'`,
+ * `'role=text label="26.2"'`), for nodes the closed `screen` query
+ * vocabulary cannot name. Same polling and strictness as any locator.
+ */
+locator(selector: string): Locator;
+```
+
+```ts
+await expect(device.locator('role=navigation-bar id=About')).toBeVisible();
+await expect(device.locator('role=text label="iOS Version"')).toHaveText('iOS Version');
+await device.locator('id=SW_VERSION_SPECIFIER role=button').tap();
+```
+
+Os termos do seletor e as regras deles são os do agent-device, os mesmos que
+`agent-device find ... list` aplica:
+
+- Termos: `id`, `role`, `text`, `label`, `value`, `appname`, `windowtitle`,
+  e as flags `visible`, `hidden`, `editable`, `selected`, `focused`,
+  `enabled`, `hittable`.
+- `role` recebe o tipo do agent-device, o papel que `agent-device snapshot`
+  imprime: `button`, `text`, `text-field`, `navigation-bar`, `scroll-area`,
+  `switch`, `image`. Não é o papel de `getByRole` (`textbox`).
+- Os termos de texto comparam sem diferenciar maiúsculas de minúsculas, depois
+  de juntar cada sequência de espaços em branco em um só espaço.
+- `visible` significa que o nó é tocável ou tem um frame não vazio; `hidden`
+  é o oposto.
+- `text` lê o primeiro rótulo, valor ou identificador não vazio.
+
+<Note>
+Uma ação em um seletor que corresponde a vários nós falha, enquanto uma ação
+do agent-device pula uma alternativa `||` ambígua.
+</Note>
+
+#### `setNetwork`
+
+```ts
+/**
+ * Switches an Android device's Wi-Fi. Cellular data stays on, so an
+ * emulator hands the app over to its cellular link; `setAirplaneMode(true)`
+ * cuts both. On iOS `offline` is `UNSUPPORTED_CAPABILITY`, since a
+ * simulator shares the Mac's network and simctl can only repaint its status
+ * bar; `online` sends nothing there, so a cleanup hook shared with Android
+ * passes.
+ */
+setNetwork(state: 'online' | 'offline'): Promise<void>;
+```
+
+```ts
+await device.setNetwork('offline');
+await device.setNetwork('online');
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | `offline` no iOS. |
+
+#### `setAirplaneMode`
+
+```ts
+/**
+ * Switches an Android device's airplane mode, Wi-Fi and cellular together;
+ * Android 11 or newer. On iOS, as for `setNetwork`, `true` is
+ * `UNSUPPORTED_CAPABILITY` and `false` sends nothing.
+ */
+setAirplaneMode(enabled: boolean): Promise<void>;
+```
+
+```ts
+await device.setAirplaneMode(true);
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | `true` no iOS. |
+
+#### `setPermission`
+
+```ts
+/**
+ * Grants, denies, or resets one permission for the pinned app, which need
+ * not be running. A change terminates a running app on iOS, a revoke one
+ * on Android, so it goes before the `app.open()` a test starts with.
+ */
+setPermission(permission: DevicePermission, state: PermissionState): Promise<void>;
+```
+
+```ts
+await device.setPermission('location', 'deny');
+await app.open();
+```
+
+- `permission` é uma [`DevicePermission`](#device-fixture); `state` é
+  `grant`, `deny` ou `reset`.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um nome de permissão fora de `DevicePermission` (nomeando a mais próxima quando é um provável erro de digitação), ou um estado diferente de `grant`, `deny` ou `reset`. Falha antes de qualquer comando no dispositivo. |
+
+#### `setLocation`
+
+```ts
+/**
+ * Sets the simulated location, switching location services on first on
+ * Android. A latitude outside -90 to 90, a longitude outside -180 to 180,
+ * or either one not a finite number is `INVALID_ARGUMENT`, before any
+ * device command.
+ */
+setLocation(coordinates: { latitude: number; longitude: number }): Promise<void>;
+```
+
+```ts
+await device.setLocation({ latitude: 52.23, longitude: 21.01 });
+```
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Uma latitude fora de -90 a 90, uma longitude fora de -180 a 180, ou qualquer uma das duas que não seja um número finito. Falha antes de qualquer comando no dispositivo. |
+
+#### `clearLocation`
+
+```ts
+/** Turns simulated location off; on Android that is location services off, until the next `setLocation`. */
+clearLocation(): Promise<void>;
+```
+
+```ts
+await device.clearLocation();
+```
+
+#### `setAppearance`
+
+```ts
+/** Sets the system appearance. */
+setAppearance(mode: 'light' | 'dark'): Promise<void>;
+```
+
+```ts
+await device.setAppearance('dark');
+```
+
+#### `setOrientation`
+
+```ts
+/** Rotates the device. */
+setOrientation(orientation: DeviceOrientation): Promise<void>;
+```
+
+```ts
+await device.setOrientation('landscape-left');
+```
+
+- `'portrait'`, `'portrait-upside-down'`, `'landscape-left'` ou
+  `'landscape-right'`.
+
+#### `fold`
+
+```ts
+/**
+ * Puts a foldable simulator or emulator in a hinge pose. On the iPhone Duo
+ * it resolves once agent-device reads the angle back from CoreDevice at
+ * that pose, typically 10 to 16 seconds later; `closed` lights the outer
+ * display, `half-open` (a 130° book) and `open` light the inner one. On a
+ * foldable Android emulator it sets the emulator console posture and
+ * resolves once the guest commits the matching device state, within a few
+ * seconds; `half-open` is the profile's own angle there (90° on the Pixel
+ * folds), and a fold to the cover display dismisses the lock screen it
+ * raises. Either way the app window changes size, so the next observation
+ * reads a new screen. Any device without a hinge is `UNSUPPORTED_CAPABILITY`.
+ */
+fold(pose: FoldPose): Promise<void>;
+```
+
+```ts
+await device.fold('half-open');
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O dispositivo não tem dobradiça. |
+
+#### `setBiometrics`
+
+```ts
+/**
+ * Simulates one biometric attempt on the open app. `faceid` and `touchid`
+ * work on an iOS simulator; `fingerprint` works on an Android emulator and
+ * on a phone that exposes `cmd fingerprint`. Any other pair is
+ * `UNSUPPORTED_CAPABILITY`. An Android app's prompt reads the touch
+ * only once the device has a screen lock and an enrolled fingerprint,
+ * which `enrollBiometrics` cannot set up.
+ */
+setBiometrics(sensor: BiometricSensor, result: 'match' | 'nonmatch'): Promise<void>;
+```
+
+```ts
+await device.setBiometrics('faceid', 'nonmatch');
+```
+
+- `sensor` é `'faceid'`, `'touchid'` ou `'fingerprint'`.
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | `fingerprint` no iOS, `faceid` ou `touchid` no Android ou em um dispositivo iOS físico, ou `fingerprint` em um celular Android sem `cmd fingerprint`. |
+
+#### `enrollBiometrics`
+
+```ts
+/**
+ * Enrolls or unenrolls the simulator's Face ID or Touch ID. On Android or a
+ * physical iOS device it is `UNSUPPORTED_CAPABILITY`.
+ */
+enrollBiometrics(sensor: 'faceid' | 'touchid', enrolled: boolean): Promise<void>;
+```
+
+```ts
+await device.enrollBiometrics('touchid', true);
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | Qualquer chamada no Android ou em um dispositivo iOS físico. |
+
+#### `installApp`
+
+```ts
+/**
+ * Installs a build (an iOS `.app` bundle or an Android `.apk`, resolved
+ * against the project root) on the device; without a path, the target's
+ * `app.appPath`. The engine installs nothing on its own, so a suite that runs
+ * against a build calls this once per device, in a fixture or a test.
+ * `reinstall: true` removes the app first so it starts with no data; a
+ * plain install replaces the binary and keeps its data. Resolves to the
+ * identity to `openApp` it by, which becomes the app `app.open()` launches
+ * when the target's build is installed and no `app.bundleId` is pinned.
+ */
+installApp(appPath?: string, options?: InstallAppOptions): Promise<InstalledApp>;
+```
+
+```ts
+await device.installApp(); // the target's app.appPath
+const { app } = await device.installApp('./build/MyApp.app', { reinstall: true });
+await device.openApp(app);
+```
+
+- Use-o para o build da execução ou para outro build em um caminho de
+  atualização.
+- O id resolvido é o bundle id ou pacote que o agent-device leu do build, ou
+  o `app` passado.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_STATE` | Nenhum caminho foi passado e o alvo não tem `app.appPath`; ou `reinstall: true` sem `app` passado e sem app fixado (sem `app.bundleId`, build ainda não instalado). |
+| `INVALID_ARGUMENT` | Um caminho foi passado e não existe nada nele na máquina que roda o e2e, resolvido em relação à raiz do projeto. Falha antes de qualquer comando no dispositivo. |
+| `ENGINE_FAILURE` | O agent-device não informou nenhum id e nenhum `app` foi passado; a engine falha em vez de aceitar um caminho de arquivo disfarçado de id. Veja [Solução de problemas](/mobile#troubleshooting). |
+
+#### `uninstallApp`
+
+```ts
+/**
+ * Removes an app, by bundle id or package, from the device; without one,
+ * the pinned app. Resolves to whether it was installed, so removing an app
+ * id that is not there passes. Without `app.bundleId` on the target,
+ * removing the build `installApp` pinned unpins it: `app.open()` then
+ * needs another install.
+ */
+uninstallApp(app?: string): Promise<boolean>;
+```
+
+```ts
+expect(await device.uninstallApp()).toBe(true);
+expect(await device.isAppInstalled('com.example.app')).toBe(false);
+await device.installApp(); // a fresh install, for a first-launch flow
+```
+
+- Remover o app que está na tela deixa o dispositivo na tela inicial, e
+  localizadores resolvidos antes não apontam para nada. Instale o app de novo
+  com `device.installApp()` e depois `device.openApp(app)` para continuar a
+  testá-lo.
+- A remoção permanece no dispositivo para os testes que rodam nele depois.
+  Reinstale o app antes de o teste terminar, em um bloco `finally`, ou todo
+  teste posterior nesse dispositivo que abrir o app falha em `app.open()`.
+
+| Lança | Quando |
+| --- | --- |
+| `APP_NOT_OPEN` | Nenhum `app` foi passado e nenhum está fixado (sem `app.bundleId`, build ainda não instalado). |
+
+#### `isAppInstalled`
+
+```ts
+/**
+ * Whether an app, by bundle id or package, is on the device, system apps
+ * included (Android: launchable apps only); without one, the pinned app.
+ */
+isAppInstalled(app?: string): Promise<boolean>;
+```
+
+```ts
+expect(await device.isAppInstalled('com.example.companion')).toBe(true);
+```
+
+- O nome de exibição do app, como o dispositivo o lista, também corresponde.
+
+| Lança | Quando |
+| --- | --- |
+| `APP_NOT_OPEN` | Nenhum `app` foi passado e nenhum está fixado. |
+
+#### `openApp`
+
+```ts
+/**
+ * Brings an app to the foreground by bundle id, package, or display name;
+ * `relaunch` restarts it fresh. `launchArguments` and `permissions` apply
+ * to this launch alone; the target's configured ones apply to a `relaunch`
+ * of the pinned app, and to no foreground-only open. A link is
+ * `INVALID_ARGUMENT` (`file:`, `data:`, `javascript:`, `view-source:`,
+ * `blob:`, and `filesystem:` are `POLICY_DENIED`): `openLink` opens one.
+ */
+openApp(app: string, options?: OpenAppOptions): Promise<void>;
+```
+
+```ts
+await device.openApp('Settings');
+await device.openApp('com.example.app', { relaunch: true, permissions: { camera: 'grant' } });
+await device.openApp('com.example.app', { relaunch: true, launchArguments: { AppleLocale: 'fr_FR' } });
+```
+
+- Um link é recusado antes de o dispositivo vê-lo, já que o agent-device abre
+  qualquer string `scheme:rest` como URL.
+
+| Lança | Quando |
+| --- | --- |
+| `POLICY_DENIED` | Um link `file:`, `data:`, `javascript:`, `view-source:`, `blob:` ou `filesystem:`. |
+| `INVALID_ARGUMENT` | Qualquer outro link, com uma mensagem que aponta para `openLink`; um nome ou estado de permissão inválido; ou `launchArguments` fora da forma declarada, ou um que o Android não consegue transportar (veja [Argumentos de inicialização e permissões](#launch-arguments-and-permissions)). |
+
+#### `openLink`
+
+```ts
+/**
+ * Opens a deep link (`myapp://orders/42`) or a web link (`https://...`)
+ * into `app` (default: the pinned app), which the session observes
+ * afterwards. iOS launches the app for a web link and then opens the URL;
+ * a web link the app does not claim goes to Safari, and the next
+ * observation brings the app back. Android starts the link on that
+ * package. Without an app, Android lets the OS route the link; iOS needs
+ * one (`INVALID_ARGUMENT` without). `file:`, `data:`, `javascript:`,
+ * `view-source:`, `blob:`, and `filesystem:` links are `POLICY_DENIED`.
+ */
+openLink(url: string, options?: { app?: string }): Promise<void>;
+```
+
+```ts
+await device.openLink('myapp://orders/42');
+await expect(screen.getByText('Order #42')).toBeVisible();
+```
+
+- Use-o para login por link mágico e rotas de deep link.
+- Sem um app, o Android encaminha o link ao app verificado como dono do link
+  ou ao navegador, e a sessão segue o pacote que o recebeu.
+- Um link de dispositivo pode usar o esquema personalizado de qualquer app,
+  então a regra recusa os esquemas abaixo em vez de admitir só http(s), como
+  faz a web.
+- O relatório mostra o link sem userinfo (`user:password@` ou `token@`),
+  query ou fragmento, por onde viajam um login ou o token de um link mágico.
+  Uma string que não pode ser interpretada aparece como `<link>`, nunca como
+  foi digitada.
+- O cache de replay se ancora na localização onde o link chega; veja
+  [Cache de replay em um dispositivo](#replay-cache-on-a-device).
+
+| Lança | Quando |
+| --- | --- |
+| `POLICY_DENIED` | Um link `file:`, `data:`, `javascript:`, `view-source:`, `blob:` ou `filesystem:`. |
+| `INVALID_ARGUMENT` | Nenhum app no iOS: uma abertura não vinculada a nenhum app não deixa sessão de app para observar. |
+| `INVALID_ARGUMENT` | Uma string que não pode ser interpretada como URL absoluta. A mensagem não cita nenhuma parte da entrada, que pode trazer o token de um link mágico na query, no caminho ou no userinfo. |
+
+#### `closeApp`
+
+```ts
+/**
+ * Terminates the session's app and ends the session, so the next
+ * `openApp` launches it fresh. Until then the screen is unobservable and
+ * `foregroundApp` is `APP_NOT_OPEN`.
+ */
+closeApp(): Promise<void>;
+```
+
+```ts
+await device.closeApp();
+await device.openApp('com.example.app'); // launches fresh, on its first screen
+```
+
+- Uma consulta à tela antes do próximo `openApp` também é `APP_NOT_OPEN`.
+
+#### `clearKeychain`
+
+```ts
+/**
+ * Resets the simulator's keychain, every app's, since simctl has no
+ * per-app reset: what `app.clearState()` leaves behind (a session token, a
+ * Firebase sign-in). iOS simulator only; Android is
+ * `UNSUPPORTED_CAPABILITY`. Launch the app afterwards to see it signed out.
+ */
+clearKeychain(): Promise<void>;
+```
+
+```ts
+await device.clearKeychain();
+await app.open(); // see it signed out
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | No Android, antes de qualquer comando no dispositivo. |
+
+#### `foregroundApp`
+
+```ts
+/**
+ * The app the session is on. iOS answers from the session, not the
+ * device, so it names the app the session opened even after `home()`;
+ * Android reads the device's foreground activity. `APP_NOT_OPEN` once
+ * `closeApp` ended the session.
+ */
+foregroundApp(): Promise<ForegroundApp>;
+```
+
+```ts
+const { name, bundleId } = await device.foregroundApp();
+```
+
+- No iOS, o `appstate` do agent-device não tem resposta no nível do
+  dispositivo.
+
+| Lança | Quando |
+| --- | --- |
+| `APP_NOT_OPEN` | `closeApp` encerrou a sessão. |
+
+#### `viewport`
+
+```ts
+/** Reads the screen size in the coordinate space of screen taps. */
+viewport(): Promise<ViewportSize>;
+```
+
+Retorna `{ width, height }` no espaço de coordenadas de `screen.tapAt()`,
+lido de novo a cada chamada. `ViewportSize` é exportado de `@e2e-dev/mobile`.
+
+```ts
+const { width, height } = await device.viewport();
+await screen.tapAt({ x: width / 2, y: height / 2 });
+```
+
+| Lança | Quando |
+| --- | --- |
+| `ENGINE_FAILURE` | Não é possível determinar o tamanho da tela do dispositivo. |
+
+#### `home`
+
+```ts
+/** Sends the device to its home screen. */
+home(): Promise<void>;
+```
+
+```ts
+await device.home();
+```
+
+#### `back`
+
+```ts
+/** Navigates back once (in-app back). */
+back(): Promise<void>;
+```
+
+```ts
+await device.back();
+```
+
+#### `pressRemote`
+
+```ts
+/**
+ * Presses one TV remote button: the D-pad's `'up'`, `'down'`, `'left'`,
+ * `'right'`, and `'select'`, `'back'`, `'menu'`, `'home'`, and the media
+ * keys such as `'play-pause'`. Android TV takes every button and an Apple
+ * TV the D-pad, `back`, `menu`, and `home`, where `back` and `menu` are the
+ * same Siri Remote button; any other button or device is
+ * `UNSUPPORTED_CAPABILITY`. A name outside the list is `INVALID_ARGUMENT`.
+ */
+pressRemote(key: RemoteKey): Promise<void>;
+```
+
+```ts
+await device.pressRemote('down');
+await device.pressRemote('select');
+await device.pressRemote('play-pause');
+```
+
+A maioria dos controles remotos de Android TV tem um só botão Play, que
+alterna entre reproduzir e pausar: esse é `play-pause`. `play` é a tecla Play
+dedicada.
+
+#### `pressButton`
+
+```ts
+/**
+ * Presses one hardware button: `'volume-up'`, `'volume-down'`, or
+ * `'power'`. An Android emulator or phone takes all three, and a physical
+ * iPhone or iPad the volume buttons; an iOS simulator, an Android TV, and
+ * any other device or button is `UNSUPPORTED_CAPABILITY`. A name outside
+ * the list is `INVALID_ARGUMENT`.
+ * It resolves once the press is sent, with no volume level or screen state,
+ * so assert on what the screen shows next.
+ */
+pressButton(button: HardwareButton): Promise<void>;
+```
+
+```ts
+await device.pressButton('volume-up');
+await expect(screen.getByRole('slider', { name: 'Media' })).toBeVisible();
+```
+
+No Android, pressionar um botão de volume abre o painel de volume do sistema
+sobre o app, então a próxima leitura mostra os sliders desse painel até que
+ele se esconda sozinho alguns segundos depois. `power` desliga a tela, e a
+tela não pode ser lida até ligar de novo: uma leitura ou uma ação estoura o
+tempo limite. Dois pressionamentos rápidos de `power` podem acionar o atalho
+de pressionamento duplo do celular, que abre a câmera em um emulador padrão,
+em vez de despertar o app.
+Para bloquear a tela e esperar até o dispositivo informar que ela está
+bloqueada, use [`lock`](#lock) e depois [`unlock`](#unlock).
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | `button` não é um dos três nomes. Nada é enviado ao dispositivo. |
+| `UNSUPPORTED_CAPABILITY` | O dispositivo não consegue pressionar esse botão: um simulador iOS, uma Android TV, `power` em um iPhone ou iPad, ou um dispositivo hospedado cujo backend WebDriver não expõe o botão. |
+
+#### `shake`
+
+```ts
+/**
+ * Shakes the device once: the simulator's shake gesture on an iPhone or
+ * iPad simulator, a swing of the accelerometer on an Android phone or
+ * tablet emulator. `UNSUPPORTED_CAPABILITY` on a physical device and on a
+ * device a provider drives through its own backend. It resolves once the
+ * shake is sent, so assert on what the app shows next.
+ */
+shake(): Promise<void>;
+```
+
+```ts
+await device.shake();
+await expect(screen.getByText('Report a problem')).toBeVisible();
+```
+
+Um app recebe a sacudida como receberia em um dispositivo real: um build de desenvolvimento do React Native abre o dev menu, e um app com um handler de sacudida roda esse handler.
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O dispositivo não é um que o agent-device consegue sacudir: um dispositivo físico, um alvo de TV ou de relógio, ou um dispositivo que um provedor controla pelo próprio backend, como uma sessão WebDriver ou um simulador iOS do próprio provedor. |
+| `ENGINE_FAILURE` | O console do emulador Android recusou a sacudida, como faz uma imagem sem acelerômetro. |
+
+#### `lock`
+
+```ts
+/**
+ * Locks the screen and resolves once the device reports it locked: the
+ * sleep key on an Android phone or tablet, the lock button on an iPhone or
+ * iPad simulator. A screen that is already locked stays locked. A lock
+ * that asks for a PIN, pattern, password, or passcode is locked too, but
+ * `unlock()` refuses it, so the device stays locked until someone unlocks
+ * it by hand: use Swipe on Android and no passcode on iOS.
+ * `UNSUPPORTED_CAPABILITY` on a device agent-device cannot lock (a physical
+ * iPhone or iPad, a TV, a device a provider drives through a backend that
+ * has no lock command), and on an Android device whose screen lock is set
+ * to None, which has no lock screen to show. Android 11 to 15 do not
+ * report that setting, so there the sleep key is sent, the display turns
+ * off, and the lock fails with `ENGINE_FAILURE` after about 5 seconds.
+ * Android 10 and older do not report the lock type either, so a lock or
+ * an unlock that would change the state fails with `ENGINE_FAILURE`
+ * before any key is sent.
+ */
+lock(): Promise<void>;
+```
+
+```ts
+try {
+  await device.lock();
+} finally {
+  await device.unlock();
+}
+await expect(screen.getByText('Welcome back')).toBeVisible();
+```
+
+Para bloquear a tela por um tempo, como faz o `lock(seconds)` do Appium, espere entre `lock()` e `unlock()`.
+
+Em um simulador de iPhone com tela sempre ativa, como o iPhone 17 Pro, `unlock()` pode deixar a tela apagada enquanto o dispositivo informa que está desbloqueado: o bloqueio escurece a tela em vez de apagá-la, e o gesto de deslizar do desbloqueio dispensa a tela de bloqueio sem reacender a tela. Toques e leituras da tela continuam funcionando, mas uma captura de tela mostra o último quadro antes de a tela apagar, e no iOS 26.5 todo `fill` posterior nesse simulador falha na releitura pelo resto da execução. Um iPhone sem tela sempre ativa, como o iPhone 16e, não é afetado. A causa está no desbloqueio de iOS do agent-device.
+
+A engine nunca desbloqueia o dispositivo por você. Um teste que falha com a tela bloqueada a mantém assim para o próximo teste nesse dispositivo, então desbloqueie em um bloco `finally` ou em `afterEach`. Os dois métodos rodam na sessão do app: depois de [`closeApp`](#closeapp), eles falham com `APP_NOT_OPEN` até que `openApp` abra um app, então desbloqueie antes de fechar o app.
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O dispositivo não é um que o agent-device consegue bloquear: um iPhone ou iPad físico, uma Android TV ou Apple TV, ou um dispositivo que um provedor controla pelo próprio backend sem comando de bloqueio. |
+| `UNSUPPORTED_CAPABILITY` | O bloqueio de tela do dispositivo Android está definido como None, no Android 16 ou mais recente. A mensagem diz isso; defina qualquer outro bloqueio de tela, como Swipe, em Settings > Security. |
+| `ACTION_FAILED` | `actionTimeout` expirou antes de o dispositivo informar que a tela estava bloqueada. Em um dispositivo Android com PIN, padrão ou senha e com “Power button instantly locks” desativado, o keyguard espera o “Lock after screen timeout”, de até um minuto; aumente `actionTimeout` ou ative essa configuração. |
+| `ENGINE_FAILURE` | O dispositivo não informou que a tela estava bloqueada: no Android, em até 5 segundos, mais o atraso de “Lock after screen timeout”, de até um minuto. No Android 11 a 15 com o bloqueio de tela definido como None, esta é a falha, com a mensagem `still reports the keyguard hidden`, e a tela fica desligada. |
+| `ENGINE_FAILURE` | Android 10 ou anterior, com a tela desbloqueada: o agent-device não consegue ler o tipo de bloqueio (`Unable to read the screen lock type`), e nenhuma tecla é enviada. |
+
+#### `unlock`
+
+```ts
+/**
+ * Unlocks the screen and resolves once the device reports it unlocked.
+ * Nothing brings an app to the front: check the screen you expect next.
+ * Android wakes the screen and dismisses
+ * the keyguard, an iOS simulator swipes up from the bottom edge. A display
+ * that is off turns on even when the screen is not locked (Android always
+ * sends its wake key); an unlocked screen that is on stays as it is. The
+ * exception is an iPhone simulator with an always-on display, such as the
+ * iPhone 17 Pro: the unlock can leave its display off, and on iOS 26.5 the
+ * text a later fill types does not reach the app. It never
+ * enters a PIN, pattern, password, or passcode: a lock that asks for one is
+ * `UNSUPPORTED_CAPABILITY`, and so is a device agent-device cannot lock (a
+ * physical iPhone or iPad, a TV, a device a provider drives through a
+ * backend that has no lock command).
+ */
+unlock(): Promise<void>;
+```
+
+```ts
+await device.unlock();
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O bloqueio pede um PIN, padrão, senha ou código de acesso. A mensagem diz qual; desbloqueie o dispositivo manualmente ou remova a credencial. |
+| `UNSUPPORTED_CAPABILITY` | O dispositivo não é um que o agent-device consegue bloquear: um iPhone ou iPad físico, uma Android TV ou Apple TV, ou um dispositivo que um provedor controla pelo próprio backend sem comando de bloqueio. Um dispositivo Android com o bloqueio de tela definido como None não é recusado: `unlock()` o desperta. |
+| `ENGINE_FAILURE` | O dispositivo ainda informava a tela bloqueada depois do desbloqueio. |
+| `ENGINE_FAILURE` | Android 10 ou anterior, com a tela bloqueada: o agent-device não consegue ler o tipo de bloqueio (`Unable to read the screen lock type`), e nenhuma tecla é enviada. |
+
+#### `alert`
+
+```ts
+/** Accepts or dismisses the visible system alert. */
+alert(action: 'accept' | 'dismiss'): Promise<void>;
+```
+
+```ts
+await device.alert('accept');
+```
+
+#### `dismissKeyboard`
+
+```ts
+/**
+ * Dismisses the soft keyboard. Android hides it directly. iOS has no such
+ * call, on an iPhone or an iPad, so there it goes the way a user sends it
+ * away: a short drag that a scroll view turns into a dismissal, horizontal
+ * first and vertical second, stopping as soon as the keyboard is gone. Each
+ * drag starts at the point nearest the centre of the screen that no control
+ * in the captured accessibility tree covers, inside a scroll view when the
+ * screen has one, to avoid pressing a button or toggling a checkbox. A
+ * control the tree leaves out, such as pressable text, can still be hit. The
+ * simulator's "Speed up your typing" tip goes through its Continue button
+ * first. A screen with no clear point above the keyboard, a keyboard reported
+ * up with no frame and no keyboard element on screen (so no point is known
+ * to be above it), or a keyboard that outlives both drags, fails with
+ * `UNSUPPORTED_CAPABILITY`; the message names the alternatives (the app's
+ * own Done or close control, or pressing Enter on the field).
+ */
+dismissKeyboard(): Promise<void>;
+```
+
+```ts
+await device.dismissKeyboard();
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | Todo ponto acima do teclado (em um contêiner de rolagem, quando a tela tem um) está sobre um controle, o agent-device informa o teclado aberto sem frame e sem elemento de teclado na tela, ou o teclado continua aberto depois dos dois arrastos. |
+
+#### `isKeyboardShown`
+
+```ts
+/**
+ * Whether the soft keyboard is on screen, from a capture (taken again,
+ * within the action timeout, while the keyboard is still moving): what
+ * agent-device reported for it (a visibility probe, a measured or derived
+ * keyboard frame, or proof that there is none), else the keyboard or a key
+ * drawn on screen in the accessibility tree (the suggestion strip alone,
+ * as with a hardware keyboard, is not one). Only agent-device's proof
+ * answers `false`. Fails when the capture cannot answer: `ENGINE_FAILURE`
+ * while the keyboard is moving or the tree is still incomplete,
+ * `UNSUPPORTED_CAPABILITY` when agent-device did not prove the keyboard
+ * absent and the tree lists none. It reads the screen as it is now, so
+ * right after an action that opens or closes the keyboard, poll it with
+ * `expect.poll`. A poll reads again after any error: an `ENGINE_FAILURE`
+ * clears once the keyboard settles, while an `UNSUPPORTED_CAPABILITY`
+ * that lasts (a provider that cannot read the keyboard at all) makes the
+ * poll wait out its whole timeout before it fails.
+ * Changes nothing on the device.
+ */
+isKeyboardShown(): Promise<boolean>;
+```
+
+```ts
+await screen.getByTestId('email-input').fill('jane@example.com');
+await device.dismissKeyboard();
+await expect.poll(() => device.isKeyboardShown()).toBe(false);
+```
+
+| Lança | Quando |
+| --- | --- |
+| `ENGINE_FAILURE` | O agent-device não mediu nada e a árvore que ele retornou estava esparsa ou cortada, ou ele encontrou elementos de teclado mas rejeitou a posição deles e nenhum está desenhado na tela, como enquanto o teclado entra ou sai deslizando. Leia de novo; `expect.poll` faz isso. |
+| `UNSUPPORTED_CAPABILITY` | A árvore não mostra teclado nem tecla desenhados na tela (a barra de sugestões sozinha não conta), e o agent-device não provou que o teclado está ausente: por exemplo, uma captura Android sem a janela do método de entrada, um provedor WebDriver sem verificação do teclado, ou nenhuma leitura do teclado. A mensagem diz o motivo. Quando o erro persiste, `expect.poll` espera todo o tempo limite antes de falhar. |
+
+#### `clipboard`
+
+```ts
+/** Reads the clipboard. */
+clipboard(): Promise<string>;
+```
+
+```ts
+const copied = await device.clipboard();
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O build do Android não tem comando de shell para o serviço de área de transferência. |
+
+#### `setClipboard`
+
+```ts
+/** Writes the clipboard. */
+setClipboard(text: string): Promise<void>;
+```
+
+```ts
+await device.setClipboard('SAVE20');
+```
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_CAPABILITY` | O build do Android não tem comando de shell para o serviço de área de transferência. |
+
+### Ferramentas do agente
+
+`mobileTools(...engines)` de `@e2e-dev/mobile/tools` adiciona ferramentas de
+dispositivo ao `tools` de um agente.
+
+```ts
+tools: mobileTools(iphone, pixel),
+```
+
+- Recebe pelo menos uma engine. Passe todas as engines de dispositivo em uma
+  única chamada; as ferramentas usam a engine da tentativa atual.
+
+| Ferramenta | Replay | Finalidade |
+| --- | --- | --- |
+| `open_app` | lacuna | Traz um app para o primeiro plano pelo id, opcionalmente reiniciado. Sem id, volta para o app do alvo. Um link é recusado, como em `device.openApp`. |
+| `swipe` | lacuna | Gesto de deslizar livre entre dois pontos, em pixels lógicos. |
+| `alert` | lacuna | Aceita ou dispensa um alerta do sistema; prefira um botão listado, cujo toque o cache reproduz. |
+
+`tvTools(...engines)` adiciona o controle remoto da TV para engines que
+controlam uma Android TV ou uma Apple TV. É um pacote à parte, então uma
+configuração sem TV não oferece controle remoto.
+
+```ts
+tools: { ...mobileTools(tv), ...tvTools(tv) },
+```
+
+As ferramentas são oferecidas por plataforma. Quando um alvo de celular
+compartilha a plataforma da TV, coloque `tvTools` em um
+[agente nomeado](/reference/config#agents) e selecione esse agente nos testes
+de TV.
+
+| Ferramenta | Replay | Finalidade |
+| --- | --- | --- |
+| `tv_remote` | lacuna | Pressiona o [botão do controle remoto](#pressremote) indicado em `key`, até 20 vezes (`times`) por chamada. |
+
+`foldTools(...engines)` adiciona a dobradiça para engines que controlam um
+dobrável: o simulador iPhone Duo ou um emulador Android dobrável. Com esse
+pacote no `tools` do agente, `agent.act`, `e2e explore` e o `call` do servidor
+MCP podem dobrar o dispositivo.
+
+```ts
+tools: { ...mobileTools(iphoneDuo), ...foldTools(iphoneDuo) },
+```
+
+- As ferramentas são oferecidas por plataforma, como com `tvTools`. Quando um
+  dispositivo sem dobradiça compartilha a plataforma do dobrável, coloque
+  `foldTools` em um [agente nomeado](/reference/config#agents) e selecione
+  esse agente nos testes do dobrável.
+- A engine nunca redefine a posição, então a posição em que o agente deixa o
+  dispositivo passa para o próximo teste. Dobre de volta em `afterEach`, como
+  com [`device.fold`](#fold).
+
+| Ferramenta | Replay | Finalidade |
+| --- | --- | --- |
+| `fold` | lacuna | Coloca o dispositivo em uma [`pose`](#fold) da dobradiça: `closed`, `half-open` ou `open`. Um dispositivo sem dobradiça falha com `UNSUPPORTED_CAPABILITY`. |
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_STATE` | Uma engine que `mobile()` não retornou. Na configuração, isso faz o carregamento falhar como `CONFIG_LOAD_FAILED`, cuja mensagem inclui esta. |
+
+Uma ferramenta que falha durante um passo do agente embutido retorna
+`Tool "<name>" failed: <message>` ao modelo como resultado da chamada; o passo
+continua. `open_app` falha com `INVALID_STATE` quando não nomeia nenhum app,
+o alvo não tem `app.bundleId` e nada instalou ainda o build de `app.appPath`
+(nenhum `device.installApp()`, nenhuma instalação por um provedor de
+dispositivos); com `INVALID_ARGUMENT` quando nomeia um app que não está
+instalado, ou um link; e com `POLICY_DENIED` para um link com esquema
+proibido. Qualquer ferramenta falha com `INVALID_STATE` quando nenhuma
+tentativa de dispositivo está rodando, ou quando várias tentativas de
+dispositivo estão rodando em um mesmo worker.
+
+Os verbos da gramática não precisam de pacote de ferramentas. As ações que a
+engine declara dão ao agente:
+
+- `tap`, `double_tap`, `long_press`, `hover`, `type`, `press`, `check`,
+  `scroll`, `drag`, `scroll_to` por `text` (paginando a lista até que uma
+  linha com esse texto seja desenhada), `back` e `dismiss_keyboard`.
+- As ferramentas de pixels `screenshot`, `tap_at`, `hover_at` (só sobre um
+  controle listado), `drag_at` (só entre dois controles listados diferentes),
+  `type_at` e `press_at`. Ações de ponto podem tocar controles ausentes da
+  árvore de acessibilidade.
+- `type_secret`, que preenche apenas um segredo que o passo declara.
+
+Não há `right_click`, `select`, `scroll_to` por id do nó, `upload` nem
+`navigate` em um dispositivo, e `select_at` não é oferecido.
+
+<Note>
+Pixels cujo mascaramento a engine não consegue provar são retidos como `MASKING_UNPROVEN`. Uma falha
+na captura de acessibilidade interrompe a observação mesmo assim. As máscaras
+das capturas de tela do dispositivo dependem dos limites dos campos seguros
+obtidos nessa captura, então, sem eles, a engine não consegue provar que uma
+captura de tela de fallback é segura.
+</Note>
+
+#### `unstable_deviceSession`
+
+`unstable_deviceSession(...engines)` de `@e2e-dev/mobile/tools` dá a uma ferramenta personalizada
+o `DeviceSession` da tentativa em andamento, o mesmo objeto que um teste lê em
+[`device.unstable_raw`](#unstable_raw). O `client` desse objeto é vinculado ao
+daemon, à reserva e à sessão por worker da engine, para recursos que o e2e
+ainda não encapsula. Esse `client` é tipado como `DeviceSessionClient`.
+O exemplo a seguir supõe que o driver atual suporta `settings.update`.
+
+```ts
+import { tool } from 'ai';
+import { z } from 'zod';
+import { defineTool } from 'e2e/agent';
+import { unstable_deviceSession } from '@e2e-dev/mobile/tools';
+
+const mobileData = defineTool(
+  tool({
+    description: 'Turn cellular mobile data on or off. Wi-Fi is not affected.',
+    inputSchema: z.object({ on: z.boolean() }),
+    execute: async ({ on }) => {
+      const { client, selection } = unstable_deviceSession(iphone, pixel);
+      await client.settings.update({ ...selection, setting: 'mobile-data', state: on ? 'on' : 'off' });
+      return on ? 'mobile data is on' : 'mobile data is off';
+    },
+  }),
+  { mutates: true, platforms: ['android'] },
+);
+
+tools: { ...mobileTools(iphone, pixel), mobileData },
+```
+
+- Passe todas as engines de dispositivo que a configuração declara, como com
+  `mobileTools`. Fora de uma tentativa, a função lança `INVALID_STATE`.
+- Espalhe `selection` em uma chamada para que a chamada chegue ao dispositivo
+  do worker mesmo antes de a sessão ter um app aberto, como fazem as chamadas
+  da própria engine.
+- Chamadas do cliente não são passos: o relatório mostra a chamada da
+  ferramenta, não o que o cliente fez, e um replay do cache roda ao vivo uma
+  ferramenta `mutates: true`.
+- Chamadas do cliente pulam as proteções do e2e, como com `unstable_raw`. Um
+  snapshot ou uma captura de tela que uma ferramenta retorna não é ocultado
+  nem mascarado, mesmo depois do preenchimento de um segredo, nada espera a
+  tela se estabilizar depois de uma chamada, e uma ferramenta cujas chamadas
+  alteram o dispositivo precisa declarar `mutates: true`.
+- Como `unstable_raw`, essa função pode mudar em qualquer versão.
+
+## Papéis
+
+Em um dispositivo, `getByRole` corresponde ao papel para o qual cada tipo de
+elemento é mapeado. Um tipo fora da lista mantém o próprio nome em kebab case
+minúsculo (`picker-wheel`), então só corresponde a um papel de `getByRole`
+quando esse nome é um desses papéis (`group`, `table`).
+Um nó que a plataforma informa como editável é um `textbox`, a menos que já
+seja mapeado para `combobox`.
+
+| Papel | iOS | Android |
+| --- | --- | --- |
+| `button` | `Button` | `Button`, `ImageButton`, `MaterialButton` |
+| `link` | `Link` | |
+| `textbox` | `TextField`, `SearchField`, `TextView`, `SecureTextField` | `EditText`, `AutoCompleteTextView`, `TextInputEditText`, `SearchView` |
+| `combobox` | | `Spinner` |
+| `switch` | `Switch`, `Toggle` | `Switch`, `SwitchCompat`, `SwitchMaterial`, `ToggleButton` |
+| `checkbox` | `CheckBox` | `CheckBox`, `MaterialCheckBox` |
+| `radio` | `RadioButton` | `RadioButton` |
+| `radiogroup` | `RadioGroup` | `RadioGroup` |
+| `slider` | `Slider` | `SeekBar`, `Slider` |
+| `spinbutton` | `Stepper` | `NumberPicker` |
+| `progressbar` | `ProgressIndicator` | `ProgressBar` |
+| `status` | `ActivityIndicator` | |
+| `image` | `Image`, `ImageView` | `ImageView` |
+| `heading` | `Heading`, `Header` | Uma view marcada como título |
+| `list` | | `RecyclerView`, `ListView`, `AbsListView` (o `FlatList` do React Native), `GridView` |
+| `listitem` | `Cell`, `ListItem`, `TableCell`, `CollectionCell` | |
+| `row` | `TableRow` | |
+| `tablist` | `TabBar`, `TabGroup`, `SegmentedControl` | `TabLayout`, `TabWidget`, `BottomNavigationView` |
+| `tab` | `Tab`, `TabBarItem`, `TabBarButton` e um `Button` dentro de um `TabBar` ou de um `SegmentedControl` | `TabLayout$TabView`, `BottomNavigationItemView` |
+| `menu` | `Menu` | |
+| `menubar` | `MenuBar` | |
+| `menuitem` | `MenuItem`, `MenuBarItem`, `MenuButton` | |
+| `toolbar` | `Toolbar` | `Toolbar` |
+| `alert` | `Alert` | |
+| `dialog` | `Dialog`, `Sheet`, `ActionSheet` | |
+| `navigation` | `NavigationBar` | |
+| `group` | | `ScrollView`, `ViewGroup`, `View`, `ComposeView`, `ViewFactoryHolder`, `CardView` e qualquer outro `*Layout` |
+
+Quando a plataforma não tem tipo para um papel, o React Native escreve esse
+papel no valor de acessibilidade no iOS (`checkbox, unchecked`) e na descrição
+do papel no Android (`Tab List`). Um nó com uma dessas descrições recebe o papel
+da descrição no lugar do papel do próprio tipo: `alert`, `checkbox`,
+`combo box`, `menu`, `menu bar`, `menu item`, `progress bar`, `radio button`,
+`radio group`, `scroll bar`, `spin button`, `switch`, `tab`, `tab list`, `timer`
+e `tool bar`. Os papéis `scrollbar` e `timer` que `scroll bar` e `timer` geram
+não são papéis de `getByRole`. No iOS, só um `Other` traz uma dessas descrições,
+e as palavras de estado depois do papel definem `checked` e `expanded`; só o que
+vem depois dessas palavras é o valor do nó.
+
+`StaticText` e `Text` no iOS e `TextView` no Android são `text`, e uma
+`WebView` do Android é `document`. Nenhum dos dois é um papel de `getByRole`:
+encontre texto com `getByText`.
+
+## Visibilidade
+
+Um nó de dispositivo fica oculto quando a plataforma informa que ele está fora
+da tela, ou quando o teclado virtual cobre o centro do nó. Assim,
+`toBeVisible()`, `scrollUntilVisible` e `getByRole` tratam um campo sob o
+teclado como um campo que rolou para fora da vista. As teclas, a barra de
+sugestões e o dock do próprio teclado continuam visíveis, assim como o campo
+em foco.
+
+- A área do teclado é o frame que o agent-device mede. Quando uma captura não
+  tem frame, a área vai do topo do teclado na árvore até a base da tela.
+- Um contêiner cujo centro está sob o teclado continua visível enquanto um
+  dos filhos do contêiner aparece acima do teclado.
+- Um nó sob outra view, como um rodapé que o teclado levanta, não fica
+  oculto. Um toque nesse nó falha com `ACTION_FAILED` quando o agent-device
+  encontra a cobertura, e a mensagem nomeia a cobertura. Um toque sob o
+  teclado falha da mesma forma. Feche a cobertura, ou role o alvo até que
+  ele fique descoberto.
+
+## Limpeza da gravação de vídeo
+
+Um encerramento pendente da gravação de tela do agent-device é compartilhado
+com chamadores posteriores e com a limpeza da tentativa. Cancelar a espera de
+um chamador não repete o encerramento nem descarta a conclusão que o
+encerramento venha a ter. Se o encerramento no dispositivo falhar, a limpeza
+pode repeti-lo. Um chamador cancelado informa o cancelamento mesmo assim.
+
+Uma gravação do provedor que falha ao ser encerrada continua pertencendo ao
+próprio worker. A engine repete o encerramento no fim da tentativa, antes de
+outra tentativa nesse worker e durante o descarte do worker. Um encerramento
+pendente é compartilhado. Cada repetição usa o diretório de vídeo da
+tentativa original.
+
+A próxima tentativa só começa depois que o provedor confirma o encerramento.
+Uma espera de encerramento que falha ou é cancelada impede essa tentativa de
+começar.
+Encerramentos confirmados não se repetem se o artefato retornado for inválido.
+Uma falha no encerramento do provedor, sozinha, não fecha uma sessão saudável
+do agent-device durante a substituição do worker.
+
+Uma gravação recuperada por uma repetição não entra no relatório: o arquivo
+dela pode ficar no diretório de vídeo da tentativa original, e uma URL
+retornada é descartada. Um vídeo obrigatório cujo primeiro encerramento falhou
+continua sendo uma falha de limpeza.
+
+Essas referências às gravações não sobrevivem à saída do worker. No fim da
+execução, a engine fecha as próprias sessões do agent-device e o provedor libera
+as próprias reservas. Os provedores precisam limpar qualquer gravação externa
+que restar ao liberar uma reserva. Fechar uma sessão do agent-device não garante
+que uma gravação arbitrária na nuvem seja encerrada. Um callback de encerramento
+do provedor que falhou não confirma que a gravação foi encerrada.
+
+## Cache de replay em um dispositivo
+
+O cache de replay se ancora na [`location`](#capabilities) que um dispositivo
+informa, `<bundle id> / <screen title>`. Um passo gravado em
+`com.apple.Preferences / General` só é reproduzido quando o app Settings está
+de novo em General.
+
+```ts
+await app.open();
+await screen.getByText('General').tap();
+await agent.act('Open About and read the iOS version');
+```
+
+- Uma chamada a uma ferramenta do projeto que altera o estado, como `open_app`,
+  encerra um replay.
+- Declare `app.bundleId` e chame `app.open()` primeiro, para que os passos
+  comecem na mesma tela.
+- Troque de app pela fixture `device` entre os passos, não dentro de um
+  passo.
+- Um passo gravado depois de [`device.openLink`](#openlink) é reproduzido
+  quando o link leva de novo à mesma tela.
+
+## Tipos
+
+### Opções da engine
+
+Cada membro de `MobileOptions` é declarado, com o próprio JSDoc, na entrada
+correspondente em [Engine](#engine).
+
+```ts
+/** A permission's state: held, refused, or not asked for yet, so the OS asks again. */
+export type PermissionState = 'grant' | 'deny' | 'reset';
+
+/**
+ * Permissions an app holds when it launches, by name, or `'all'` to grant
+ * every one the platform can. On Android that is each runtime permission the
+ * app declares; the rest are skipped. On an iOS simulator it is each privacy
+ * service the runtime can set, location `always` included. The simulator
+ * refuses to set notifications.
+ */
+export type LaunchPermissions = Readonly<Partial<Record<DevicePermission, PermissionState>>> | 'all';
+```
+
+### Fixture de dispositivo
+
+Cada membro de `Device` é declarado, com o próprio JSDoc, na entrada
+correspondente em [Dispositivo](#device).
+
+```ts
+/** How `device.openApp` launches an app. */
+export interface OpenAppOptions {
+  /** Terminate the app first, so it starts fresh; without it a running app is brought forward as it is. */
+  readonly relaunch?: boolean;
+  /**
+   * Arguments this launch hands the app, a list or an object like
+   * `app.launchArguments`: its process arguments on iOS, `am start`
+   * arguments on Android. Replaces the target's `app.launchArguments` for a
+   * relaunch of the pinned app.
+   */
+  readonly launchArguments?: LaunchArguments;
+  /**
+   * Permissions the app holds before this launch, each granted, denied, or
+   * reset, or `'all'` to grant every one the platform can. Replaces the
+   * target's `app.permissions` for a relaunch of the pinned app.
+   */
+  readonly permissions?: LaunchPermissions;
+}
+
+/** Permissions agent-device can grant, deny, or reset on an app. */
+export type DevicePermission =
+  | 'camera'
+  | 'microphone'
+  | 'photos'
+  | 'contacts'
+  | 'notifications'
+  | 'calendar'
+  | 'location'
+  | 'reminders'
+  | 'motion'
+  | 'siri'
+  | 'media-library';
+
+/** A TV remote key `device.pressRemote` takes. */
+export type RemoteKey =
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'select'
+  | 'back'
+  | 'menu'
+  | 'home'
+  | 'play'
+  | 'pause'
+  | 'play-pause'
+  | 'stop'
+  | 'rewind'
+  | 'fast-forward'
+  | 'next'
+  | 'previous';
+
+/** A hardware button `device.pressButton` takes. */
+export type HardwareButton = 'volume-up' | 'volume-down' | 'power';
+
+/** Orientations `setOrientation` accepts. */
+export type DeviceOrientation = 'portrait' | 'portrait-upside-down' | 'landscape-left' | 'landscape-right';
+
+/** Hinge poses `device.fold` accepts: `closed` lights the outer display, `half-open` and `open` the inner one. */
+export type FoldPose = 'closed' | 'half-open' | 'open';
+
+/** How `device.installApp` installs a build. */
+export interface InstallAppOptions {
+  /**
+   * Bundle id or package of the build. `reinstall` needs one: agent-device
+   * removes that app before installing. Defaults to the pinned app.
+   */
+  readonly app?: string;
+  /** Remove the installed app first so the build starts with no data. */
+  readonly reinstall?: boolean;
+}
+
+/** What an install put on the device, as agent-device identified it. */
+export interface InstalledApp {
+  /** The bundle id or package to open the app by. */
+  readonly app: string;
+  readonly bundleId?: string;
+}
+
+/** The app in the foreground, as `foregroundApp` reports it. */
+export interface ForegroundApp {
+  readonly name: string;
+  readonly bundleId?: string;
+}
+
+/** Sensors `setBiometrics` simulates. */
+export type BiometricSensor = 'faceid' | 'touchid' | 'fingerprint';
+
+/** The raw driver session behind `device`; see `Device.unstable_raw`. */
+export interface DeviceSession {
+  readonly platform: MobilePlatform;
+  /** The raw driver session name: `e2e-<target>-<worker slot>` (`e2e-<target>-<hostId>-<worker slot>` for a `launch()` host), or `<session>-<worker slot>` with the `session` option. */
+  readonly session: string;
+  /** The device id: a simulator UDID or an Android serial. */
+  readonly deviceId: string;
+  readonly deviceName: string;
+  /** The device selection the engine passes commands; spread it into a call that can run before `app.open()`. */
+  readonly selection: DeviceSelection;
+  /** The raw driver client, bound to this session. */
+  readonly client: DeviceSessionClient;
+}
+
+/** The fields agent-device commands select a device by: the platform, then one of a name, a simulator UDID, or an Android serial. */
+export interface DeviceSelection {
+  readonly platform: MobilePlatform;
+  readonly device?: string;
+  readonly udid?: string;
+  readonly serial?: string;
+}
+```
+
+### Tipos exportados
+
+`MobileEngine`, `MobileOptions`, `MobilePlatform`, `DevicePermission`, `LaunchPermissions`,
+`PermissionState`, `DeviceClientConfig`, `DeviceConnection`, `DeviceDaemon`,
+`DeviceProvider`, `DeviceLease`, `DeviceReleaseContext`, `DeviceRequest`,
+`Device`, `DeviceSession`, `DeviceSessionClient`, `DeviceSelection`, `DeviceOrientation`, `BiometricSensor`, `ForegroundApp`,
+`FoldPose`, `InstallAppOptions`, `InstalledApp` e `OpenAppOptions` são exportados de
+`@e2e-dev/mobile`. As exportações de tempo de execução são `mobile` e `test`,
+`describe`, `beforeEach`, `afterEach`, `beforeAll` e `afterAll`, tipados com a
+fixture `device`. Um dispositivo mantém o estado entre testes, então `device`,
+`app` e `screen` são [fixtures de worker](/reference/test#worker-fixtures), e
+`beforeAll` e `afterAll` recebem essas fixtures. `mobileTools`, `tvTools` e
+`foldTools` vêm de `@e2e-dev/mobile/tools`.
+
+## Relacionados
+
+O guia [Mobile](/mobile) cobre a configuração, os dispositivos hospedados e a
+solução de problemas.
+Os métodos portáteis de ciclo de vida estão em [`app`](/reference/app).

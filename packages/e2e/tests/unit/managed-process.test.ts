@@ -127,6 +127,57 @@ describe('ManagedProcess', () => {
     await settling;
     expect(settled).toBe(true);
   }, 20_000);
+
+  it.skipIf(process.platform === 'win32')('waits for an in-flight stop when stop is called a second time concurrently', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-mp-stop-race-'));
+    const stoppingFile = path.join(dir, 'stopping');
+    const releaseFile = path.join(dir, 'release');
+    const stoppedFile = path.join(dir, 'stopped');
+    const port = await freePort();
+    const app = new ManagedProcess(
+      'app.command',
+      {
+        executable: process.execPath,
+        args: ['-e', `
+          const fs = require('node:fs');
+          process.on('SIGTERM', () => {
+            fs.writeFileSync(${JSON.stringify(stoppingFile)}, '1');
+            const timer = setInterval(() => {
+              if (!fs.existsSync(${JSON.stringify(releaseFile)})) return;
+              clearInterval(timer);
+              fs.writeFileSync(${JSON.stringify(stoppedFile)}, '1');
+              process.exit(0);
+            }, 10);
+          });
+          require('node:http').createServer((_request, response) => response.end()).listen(${port}, '127.0.0.1');
+        `],
+        startupTimeout: 10_000,
+        shutdownTimeout: 10_000,
+      },
+      dir,
+      { readyUrl: `http://127.0.0.1:${port}/` },
+    );
+    try {
+      await app.start(new AbortController().signal);
+      const firstStop = app.stop();
+      await expect.poll(() => fs.existsSync(stoppingFile), { timeout: 5_000 }).toBe(true);
+      let secondReturned = false;
+      const secondStop = app.stop().then(() => {
+        secondReturned = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(secondReturned).toBe(false);
+      expect(fs.existsSync(stoppedFile)).toBe(false);
+      fs.writeFileSync(releaseFile, '1');
+      await Promise.all([firstStop, secondStop]);
+      expect(secondReturned).toBe(true);
+      expect(fs.existsSync(stoppedFile)).toBe(true);
+    } finally {
+      fs.writeFileSync(releaseFile, '1');
+      await app.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 /** Prints one line to stdout and one to stderr, then exits with `exitCode`. */

@@ -9,12 +9,15 @@
 
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { PackageManager } from '../../internal/package-manager.ts';
+import { execArgv, type ProjectManager } from '../../internal/package-manager.ts';
+import { isPlainObject } from '@e2e-dev/core/lib/internal/options';
 import { realpathOfExisting } from '@e2e-dev/core/lib/internal/paths';
 import { MCP_LOCATIONS } from './choices.ts';
 import { readCodexConfig, updateCodexConfig } from './codex-config.ts';
 
 const MCP_SERVER_NAME = 'e2e';
+
+type McpProject = Pick<ProjectManager, 'manager' | 'yarnBerry'>;
 
 export interface McpRegistration {
   /** Project-relative file, e.g. `.mcp.json`. */
@@ -98,15 +101,32 @@ export function findRegisteredMcpFiles(cwd: string): string[] {
 }
 
 /**
+ * How a client starts the server from the project with e2e installed: through
+ * the project's own package manager. `npx` exits before the handshake in a
+ * project whose `devEngines` pins another manager, and finds no binary in a
+ * Yarn Plug'n'Play install; a Bun project may have no Node.js for it at all.
+ */
+function mcpLaunch(project: McpProject, existing: unknown): { readonly command: string; readonly args: readonly string[] } {
+  const { command, args } = execArgv(project);
+  return { command, args: [...args, 'e2e', 'mcp', ...serverArguments(existing)] };
+}
+
+/** What an existing entry passes to `e2e mcp` itself, after a launcher that names the package, as `npx -y e2e@0.25.0 mcp` does. */
+function serverArguments(existing: unknown): readonly string[] {
+  const args: unknown = isPlainObject(existing) ? existing['args'] : undefined;
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return [];
+  const server = args.findIndex((arg, index) => /^e2e(?:@.+)?$/u.test(arg) && args[index + 1] === 'mcp');
+  return server === -1 ? [] : args.slice(server + 2);
+}
+
+/**
  * Plans the writes for the given files. A file without the entry gets it
  * merged in; one whose entry already matches needs nothing and is left out.
- * Extra settings on the e2e entry, other servers, other keys, and the file's
- * indentation are preserved. A file reached through a symlink is never read;
+ * Extra settings on the e2e entry, the arguments it passes to `e2e mcp`,
+ * other servers, other keys, and the file's indentation are preserved. A file reached through a symlink is never read;
  * it is returned among `links` for the caller to report and skip.
  */
-export function planMcpRegistration(cwd: string, files: readonly string[], manager: PackageManager): McpPlan {
-  // How clients start the server from the project with e2e installed; a Bun project may have no Node.js, so no npx.
-  const launch = { command: manager === 'bun' ? 'bunx' : 'npx', args: ['e2e', 'mcp'] };
+export function planMcpRegistration(cwd: string, files: readonly string[], project: McpProject): McpPlan {
   const registrations: McpRegistration[] = [];
   const links: McpLink[] = [];
   for (const file of files) {
@@ -123,9 +143,8 @@ export function planMcpRegistration(cwd: string, files: readonly string[], manag
         ? document[serverKey]
         : {};
     const existing = servers[MCP_SERVER_NAME];
-    const entry = typeof existing === 'object' && existing !== null && !Array.isArray(existing)
-      ? { ...existing, ...launch }
-      : launch;
+    const launch = mcpLaunch(project, existing);
+    const entry = isPlainObject(existing) ? { ...existing, ...launch } : launch;
     if (JSON.stringify(existing) === JSON.stringify(entry)) continue;
     const merged: McpConfigDocument = { ...document, mcpServers: { ...servers, [MCP_SERVER_NAME]: entry } };
     const original = existsSync(absolute) ? readFileSync(absolute, 'utf8') : undefined;

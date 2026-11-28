@@ -123,6 +123,7 @@ test('shows the home screen', async ({ agent, app, screen }) => {
 | `.swipe('up', 'fast')` | `.swipe({ direction: 'down', momentum: 'fast' })`. Detox names the finger's direction, e2e the content's |
 | `list.scroll(200, 'down')` | `list.swipe({ direction: 'down' })`, with no offset |
 | `waitFor(el).toBeVisible().whileElement(list).scroll(...)` | `list.scrollUntilVisible(el)`, with `{ direction: 'up' }` when Detox scrolls up |
+| `list.scrollTo('bottom')`, `scrollTo('top')` | `list.scrollTo('bottom')`, `list.scrollTo('top')` |
 
 ### Expectations
 
@@ -170,7 +171,6 @@ on purpose.
 | `by.id('x').and(by.text('y'))` | `.filter({ hasText })`, or `device.locator('id=x label="y"')` |
 | `system.element(by.system.label('Allow'))` | `device.alert('accept' \| 'dismiss')`, or `app.permissions` so no prompt shows |
 | `.longPressAndDrag()`, `.swipe()` offset | `.dragTo(target)`, `screen.swipe({ from, to })` |
-| `.scrollTo('bottom')` | `list.scrollUntilVisible(lastRow)`, or the first row with `{ direction: 'up' }` |
 | `.tapBackspaceKey()` | `.fill(t)` with the shorter text |
 | `.setDatePickerDate()`, `.setColumnToValue()`, `.adjustSliderToPosition()` | An `agent.act` goal, or `screen.swipe({ from, to })` on a slider |
 | `permissions` for `health`, `homekit`, `speech`, `faceid`, `userTracking`; values `always`, `inuse`, `limited` | Tap the prompt's button, or `device.alert('accept')` |

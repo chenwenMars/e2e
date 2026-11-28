@@ -535,19 +535,14 @@ test('threshold', async ({ app, screen }) => {
   );
 
   it(
-    'passes a .not whose screen differed long enough when its last capture runs past the deadline',
+    'passes a .not on the first capture that differs',
     async () => {
       let armed = false;
       let observations = 0;
       let screen = screenPng(WHITE, BLUE);
       const { fake } = screenEngine(() => screen, {
         observe: async () => {
-          if (!armed) return;
-          observations += 1;
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          if (observations < 3) return;
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          throw engineFailure('OPERATION_TIMEOUT', 'the screenshot outlived its budget');
+          if (armed) observations += 1;
         },
       });
       const options = { appUrl: FAKE_APP_URL, config: fakeConfig(fake) };
@@ -567,7 +562,7 @@ test('home', async ({ app, screen }) => {
         screen = screenPng(WHITE, RED);
         const attempt = attemptOf(await runExisting(project, options), 'home');
         expect(attempt.error).toBeUndefined();
-        expect(observations).toBe(3);
+        expect(observations).toBe(1);
       } finally {
         project.cleanup();
       }

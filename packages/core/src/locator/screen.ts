@@ -2,7 +2,7 @@
 
 import nodePath from 'node:path';
 import { describeValue } from '../config/validate.ts';
-import { isKeyModifier, KEY_MODIFIERS, type KeyModifier } from '../engine/contract.ts';
+import { isKeyModifier, KEY_MODIFIERS, SCROLL_EDGES, type KeyModifier, type ScrollEdge } from '../engine/contract.ts';
 import type { LocatorAction, LocatorExpression, Observation, SemanticNode } from '../engine/surface.ts';
 import { locatorBrand } from '../internal/brands.ts';
 import { isSecret } from '../secrets.ts';
@@ -321,6 +321,22 @@ class ScreenImpl implements Screen {
     });
   }
 
+  async scrollTo(edge: ScrollEdge, options?: ActionOptions): Promise<void> {
+    rejectUnknownOptions('scrollTo', options, ['timeout']);
+    requireScrollEdge(edge);
+    // A frame's screen has no root of its own: the engine's root is the
+    // top-level screen, so scrolling it would scroll the page around the frame.
+    if (this.wrap !== undefined) {
+      throw new TestError(
+        'INVALID_ARGUMENT',
+        'scrollTo() on a frame would scroll the screen around it; call it on a locator inside the frame, such as its scroll container',
+      );
+    }
+    await this.context.steps.run('screen', 'screen.scrollTo', edge, () =>
+      this.context.engine.scrollTo(undefined, edge, options?.timeout),
+    );
+  }
+
   tree(options?: ActionOptions): Promise<string> {
     return this.readTree('screen.tree', options);
   }
@@ -609,6 +625,14 @@ class LocatorImpl extends ScreenImpl implements Locator {
     return this.perform('scrollIntoView', { kind: 'scrollIntoView' }, options);
   }
 
+  override scrollTo(edge: ScrollEdge, options?: ActionOptions): Promise<void> {
+    rejectUnknownOptions('scrollTo', options, ['timeout']);
+    requireScrollEdge(edge);
+    return this.context.steps.run('locator', 'locator.scrollTo', `${this.label} → ${edge}`, () =>
+      this.context.engine.scrollTo(this.expression, edge, options?.timeout),
+    );
+  }
+
   override swipe(options: SwipeOptions & ActionOptions): Promise<void> {
     rejectUnknownOptions('swipe', options, ['direction', 'momentum', 'timeout']);
     return this.action('locator.swipe', () =>
@@ -714,7 +738,8 @@ class LocatorImpl extends ScreenImpl implements Locator {
           signal: engine.signal,
           negated: false,
           evaluate: async (reads) => {
-            const { node } = await engine.tryRead(this.expression, reads, ABSENCE_STATES.has(state) ? 'empty' : 'wait');
+            const { node, stale } = await engine.tryRead(this.expression, reads, ABSENCE_STATES.has(state) ? 'empty' : 'wait');
+            if (stale) return undefined;
             samples.add(node === null ? 'absent' : isNodeVisible(node) ? 'visible' : 'hidden');
             return inWaitForState(node, state);
           },
@@ -766,6 +791,13 @@ class LocatorImpl extends ScreenImpl implements Locator {
     const node = await this.context.engine.read(this.expression);
     if (guardSecure) denySecureRead([node], this.label);
     return node;
+  }
+}
+
+/** Refuses anything but one of the four scroll edges before a step starts. */
+function requireScrollEdge(edge: unknown): asserts edge is ScrollEdge {
+  if (!(SCROLL_EDGES as readonly unknown[]).includes(edge)) {
+    throw new TestError('INVALID_ARGUMENT', `scrollTo takes an edge: ${SCROLL_EDGES.map((name) => `'${name}'`).join(', ')}; got ${describeValue(edge)}`);
   }
 }
 

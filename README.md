@@ -94,7 +94,8 @@ every tool.
 | [`@e2e-dev/core`](https://e2e.com/docs/core) | Drives a browser or a device from your own program, with an optional agent and no test runner. `e2e` is built on it. |
 | [`@e2e-dev/web`](https://www.npmjs.com/package/@e2e-dev/web) | Browser engine: Chromium, Firefox, and WebKit through Playwright. |
 | [`@e2e-dev/mobile`](https://www.npmjs.com/package/@e2e-dev/mobile) | iOS and Android engine: simulators and emulators through agent-device. |
-| [`@e2e-dev/desktop`](https://www.npmjs.com/package/@e2e-dev/desktop) | Desktop engine, a prototype: native apps on macOS through agent-desktop. |
+| [`@e2e-dev/desktop`](https://www.npmjs.com/package/@e2e-dev/desktop) | Desktop engine, a prototype: native apps on macOS through its own Rust accessibility driver. |
+| [`@e2e-dev/electron`](https://e2e.com/docs/electron) | Electron engine: an Electron app's windows through Chromium's accessibility tree. |
 | [`@e2e-dev/decision`](https://e2e.com/docs/decision-models) | Decision-model executors for bounded semantic actions and assertions, and `decisionFilter()`, which leaves out the tests a pull request is unlikely to affect. |
 | [`@e2e-dev/acp`](https://e2e.com/docs/subscriptions#use-your-coding-agent) | Runs agent steps on your own coding agent (Claude Code or Codex) over the Agent Client Protocol. |
 
@@ -112,7 +113,7 @@ every tool.
 | [`@e2e-dev/e2b`](https://www.npmjs.com/package/@e2e-dev/e2b) | E2B sandboxes: Android 16 for the mobile engine, and Chromium for the web engine. |
 | [`@e2e-dev/browserstack`](https://www.npmjs.com/package/@e2e-dev/browserstack) | BrowserStack App Automate real Android and iOS devices for the mobile engine. |
 | [`@e2e-dev/limrun`](https://www.npmjs.com/package/@e2e-dev/limrun) | Limrun hosted iOS simulators and Android emulators for mobile tests. |
-| [`@e2e-dev/revyl`](https://www.npmjs.com/package/@e2e-dev/revyl) | Revyl hosted iOS simulators and Android emulators for the mobile engine. |
+| [`@e2e-dev/revyl`](https://www.npmjs.com/package/@e2e-dev/revyl) | Revyl hosted iOS simulators and Android emulators for the mobile engine, and Chrome for the web engine. |
 | [`@e2e-dev/eas`](https://www.npmjs.com/package/@e2e-dev/eas) | Expo Simulators hosted iOS simulators and Android emulators for the mobile engine. |
 | [`@e2e-dev/github`](https://www.npmjs.com/package/@e2e-dev/github) | Reporter that posts results as a pull request comment. |
 | [`@e2e-dev/html-reporter`](https://www.npmjs.com/package/@e2e-dev/html-reporter) | Reporter that writes the run as one HTML page, with steps, screenshots, and video. |

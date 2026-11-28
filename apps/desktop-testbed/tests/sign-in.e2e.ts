@@ -21,6 +21,64 @@ test.describe('sign-in form', () => {
     await expect(screen.getByTestId('status')).toHaveText('Signed in as ada on Team, remembered (password: 7 characters)');
   });
 
+  test('selects an option of a pop-up whose menu a tap already opened', async ({ screen }) => {
+    const plan = screen.getByRole('combobox', 'Plan');
+    await plan.tap();
+    await expect(screen.getByRole('menuitem', 'Team')).toBeVisible();
+    // The open menu is the list: a press to open it again would close it.
+    await plan.selectOption('Team');
+    await expect(plan).toHaveValue('Team');
+    await expect(screen.getByRole('menuitem', 'Team')).toHaveCount(0);
+  });
+
+  test('closes a pop-up menu a tap opened when the select asks for the option it already shows', async ({ screen }) => {
+    const plan = screen.getByRole('combobox', 'Plan');
+    await plan.tap();
+    await expect(screen.getByRole('menuitem', 'Pro')).toBeVisible();
+    await plan.selectOption('Pro');
+    await expect(plan).toHaveValue('Pro');
+    await expect(screen.getByRole('menuitem', 'Pro')).toHaveCount(0);
+  });
+
+  test('refuses a disabled option of a pop-up as disabled, and closes its menu', async ({ screen }) => {
+    const plan = screen.getByRole('combobox', 'Plan');
+    const refused = await plan.selectOption('Legacy', { timeout: 1_000 }).then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(String(refused)).toMatch(/option "Legacy" is disabled/);
+    await expect(plan).toHaveValue('Pro');
+    await expect(screen.getByRole('menuitem', 'Legacy')).toHaveCount(0);
+  });
+
+  test('chooses the enabled one of two pop-up options of one title', async ({ screen }) => {
+    // The Plan menu holds a disabled Enterprise before an enabled one.
+    const plan = screen.getByRole('combobox', 'Plan');
+    await plan.selectOption('Enterprise');
+    await expect(plan).toHaveValue('Enterprise');
+  });
+
+  test('types a username with an uppercase letter and a password through key events', async ({ screen }) => {
+    // Typing goes key by key, as a person types: a capital takes its key with Shift, and a password field takes keystrokes.
+    await screen.getByRole('textbox', 'Username').pressSequentially('Ada');
+    await expect(screen.getByRole('textbox', 'Username')).toHaveValue('Ada');
+    await screen.getByRole('textbox', 'Password').pressSequentially('testing');
+    await screen.getByRole('button', 'Sign in').tap();
+    await expect(screen.getByTestId('status')).toHaveText('Signed in as Ada on Pro (password: 7 characters)');
+  });
+
+  test('puts the keyboard in the password field when it is tapped', async ({ screen, desktop }) => {
+    // AppKit's password field offers a confirm action too: a tap must focus it, so the keys after it go there.
+    await screen.getByRole('textbox', 'Username').tap();
+    await screen.getByRole('textbox', 'Password').tap();
+    await expect(screen.getByRole('textbox', 'Password')).toBeFocused();
+    await desktop.keyboard.press('x');
+    await expect(screen.getByRole('textbox', 'Username')).toHaveValue('');
+    // The key reached the password field: signing in counts one character there.
+    await screen.getByRole('button', 'Sign in').tap();
+    await expect(screen.getByTestId('status')).toHaveText('Signed in as  on Pro (password: 1 characters)');
+  });
+
   test('reads controls by test id and refuses an empty password', async ({ screen }) => {
     await screen.getByTestId('username').fill('grace');
     await expect(screen.getByTestId('username')).toHaveValue('grace');
@@ -36,7 +94,7 @@ test.describe('sign-in form', () => {
     await expect(screen.getByRole('checkbox', 'Remember me')).not.toBeChecked();
     await expect(screen.getByRole('combobox', 'Plan')).toHaveValue('Pro');
     const windows = await desktop.windows();
-    expect(windows.map((window) => window.title)).toEqual(['Sign In']);
+    expect(await Promise.all(windows.map((window) => window.title()))).toEqual(['Sign In']);
   });
 
   test('takes a screenshot of the window with the password field painted over', async ({ app, screen }) => {

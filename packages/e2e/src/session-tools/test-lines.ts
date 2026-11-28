@@ -10,6 +10,10 @@
  * target and nothing else is printed, one that matches its twins too is
  * narrowed (to the nodes that render, under a container, or by position, in
  * that order), and otherwise the result says why there is no line. The
+ * point tools print the line of the listed control they act on by id, or
+ * `screen.tapAt` for a bare tap, and say why there is none otherwise. An id
+ * an earlier screen listed is found on the newest one as the step finds it
+ * for the action: by what it read as, when exactly one node there reads so. The
  * session keeps the lines in order, with the lines `run_code` passed
  * among them, and `test_lines` returns them as a draft test body, lines that
  * continue a resumed test, or lines for a held test's pause point. Only the session
@@ -19,15 +23,18 @@
 
 import type { ToolSet } from 'ai';
 import { z } from 'zod';
-import type { ExecutorNode, ExecutorObservation, ExecutorObserveOptions, StepExecutorContext } from '@e2e-dev/core/lib/agent/executor';
+import { describeTarget } from '@e2e-dev/core/lib/agent/actions';
+import type { ExecutorNode, ExecutorObservation, ExecutorObserveOptions, PointHit, StepExecutorContext } from '@e2e-dev/core/lib/agent/executor';
 import { isFailedResult } from '@e2e-dev/core/lib/agent/loop-guards';
 import { typedThroughKeyboard } from '@e2e-dev/core/lib/agent/primitives';
 import { SAMPLE_PREFIX } from '@e2e-dev/core/lib/agent/sample-files';
 import type { ScreenOutput } from '@e2e-dev/core/lib/agent/screen-update';
-import type { LocatorExpression, NodeRef, SemanticNode } from '@e2e-dev/core/lib/engine/surface';
+import type { LocatorExpression, NodeRef, SemanticNode, ViewportPoint } from '@e2e-dev/core/lib/engine/surface';
 import { codedMessage, InfrastructureError } from '@e2e-dev/core/lib/internal/errors';
 import { collapseText } from '@e2e-dev/core/lib/internal/text';
 import { filterExpression, indexExpression } from '@e2e-dev/core/lib/locator/expression';
+import type { RedactedNode } from '@e2e-dev/core/lib/agent/observation';
+import { relocateDescriptor } from '@e2e-dev/core/lib/cache/relocate';
 import type { Role } from '@e2e-dev/core/lib/types';
 
 /** Matches read per locator while looking for the target among them. */
@@ -42,6 +49,8 @@ const MAX_TRIES = 10;
 const MAX_CONTAINERS = 3;
 /** CSS pixels a match's center may sit outside the target's box and still be the target. */
 const BOX_SLACK = 1;
+/** Screens kept before the newest one, for an id an earlier screen listed: the step keeps as many (`MAX_RECENT_OBSERVATIONS`, less the newest). */
+const MAX_EARLIER_SCREENS = 7;
 
 /** The roles `getByRole` takes, so a node read as `generic` never becomes a role query. */
 const ROLES: ReadonlySet<string> = new Set(
@@ -82,6 +91,12 @@ export interface TestLineOptions {
   readonly read: (ref: NodeRef) => Promise<SemanticNode>;
   /** The attempt's secret ledger, for what a read node says before it goes into a line. */
   readonly redact: (text: string) => string;
+  /**
+   * A point in the latest screenshot's pixels, as the point tools take it, in
+   * the viewport pixels `screen.tapAt` and a hit test take; undefined before
+   * the session's first screenshot, when a point tool does nothing.
+   */
+  readonly pointOf?: ((x: number, y: number) => ViewportPoint | undefined) | undefined;
   /** The app's base URL, which a navigation line is made relative to. */
   readonly appBase?: { readonly href: string; readonly origin: string } | undefined;
   /** The configured credentials and secrets a fill is written with. */
@@ -107,6 +122,9 @@ export interface TestLineFills {
 /** What an action prints: the line, with a comment when it holds only by position, or why there is none. */
 type LinePlan = { readonly line: string } | { readonly reason: string };
 
+/** A plan, or undefined for a call that does not act (a point tool before any screenshot), which prints and records nothing. */
+type Plan = LinePlan | undefined;
+
 /** What a locator search found: the locator and how the line comments on it, or why there is none. */
 type Found = (Located & { readonly comment?: string }) | { readonly reason: string };
 
@@ -117,10 +135,18 @@ interface Listed {
   readonly root: ExecutorNode;
 }
 
-/** The newest observation's tree, and its nodes by id, each with its parent's id. */
+/** One node of a screen, with its parent's id. */
+interface ScreenEntry {
+  readonly node: ExecutorNode;
+  readonly parent: string | undefined;
+}
+
+/** An observation's tree, and its nodes by id. */
 interface Screen {
   readonly root: ExecutorNode;
-  readonly nodes: ReadonlyMap<string, { readonly node: ExecutorNode; readonly parent: string | undefined }>;
+  readonly nodes: ReadonlyMap<string, ScreenEntry>;
+  /** The same nodes in the shape the relocation rule reads (`refound`). */
+  readonly redacted: ReadonlyMap<string, RedactedNode>;
 }
 
 /** What one locator matched: how many nodes, and which of them is the target. */
@@ -139,11 +165,15 @@ interface Probe {
   readonly matches: readonly SemanticNode[];
 }
 
-/** The grammar tools that print a line or say why they print none; the point tools print nothing. */
+/** The grammar tools that print a line or say why they print none: every one that acts. */
 const LINE_TOOLS: ReadonlySet<string> = new Set([
   'tap', 'double_tap', 'long_press', 'right_click', 'hover', 'type', 'type_secret', 'press', 'select', 'check',
   'drag', 'upload', 'scroll', 'scroll_to', 'navigate', 'back', 'resize_viewport', 'switch_tab', 'close_tab', 'dismiss_keyboard',
+  'tap_at', 'hover_at', 'drag_at', 'type_at', 'press_at', 'select_at',
 ]);
+
+/** The tools whose value may go in through the keyboard rather than as a fill, which no locator line repeats. */
+const TYPING_TOOLS: ReadonlySet<string> = new Set(['type', 'type_at']);
 
 /** The locator method each node verb's tool repeats as. */
 const NODE_METHODS: Readonly<Record<string, string>> = {
@@ -160,7 +190,11 @@ type Entry = { readonly tool: string } & LinePlan;
 /** The test lines of one session: the observations it keeps for them, the wrapped grammar, and `test_lines`. */
 export class SessionTestLines {
   private screen: Screen | undefined;
+  /** The screens before the newest one, oldest first. */
+  private readonly earlier: Screen[] = [];
   private readonly entries: Entry[] = [];
+  /** The step context `watch` wrapped, whose hit test places a point tool's target. */
+  private context: StepExecutorContext | undefined;
 
   constructor(private readonly options: TestLineOptions) {}
 
@@ -170,6 +204,7 @@ export class SessionTestLines {
    * the caller asked for it, so what the caller reads does not change.
    */
   watch(context: StepExecutorContext): StepExecutorContext {
+    this.context = context;
     const observe = async (options: ExecutorObserveOptions = {}): Promise<ExecutorObservation> => {
       const observation = await context.observe({ ...options, tree: true });
       this.keep(observation);
@@ -256,22 +291,60 @@ export class SessionTestLines {
     ].join('\n');
   }
 
-  /** Keeps an observation's tree as the newest screen; one without a tree leaves no id to look up, as for the step. */
+  /**
+   * Keeps an observation's tree as the newest screen, and the one before it
+   * among the earlier ones; one without a tree leaves no id to look up, now
+   * or from before, as for the step.
+   */
   private keep(observation: ExecutorObservation): void {
-    this.screen = observation.tree === undefined ? undefined : indexScreen(observation.tree);
+    if (observation.tree === undefined) {
+      this.screen = undefined;
+      this.earlier.length = 0;
+      return;
+    }
+    if (this.screen !== undefined) this.earlier.push(this.screen);
+    if (this.earlier.length > MAX_EARLIER_SCREENS) this.earlier.shift();
+    this.screen = indexScreen(observation.tree);
   }
 
-  /** The node an id names on the newest screen, with its ancestors. */
+  /**
+   * The node an id names on the newest screen, with its ancestors. An id only
+   * an earlier screen listed (an engine that numbers every screen afresh) is
+   * found as the step finds it for the action: the node it named on the
+   * newest screen that listed it, if exactly one node on the newest screen
+   * reads like it.
+   */
   private listed(id: string): Listed | undefined {
     const screen = this.screen;
-    const entry = screen?.nodes.get(id.replace(/^#/, ''));
-    if (screen === undefined || entry === undefined) return undefined;
+    if (screen === undefined) return undefined;
+    const key = id.replace(/^#/, '');
+    const entry = screen.nodes.get(key) ?? this.refound(key, screen);
+    if (entry === undefined) return undefined;
     const ancestors: ExecutorNode[] = [];
     for (let parent = entry.parent; parent !== undefined; parent = screen.nodes.get(parent)?.parent) {
       const node = screen.nodes.get(parent)?.node;
       if (node !== undefined) ancestors.push(node);
     }
     return { node: entry.node, ancestors, root: screen.root };
+  }
+
+  /**
+   * The newest screen's entry for what `id` named on the latest earlier
+   * screen that listed it, re-found by the rule the step's action uses
+   * (`describeTarget` and `relocateDescriptor`, as `refound` in the
+   * observation feed): role, name, test id, placeholder, and input purpose,
+   * the text only for a node with neither a name nor a test id.
+   */
+  private refound(id: string, screen: Screen): ScreenEntry | undefined {
+    for (let index = this.earlier.length - 1; index >= 0; index -= 1) {
+      const was = this.earlier[index]!.nodes.get(id)?.node;
+      if (was === undefined) continue;
+      const descriptor = describeTarget(asRedacted(was));
+      if (descriptor === undefined) return undefined;
+      const relocated = relocateDescriptor(descriptor, screen.redacted);
+      return relocated.kind === 'found' ? screen.nodes.get(relocated.id) : undefined;
+    }
+    return undefined;
   }
 
   /** A grammar tool that works out its line before the action and adds it to the result after. */
@@ -281,7 +354,7 @@ export class SessionTestLines {
       ...tool,
       execute: async (input: unknown, options: Parameters<typeof execute>[1]) => {
         const plan = await this.plan(name, isRecord(input) ? input : {}).catch(
-          (cause: unknown): LinePlan => ({ reason: `trying its locator failed: ${codedMessage(cause)}` }),
+          (cause: unknown): Plan => ({ reason: `trying its locator failed: ${codedMessage(cause)}` }),
         );
         if (options.abortSignal?.aborted === true) throw new InfrastructureError('CANCELLED', 'the tool call was cancelled');
         const output = (await execute(input, options)) as ScreenOutput;
@@ -291,11 +364,11 @@ export class SessionTestLines {
   }
 
   /** Records a performed action's line and puts it after the result's lead; a failed action gets none. */
-  private annotate(name: string, output: ScreenOutput, plan: LinePlan): ScreenOutput {
+  private annotate(name: string, output: ScreenOutput, plan: Plan): ScreenOutput {
     const text = typeof output === 'string' ? output : output.text;
-    if (isFailedResult(name, text)) return output;
+    if (plan === undefined || isFailedResult(name, text)) return output;
     const entry: Entry =
-      name === 'type' && typedThroughKeyboard(text)
+      TYPING_TOOLS.has(name) && typedThroughKeyboard(text)
         ? { tool: name, reason: 'the node is not an input and took the value through the keyboard, which no locator line repeats' }
         : { tool: name, ...plan };
     this.entries.push(entry);
@@ -306,7 +379,7 @@ export class SessionTestLines {
   }
 
   /** The line an action will print, worked out before it runs, while its target is still on screen. */
-  private async plan(name: string, input: Readonly<Record<string, unknown>>): Promise<LinePlan> {
+  private async plan(name: string, input: Readonly<Record<string, unknown>>): Promise<Plan> {
     const target = stringField(input, 'target');
     const method = NODE_METHODS[name];
     if (method !== undefined) {
@@ -357,9 +430,78 @@ export class SessionTestLines {
         return { reason: `show tab ${String(input['tab'])} with the engine fixture's tab call` };
       case 'close_tab':
         return { reason: `close tab ${String(input['tab'])} with the engine fixture's tab call` };
+      case 'tap_at':
+      case 'hover_at':
+        return this.pointVerb(name, input);
+      case 'drag_at':
+        return this.pointDrag(input);
+      case 'type_at':
+      case 'press_at':
+      case 'select_at':
+        return this.pointControl(name, input);
       default:
         return { reason: `${name} has no test line` };
     }
+  }
+
+  /**
+   * A point tap or hover: `screen.tapAt` where the engine takes the bare
+   * point, as the step then does, else the line of the listed control under
+   * the point, which the step acts on by id.
+   */
+  private async pointVerb(name: 'tap_at' | 'hover_at', input: Readonly<Record<string, unknown>>): Promise<Plan> {
+    const hit = await this.hitAt(input, 'x', 'y');
+    if (hit === undefined || 'reason' in hit) return hit;
+    const tap = name === 'tap_at';
+    if (this.context?.target.verbs.has(tap ? 'tapAt' : 'hoverAt') === true) {
+      if (!tap) return { reason: 'a hover at a bare point has no screen call; hover a listed node by id for a line' };
+      return { line: `await screen.tapAt(${pointCode(hit.point)}); // a bare point holds only while the layout does; tap a listed node by id for a locator line` };
+    }
+    if (hit.control === undefined) return { reason: 'no listed control is at the point' };
+    return this.onTarget(hit.control.id, (locator) => `${locator}.${tap ? 'tap' : 'hover'}()`);
+  }
+
+  /** A point drag: the line of the two listed controls the step drags between by id; a drag between bare points has no screen call. */
+  private async pointDrag(input: Readonly<Record<string, unknown>>): Promise<Plan> {
+    const from = await this.hitAt(input, 'x', 'y');
+    if (from === undefined || 'reason' in from) return from;
+    const to = await this.hitAt(input, 'to_x', 'to_y');
+    if (to === undefined || 'reason' in to) return to;
+    if (this.context?.target.verbs.has('dragAt') === true) return { reason: 'a drag between bare points has no screen call; drag a listed node onto another by id for a line' };
+    if (from.control === undefined || to.control === undefined || from.control.id === to.control.id) return { reason: 'the points are not on two different listed controls' };
+    return this.drag(from.control.id, to.control.id);
+  }
+
+  /**
+   * A point type, key press, or select: the line of the listed control under
+   * the point, which the step acts on by id. A point on nothing listed was
+   * tapped and given the keys, which no locator line repeats.
+   */
+  private async pointControl(name: 'type_at' | 'press_at' | 'select_at', input: Readonly<Record<string, unknown>>): Promise<Plan> {
+    const hit = await this.hitAt(input, 'x', 'y');
+    if (hit === undefined || 'reason' in hit) return hit;
+    if (hit.control === undefined) {
+      return { reason: name === 'select_at' ? 'no listed control is at the point' : 'no listed control is at the point: it was tapped to focus what is there and the keys went through the keyboard, which no locator line repeats' };
+    }
+    const value = stringField(input, 'value') ?? '';
+    if (name === 'type_at') return this.onTarget(hit.control.id, (locator) => `${locator}.fill(${this.typed(value)})`);
+    if (name === 'select_at') return this.onTarget(hit.control.id, (locator) => `${locator}.selectOption(${JSON.stringify(value)})`);
+    return this.onTarget(hit.control.id, (locator) => `${locator}.press(${JSON.stringify(stringField(input, 'key') ?? '')})`);
+  }
+
+  /**
+   * What the newest screen lists at a point tool's point, through the step's
+   * own hit test, which the tool's action resolves its target through too;
+   * undefined before the session's first screenshot, when the tool does nothing.
+   */
+  private async hitAt(input: Readonly<Record<string, unknown>>, xKey: string, yKey: string): Promise<PointHit | { readonly reason: string } | undefined> {
+    const x = input[xKey];
+    const y = input[yKey];
+    if (typeof x !== 'number' || typeof y !== 'number') return { reason: 'the point is not two numbers' };
+    if (this.options.pointOf === undefined || this.context === undefined) return { reason: 'this session does not place points' };
+    const point = this.options.pointOf(x, y);
+    if (point === undefined) return undefined;
+    return await this.context.actions.hitTest(point);
   }
 
   /** A line acting on one target, or why there is none. */
@@ -672,15 +814,33 @@ function stayedPut(observed: readonly ExecutorNode[], live: readonly SemanticNod
   });
 }
 
+/** A viewport point as a test writes it, to the hundredth of a pixel. */
+function pointCode(point: ViewportPoint): string {
+  const coordinate = (value: number): string => String(Math.round(value * 100) / 100);
+  return `{ x: ${coordinate(point.x)}, y: ${coordinate(point.y)} }`;
+}
+
 /** Indexes an observation's tree by id, each node with its parent's id. */
 function indexScreen(root: ExecutorNode): Screen {
-  const nodes = new Map<string, { readonly node: ExecutorNode; readonly parent: string | undefined }>();
+  const nodes = new Map<string, ScreenEntry>();
+  const redacted = new Map<string, RedactedNode>();
   const walk = (node: ExecutorNode, parent: string | undefined): void => {
     nodes.set(node.id, { node, parent });
+    redacted.set(node.id, asRedacted(node));
     for (const child of node.children ?? []) walk(child, node.id);
   };
   walk(root, undefined);
-  return { root, nodes };
+  return { root, nodes, redacted };
+}
+
+/**
+ * A listed node in the shape the relocation rule reads. The listing is
+ * already redacted, and the rule reads the fields both shapes share; a
+ * node's children are not read, since a re-found target names no container.
+ */
+function asRedacted(node: ExecutorNode): RedactedNode {
+  // oxlint-disable-next-line e2e/no-chained-type-assertions -- mints the phantom REDACTED brand for a node the listing already redacted, as `redactNode` does
+  return { ...node, ref: { id: node.id, revision: '' } } as unknown as RedactedNode;
 }
 
 /** Text in the one-line form a locator matches against, or undefined for none. */

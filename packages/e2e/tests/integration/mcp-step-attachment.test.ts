@@ -657,6 +657,40 @@ ${CONFIG.replace('  video: true,', `  video: true,
     expect(report).not.toContain('Missing');
   });
 
+  it("gives attached run_code the engine's fixtures, as a standalone session's code has them", async () => {
+    const dir = project(`await screen.pause(); ${STEP}`, CONFIG.replace('video: true,', 'video: true,\n  fixtures: true,'));
+    const held = await pause(dir);
+    const { client } = await mcp(dir);
+    await openSession(client, { attach: held.id });
+
+    const ran = await invoke(client, 'call', { tool: 'run_code', args: { code: "return await gadget.poke('attached');" } });
+    expect(ran.isError, ran.text).toBe(false);
+    expect(ran.text).toContain('Returned: "poked attached"');
+    expect((await invoke(client, 'call', { tool: 'test_lines' })).text).toContain("await gadget.poke('attached');");
+
+    expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
+    expect(await held.exited).toBe(0);
+    // The code's calls are the session's: the held test's report has none of them.
+    expect(readFileSync(path.join(dir, '.e2e/report.json'), 'utf8')).not.toContain('gadget.poke');
+  });
+
+  it('keeps one set of engine fixtures for the whole attachment, so what a fixture holds carries to the next call', async () => {
+    const dir = project(`await screen.pause(); ${STEP}`, CONFIG.replace('video: true,', 'video: true,\n  fixtures: true,'));
+    const held = await pause(dir);
+    const { client } = await mcp(dir);
+    await openSession(client, { attach: held.id });
+    const run = (code: string) => invoke(client, 'call', { tool: 'run_code', args: { code } });
+
+    // A web route lives in the browser fixture it was added on: an unroute in the next call reaches it only on the same instance.
+    expect((await run("gadget.mark = 'set in the first call'; return 'set';")).text).toContain('Returned: "set"');
+    const next = await run("return gadget.mark ?? 'gone';");
+    expect(next.isError, next.text).toBe(false);
+    expect(next.text).toContain('Returned: "set in the first call"');
+
+    expect(e2e(dir, 'run', '--step', 'next').status).toBe(0);
+    expect(await held.exited).toBe(0);
+  });
+
   it("keeps what attached run_code leaves behind out of the held test's verdict", async () => {
     const dir = project(`await screen.pause(); ${STEP}`);
     const held = await pause(dir);

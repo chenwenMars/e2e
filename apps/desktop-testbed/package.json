@@ -2,13 +2,14 @@
   "name": "@e2e-dev/desktop-testbed",
   "version": "0.0.0",
   "private": true,
-  "description": "Desktop testbed: runs the e2e runner against a native sign-in form through @e2e-dev/desktop",
+  "description": "Desktop testbed: runs the e2e runner against a native AppKit app through @e2e-dev/desktop",
   "type": "module",
   "scripts": {
     "build:app": "sh scripts/build-macos.sh",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && node node_modules/e2e/dist/cli/bin.js run",
-    "test:agent": "node node_modules/e2e/dist/cli/bin.js run --config e2e.agent.config.ts"
+    "test:agent": "node node_modules/e2e/dist/cli/bin.js run --config e2e.agent.config.ts",
+    "test:physical": "tsc --noEmit && node node_modules/e2e/dist/cli/bin.js run --config e2e.physical.config.ts"
   },
   "dependencies": {
     "@e2e-dev/desktop": "workspace:*",

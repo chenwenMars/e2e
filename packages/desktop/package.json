@@ -1,7 +1,7 @@
 {
   "name": "@e2e-dev/desktop",
   "version": "0.0.1",
-  "description": "Desktop engine for e2e agentic end-to-end testing, built on agent-desktop: native apps, a prototype tested on macOS",
+  "description": "Desktop engine for e2e agentic end-to-end testing: native macOS apps through the accessibility tree, driven by a Rust driver loaded in process",
   "keywords": [
     "e2e",
     "end-to-end",
@@ -9,8 +9,7 @@
     "ai-testing",
     "desktop-testing",
     "macos",
-    "accessibility",
-    "agent-desktop"
+    "accessibility"
   ],
   "license": "Apache-2.0",
   "repository": {
@@ -44,6 +43,8 @@
   ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --project tsconfig.build.json && node ../../scripts/stamp-dist.ts",
+    "build:native": "node ../../scripts/native/build-native.ts desktop",
+    "licenses:native": "node ../../scripts/native/native-licenses.ts desktop",
     "prepublishOnly": "node ../../scripts/check-dist.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -53,9 +54,13 @@
   "dependencies": {
     "@napi-rs/image": "1.16.0"
   },
+  "optionalDependencies": {
+    "@e2e-dev/desktop-darwin-arm64": "workspace:*",
+    "@e2e-dev/desktop-darwin-x64": "workspace:*"
+  },
   "peerDependencies": {
-    "@e2e-dev/core": ">=0.25.0 <1",
-    "e2e": ">=0.25.0 <1"
+    "@e2e-dev/core": ">=0.25.1 <1",
+    "e2e": ">=0.25.1 <1"
   },
   "peerDependenciesMeta": {
     "e2e": {

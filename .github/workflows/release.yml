@@ -21,7 +21,79 @@ permissions:
   contents: read
 
 jobs:
+  # Whether a nightly is due: nothing merged since the last one means nothing to
+  # ship, which this tells before the driver is built. A hand dispatch always
+  # publishes. It runs on every event, a push included, where its check is
+  # skipped and it says nothing: a skipped job here would skip `release` too,
+  # since a job's implicit success() covers every job above it, not only the
+  # ones it names.
+  nightly-due:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.changed.outputs.skip }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Skip when main has not moved
+        id: changed
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          last="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch main --status success \
+            --limit 50 --json headSha,event \
+            --jq '[.[] | select(.event == "schedule" or .event == "workflow_dispatch")][0].headSha // empty')"
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "main is still at $GITHUB_SHA, already shipped as nightly"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The desktop engine's native driver for both Mac architectures, which the
+  # publishing job puts in `@e2e-dev/desktop-darwin-*`. Built on macOS, since
+  # the publishing job must stay on a GitHub-hosted Linux runner. `release`
+  # and `nightly` wait for it on every run, including one that only updates
+  # the version pull request: whether a run publishes is known only inside
+  # changesets/action, and a publish must never go out without the driver. A
+  # failed build stops the run; running it again is the way past it.
+  native:
+    needs: nightly-due
+    # A scheduled run with nothing to ship builds none: a failed build there would fail a night that publishes nothing.
+    if: ${{ needs.nightly-due.outputs.skip != 'true' }}
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust-toolchain
+      # build-native.ts is TypeScript run directly, which needs a Node newer than a runner image may ship.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - name: Build the driver
+        run: |
+          node scripts/native/build-native.ts desktop --target aarch64-apple-darwin
+          node scripts/native/build-native.ts desktop --target x86_64-apple-darwin
+      - name: Check each build's architecture
+        working-directory: packages/desktop
+        run: |
+          test "$(lipo -archs desktop.darwin-arm64.node)" = arm64
+          test "$(lipo -archs desktop.darwin-x64.node)" = x86_64
+      # Neither build is uploaded unless both load: the arm64 one natively, the x64 one in an x86_64 Node under Rosetta.
+      - name: Load the arm64 addon
+        working-directory: packages/desktop
+        run: node -e "const status = require('./desktop.darwin-arm64.node').status(); if (typeof status.accessibility !== 'boolean') process.exit(1)"
+      - uses: ./.github/actions/load-x64-addon
+        with:
+          addon: packages/desktop/desktop.darwin-x64.node
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-native
+          path: packages/desktop/desktop.darwin-*.node
+          if-no-files-found: error
+          retention-days: 1
+
   release:
+    needs: native
     if: ${{ github.event_name == 'push' }}
     # GitHub-hosted, not Blacksmith: npm Trusted Publishing rejects OIDC
     # tokens from self-hosted runners, and Blacksmith registers as one.
@@ -50,6 +122,16 @@ jobs:
       # one thing the version bump rewrites, so they are checked again.
       - name: Peer ranges
         run: pnpm run check:peer-ranges
+
+      # The driver goes into the platform packages, stamped with their
+      # versions; on a run that only opens the release PR it is unused.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-native
+          # Outside the checkout: changesets/action commits every untracked file into the version pull request.
+          path: ${{ runner.temp }}/desktop-native
+      - name: Place the desktop driver
+        run: node scripts/native/place-native.ts desktop "$RUNNER_TEMP/desktop-native"
 
       # Opens or updates a release PR while changesets are pending; publishes
       # once that PR is merged and no changesets remain.
@@ -103,7 +185,8 @@ jobs:
   # workflow file. Nothing is committed; the version bump and the pinned peer
   # ranges stay in the job's checkout.
   nightly:
-    if: ${{ github.event_name != 'push' }}
+    needs: [nightly-due, native]
+    if: ${{ github.event_name != 'push' && needs.nightly-due.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -118,46 +201,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Nothing merged since the last nightly means nothing to ship. A hand
-      # dispatch always publishes.
-      - name: Skip when main has not moved
-        id: changed
-        if: ${{ github.event_name == 'schedule' }}
-        run: |
-          last="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch main --status success \
-            --limit 50 --json headSha,event \
-            --jq '[.[] | select(.event == "schedule" or .event == "workflow_dispatch")][0].headSha // empty')"
-          if [ "$last" = "$GITHUB_SHA" ]; then
-            echo "main is still at $GITHUB_SHA, already shipped as nightly"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
       # `spec.yml` runs on every push to main; a nightly ships only a commit
       # it passed. A red main fails this run instead of skipping it, so a
       # rerun of spec on the same commit lets the next night ship it.
       - name: Require a green spec gate on this commit
-        if: ${{ steps.changed.outputs.skip != 'true' }}
         run: |
           conclusion="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
             --jq '[.check_runs[] | select(.name == "spec gate")] | sort_by(.completed_at) | last | .conclusion // "pending"')"
           [ "$conclusion" = "success" ] || { echo "::error::spec gate on $GITHUB_SHA is $conclusion, not publishing"; exit 1; }
 
       - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
-        if: ${{ steps.changed.outputs.skip != 'true' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: ${{ steps.changed.outputs.skip != 'true' }}
         with:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: ${{ steps.changed.outputs.skip != 'true' }}
 
       # Bumps every public package together so each engine's peer range names
       # the runner build it ships with (see `scripts/canary-changeset.ts`), then
       # builds after versioning so `dist/.build.json` carries the snapshot
       # version the `prepublishOnly` check expects.
       - name: Version and build the snapshot
-        if: ${{ steps.changed.outputs.skip != 'true' }}
         run: |
           node scripts/canary-changeset.ts
           pnpm exec changeset version --snapshot nightly
@@ -165,6 +229,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-native
+          # Outside the checkout: changesets/action commits every untracked file into the version pull request.
+          path: ${{ runner.temp }}/desktop-native
+      # After the version step, so the stamp names the snapshot version.
+      - name: Place the desktop driver
+        run: node scripts/native/place-native.ts desktop "$RUNNER_TEMP/desktop-native"
+
       - name: Publish to the nightly tag
-        if: ${{ steps.changed.outputs.skip != 'true' }}
         run: pnpm exec changeset publish --tag nightly --no-git-tag

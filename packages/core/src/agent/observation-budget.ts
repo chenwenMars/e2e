@@ -14,7 +14,7 @@ import { imageTokenUpperBound } from './model/adapter.ts';
  * a long extract instruction outgrows any fixed figure, and the adapter's
  * pre-flight refuses the request instead of the screen being cut to fit.
  */
-const INSTRUCTION_RESERVE = 4_096;
+export const INSTRUCTION_RESERVE = 4_096;
 
 /**
  * Headroom reserved for one attached screenshot on a vision call, in the same
@@ -34,7 +34,7 @@ const INSTRUCTION_RESERVE = 4_096;
 const PIXEL_RESERVE = imageTokenUpperBound({ width: 2_560, height: 1_440 });
 
 /** Floor below which a clamped budget never falls; a tree this small still names the visible controls. */
-const MIN_OBSERVATION_BYTES = 1_024;
+export const MIN_OBSERVATION_BYTES = 1_024;
 
 export interface ObservationBudgetLimits {
   /** `agent.maxObservationBytes`: the configured ceiling. */

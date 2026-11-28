@@ -38,6 +38,7 @@ export const DEVICE_ACTIONS: readonly LocatorActionKind[] = [
   'hover',
   'dragTo',
   'swipe',
+  'scrollTo',
 ];
 
 /**

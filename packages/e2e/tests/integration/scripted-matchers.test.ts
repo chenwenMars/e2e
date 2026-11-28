@@ -49,8 +49,7 @@ test('every matcher passes on the scripted screen', async ({ app, screen }) => {
 
 test('negated matchers pass on the scripted screen', async ({ app, screen }) => {
   await app.open('/');
-  // Half a second: a negation holds for the smaller of the grace window and the
-  // budget, and the first observation must land inside the budget on a loaded CI box.
+  // Half a second: the first observation must land inside the budget on a loaded CI box.
   const soon = { timeout: 500 };
   await expect(screen.getByText('Hidden content')).not.toBeVisible(soon);
   await expect(screen.getByLabel('Notes')).not.toHaveValue('line1 line2', soon);

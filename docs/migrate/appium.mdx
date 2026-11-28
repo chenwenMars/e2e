@@ -185,6 +185,7 @@ declares `platforms: ['ios', 'android']` on those tests.
 | `.waitForDisplayed({ reverse: true })` | `await expect(locator).toBeHidden()` |
 | `mobile: swipeGesture`, `mobile: swipe`, `driver.swipe({ direction: 'up' })` | `locator.swipe({ direction: 'down' })` or `screen.swipe(...)`. e2e names the content's direction, not the finger's |
 | `mobile: scrollGesture`, `mobile: scroll` to an element, `.scrollIntoView()` | `screen.scrollUntilVisible(locator)` |
+| `UiScrollable` `scrollToEnd()`, `scrollToBeginning()` | `list.scrollTo('bottom')`, `list.scrollTo('top')` |
 | `.dragAndDrop(target)`, a drag that ends on an element | `locator.dragTo(target)` |
 | A `performActions` swipe between two points | `screen.swipe({ from: { x, y }, to: { x, y } })` |
 | A tap at coordinates | `screen.tapAt({ x, y })`; inside an element, `.tap({ position: { x, y } })` |
@@ -320,7 +321,6 @@ is not a step, so it skips the report and secret redaction.
 | `.isSelected()` | `toBeSelected` for the selected state |
 | `pressKeyCode(code)`, `driver.keys('Backspace')` | `.press()` takes `Enter`, `Space`, or one character. Use `.clear()` and `.fill()` |
 | `driver.getWindowRect()`, `mobile: deviceInfo` | `device.viewport()` returns size only. Window position and full device information have no equivalent |
-| `UiScrollable` `scrollToEnd()`, `scrollToBeginning()` | Loop `locator.swipe({ direction: 'down' })` until `allTextContents()` stops changing; `'up'` for the beginning |
 | `mobile: selectPickerWheelValue`, date and time pickers, slider values | Swipe the wheel and read `.inputValue()`, or use an `agent.act` goal |
 | `mobile: pinchOpenGesture`, `mobile: pinch`, `mobile: dragGesture` to coordinates, `mobile: dragFromToForDuration` | `client.interactions.pinch` or `.drag` through [`unstable_raw`](/reference/mobile#unstable_raw) |
 

@@ -1,0 +1,43 @@
+{
+  "name": "@e2e-dev/desktop-darwin-x64",
+  "version": "0.0.1",
+  "description": "The macOS x64 native driver of @e2e-dev/desktop, which npm installs with it",
+  "keywords": [
+    "e2e",
+    "desktop-testing",
+    "macos"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/e2e-inc/e2e.git",
+    "directory": "packages/desktop/npm/darwin-x64"
+  },
+  "bugs": {
+    "url": "https://github.com/e2e-inc/e2e/issues"
+  },
+  "homepage": "https://github.com/e2e-inc/e2e/tree/main/packages/desktop#readme",
+  "engines": {
+    "node": "^22.22.3 || >=24.8.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "latest"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "desktop.darwin-x64.node",
+  "files": [
+    "desktop.darwin-x64.node",
+    "NOTICE",
+    "THIRD_PARTY_LICENSES.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../../../scripts/native/check-native.ts desktop"
+  }
+}

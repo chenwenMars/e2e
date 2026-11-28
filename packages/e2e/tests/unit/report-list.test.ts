@@ -9,6 +9,7 @@ import { visibleWidth } from '../../src/report/format.ts';
 import { DotProgress } from '../../src/report/dot.ts';
 import { LineProgress } from '../../src/report/line.ts';
 import { ListReporter } from '../../src/report/list.ts';
+import { stepLine } from '../../src/report/list-steps.ts';
 import { userFrame } from '../../src/report/code-frame.ts';
 import type { CacheWrite } from '@e2e-dev/core/lib/cache/context';
 import type { RunEventFact, RunEventOf, RunEventResult } from '../../src/run/events.ts';
@@ -1278,6 +1279,35 @@ describe('ListReporter', () => {
       } finally {
         restore();
       }
+    });
+
+    it('says on the step line that a truncated recording did not replay, and names no other miss or hand-off', () => {
+      const { lines, output } = capture();
+      const reporter = plainReporter(output);
+      reporter.handle(plan([{ file: 'tests/flow.e2e.ts', tests: 1 }]));
+      reporter.handle(testStarted('t1', 'checkout', 'chromium', 'tests/flow.e2e.ts'));
+      const end = (cache: { mode: 'missed' | 'agent-concluded'; reason: 'truncated' | 'wrong-context' | 'invalid-entry' | 'no-entry' | 'retry' | 'gap' }) =>
+        reporter.handle({
+          type: 'step', testId: 't1', agent: 'default', repeat: 0, target: 'chromium',
+          progress: { phase: 'end', kind: 'agent', api: 'agent.act', label: 'pay', status: 'passed', durationMs: 4_200, modelCalls: 3, cache },
+        });
+      end({ mode: 'missed', reason: 'truncated' });
+      for (const reason of ['wrong-context', 'invalid-entry', 'no-entry', 'retry'] as const) end({ mode: 'missed', reason });
+      end({ mode: 'agent-concluded', reason: 'gap' });
+      expect(lines).toEqual([
+        '   ✓ checkout > agent.act "pay" 4.20s · 3 model calls · not replayed: truncated',
+        ...Array.from({ length: 5 }, () => '   ✓ checkout > agent.act "pay" 4.20s · 3 model calls'),
+      ]);
+    });
+
+    it('drops the model calls before the notice on a row too narrow for both', () => {
+      const plain = picocolors.createColors(false);
+      const step = { api: 'agent.act', label: 'Add a note to the first row of the table', kind: 'agent', actor: undefined } as const;
+      const outcome = { status: 'passed', durationMs: 9_410, modelCalls: 3, cache: { mode: 'missed', reason: 'truncated' } } as const;
+      const narrow = stepLine(plain, { ...step, outcome }, { maxWidth: 71 });
+      expect(narrow).toBe('✓ agent.act "Add a note to the first …" 9.41s · not replayed: truncated');
+      expect(visibleWidth(narrow)).toBeLessThanOrEqual(71);
+      expect(stepLine(plain, { ...step, outcome }, { maxWidth: 120 })).toBe('✓ agent.act "Add a note to the first row of the table" 9.41s · 3 model calls · not replayed: truncated');
     });
 
     it('keeps deterministic steps out of the permanent log', () => {

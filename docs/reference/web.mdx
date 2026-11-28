@@ -634,15 +634,19 @@ await browser.waitForURL('**/checkout');
 await browser.waitForURL(/\/orders\/\d+$/, { timeout: 15_000 });
 ```
 
-- A string is a glob, read as Playwright reads a URL glob: `*` matches within
+- A string uses Playwright's URL glob grammar: `*` matches within
   one path segment, `**` across `/`, `{a,b}` matches either, and `\` escapes
   the next character. `?` is literal, so a query string reads as written, and a
   string with no wildcard matches that URL exactly. A glob resolves against the
   base URL unless it starts with `*` or is an absolute URL such as
   `https://x.test/**` or `about:blank`, and a
-  resolved glob's scheme and host match in any letter case. Non-ASCII text and
-  spaces in a glob's path and query match the URL as the browser encodes it. The empty string
-  matches any URL.
+  resolved glob's scheme and host match in any letter case. Globs match
+  non-ASCII text and spaces in paths and queries as the browser encodes them.
+  In strings that use glob syntax, e2e also matches `"`, `<`, and `>`
+  against their encoded forms in paths, queries, and fragments. The same
+  applies to `` ` `` in paths and fragments, `^` and escaped `\{` and `\}` in
+  paths, and `'` in special URL queries such as HTTP and HTTPS.
+  The empty string matches any URL.
 - `expect(browser).toHaveURL` reads `*` and `{` as themselves, as Playwright's
   does; [`route`](#route), `unroute`, `waitForResponse`, and `waitForRequest`
   read the same globs as this wait.
@@ -1590,6 +1594,11 @@ export interface WebOptions {
    * provider implies chromium and excludes `connect`.
    */
   readonly browser?: BrowserName | BrowserProvider;
+  /**
+   * Whether a locally launched Chromium runs with its OS sandbox on; default
+   * `true` on macOS and Windows, `false` on Linux.
+   */
+  readonly chromiumSandbox?: boolean;
   /**
    * Initial viewport of every attempt's page; default 1280 by 720. `null`
    * emulates no size: the page fills the browser window, whatever size the

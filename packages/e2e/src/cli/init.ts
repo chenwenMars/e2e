@@ -13,6 +13,7 @@ import {
   installCommand,
   readPackageManifest,
   runScriptCommand,
+  projectManager,
   type PackageManager,
 } from '../internal/package-manager.ts';
 import { CONFIG_NAMES, JS_CONFIG_NAMES } from '../config/names.ts';
@@ -372,8 +373,10 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
     if (duplicates.includes(link)) clack.log.warn(describeDuplicate(link));
     else clack.log.info(`Linked to the installed e2e, not touching: ${link.dir}/${link.name}`);
   }
-  // Where the package manager links the skill, init refreshes the copies there are and adds none: pnpm would link a second skill beside a new copy.
-  const unwritten = packageLinks.length === 0 && rootLinks.length === 0 ? [] : skillDirs.filter((dir) => !holdsSkill(cwd, dir));
+  // Repair an existing copy even if it lost SKILL.md. Beside a package link, only refresh a copy that already loads as a skill.
+  const unwritten = packageLinks.length === 0 && rootLinks.length === 0 ? [] : skillDirs.filter((dir) =>
+    packageLinks.some((link) => link.dir === dir) ? !holdsSkill(cwd, dir) : !installedSkillDirs.includes(dir),
+  );
   for (const dir of unwritten.filter((missing) => !packageLinks.some((link) => link.dir === missing))) {
     clack.log.info(packageLinks.length > 0
       ? `Not copying the skill into ${dir}: the package manager links it from the installed e2e in this project; create the folder and install again to link it there`
@@ -403,11 +406,12 @@ export async function init(root: string, options: InitOptions = {}): Promise<Ini
   facts.mcp = mcpFiles.length > 0;
   // A workspace member takes its workspace root's manager when this machine has it, and is treated as a standalone project otherwise.
   const own = detectPackageManager(cwd, pkg.manifest.packageManager);
-  const manager = workspace.manager === own || isInstalled(workspace.manager, workspace.root) ? workspace.manager : own;
+  const project = workspace.manager === own || isInstalled(workspace.manager, workspace.root) ? workspace : projectManager(own, cwd);
+  const { manager } = project;
   if (manager !== workspace.manager) clack.log.warn(`This workspace uses ${workspace.manager}, which was not found on this machine; continuing with ${manager}`);
   let mcpRegistrations: ReturnType<typeof planMcpRegistration>['registrations'];
   try {
-    const plan = planMcpRegistration(cwd, mcpFiles, manager);
+    const plan = planMcpRegistration(cwd, mcpFiles, project);
     mcpRegistrations = plan.registrations;
     for (const link of plan.links) {
       clack.log.warn(`Symlink, not touching: ${link.relative} -> ${link.target} (e2e mcp server)`);
@@ -682,7 +686,7 @@ function planWorkflow(input: {
 }): PlannedWorkflow {
   const { cwd, repositoryRoot } = input;
   // A workspace member installs and caches at the workspace root, with the root's manager.
-  const { manager, root: installRoot } = detectWorkspacePackageManager(cwd);
+  const { manager, root: installRoot, yarnBerry } = detectWorkspacePackageManager(cwd);
   const packageManagerField = readPackageManifest(installRoot)?.['packageManager'];
   const packageManager = typeof packageManagerField === 'string' ? packageManagerField : '';
   const gateways = input.existingConfigText === undefined
@@ -698,7 +702,7 @@ function planWorkflow(input: {
     ...(nodeVersionFile === undefined ? {} : { nodeVersionFile: posixRelative(repositoryRoot, nodeVersionFile) }),
     ...(nodeMajor === undefined ? {} : { nodeMajor }),
     ...(manager === 'pnpm' && !packageManager.startsWith('pnpm@') ? { pnpmVersion: localPnpmMajor() } : {}),
-    yarnBerry: existsSync(path.join(installRoot, '.yarnrc.yml')) || /^yarn@[2-9]/u.test(packageManager),
+    yarnBerry,
     // Bun before 1.2 writes the binary bun.lockb.
     ...(manager === 'bun' && !existsSync(path.join(installRoot, 'bun.lock')) && existsSync(path.join(installRoot, 'bun.lockb')) ? { lockfile: 'bun.lockb' } : {}),
     secrets,

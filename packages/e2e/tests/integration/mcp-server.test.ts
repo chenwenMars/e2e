@@ -67,6 +67,19 @@ export const kiosk = createFakeEngine({
 });
 `;
 
+// A device engine package, as a session opened with `engine` loads one: it
+// writes the app its `init` received beside its entry.
+const KIOSK_ENGINE = `import { writeFileSync } from 'node:fs';
+import { createFakeEngine } from ${JSON.stringify(new URL('../helpers/fake-engine.ts', import.meta.url).href)};
+
+export default () =>
+  createFakeEngine({
+    device: true,
+    platform: 'kiosk',
+    onInit: (info) => writeFileSync(new URL('./init.json', import.meta.url), JSON.stringify(info.app)),
+  }).engine;
+`;
+
 // A third config: two targets, one a custom engine with fewer verbs, and
 // project tools scoped by platform.
 const CUSTOM_CONFIG = `import type { E2EConfig } from 'e2e';
@@ -621,6 +634,60 @@ describe('e2e mcp', { timeout: 120_000 }, () => {
       expect(dual.text).toMatch(/\n\nScreen: revision b\d+, path \/, \d+ nodes, not listed\..*$/);
       const closedDual = (await other.callTool({ name: 'close_session', arguments: {} })) as { isError?: boolean };
       expect(closedDual.isError).not.toBe(true);
+    } finally {
+      await other.close();
+      bare.cleanup();
+    }
+  });
+
+  it('hands the app of a session opened with no config to the config\'s own checks, whatever its keys', async () => {
+    const bare = createProject({
+      'node_modules/kiosk-engine/package.json': JSON.stringify({ name: 'kiosk-engine', version: '0.0.0', type: 'module', exports: './index.js' }),
+      'node_modules/kiosk-engine/index.js': KIOSK_ENGINE,
+    });
+    const other = new Client({ name: 'e2e-mcp-launch-arguments-test', version: '0.0.0' });
+    await other.connect(new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp'], cwd: bare.dir, env: { ...(process.env as Record<string, string>), CI: '' }, stderr: 'ignore' }));
+    const open = async (args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
+      const result = (await other.callTool({ name: 'open_session', arguments: args }, { timeout: 110_000 })) as { content: { text?: string }[]; isError?: boolean };
+      return { text: result.content.map((part) => part.text ?? '').join('\n'), isError: result.isError === true };
+    };
+    const received = (): unknown => JSON.parse(readFileSync(path.join(bare.dir, 'node_modules/kiosk-engine/init.json'), 'utf8'));
+    try {
+      const device = await open({
+        engine: 'kiosk-engine',
+        app: { bundleId: 'com.example.greeter', launchArguments: ['--profile', 'a b'], permissions: { camera: 'grant' } },
+      });
+      expect(device.isError, device.text).toBe(false);
+      expect(received()).toMatchObject({ bundleId: 'com.example.greeter', launchArguments: ['--profile', 'a b'], permissions: { camera: 'grant' } });
+      const closed = (await other.callTool({ name: 'close_session', arguments: {} })) as { isError?: boolean };
+      expect(closed.isError).not.toBe(true);
+
+      const dashed = await open({ engine: 'kiosk-engine', app: { bundleId: 'com.example.greeter', launchArguments: { '-profile': 'a' } } });
+      expect(dashed.isError).toBe(true);
+      expect(dashed.text).toContain('app.launchArguments argument name "-profile" starts with a dash');
+
+      // The schema names no key but the three it describes: a typo and a bad value are the config's to refuse.
+      const typo = await open({ engine: 'kiosk-engine', app: { bundleId: 'com.example.greeter', launchArgument: ['-e2e'] } });
+      expect(typo.isError).toBe(true);
+      expect(typo.text).toContain('INVALID_CONFIG');
+      expect(typo.text).toContain('unknown key "launchArgument"');
+      expect(typo.text).toContain('launchArguments');
+      const denied = await open({ engine: 'kiosk-engine', app: { bundleId: 'com.example.greeter', permissions: { camera: 'yes' } } });
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('app.permissions.camera must be grant, deny, or reset');
+
+      const list = await open({ engine: '@e2e-dev/web', app: { url: app.url, launchArguments: ['-e2e', 'YES'] } });
+      expect(list.isError).toBe(true);
+      expect(list.text).toContain('INVALID_CONFIG');
+      expect(list.text).toContain('declares app.launchArguments, which describes an installed device app');
+      const named = await open({ engine: '@e2e-dev/web', app: { url: app.url, launchArguments: { e2e: true, tags: ['a'] } } });
+      expect(named.isError).toBe(true);
+      expect(named.text).toContain('INVALID_CONFIG');
+      expect(named.text).toContain('app.launchArguments is an object, and engine "web" takes only a list of strings');
+      const nested = await open({ engine: '@e2e-dev/web', app: { url: app.url, launchArguments: { e2e: { on: true } } } });
+      expect(nested.isError).toBe(true);
+      expect(nested.text).toContain('INVALID_CONFIG');
+      expect(nested.text).toContain('app.launchArguments');
     } finally {
       await other.close();
       bare.cleanup();

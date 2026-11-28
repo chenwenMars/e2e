@@ -158,6 +158,7 @@ export interface ManagedProcessHooks {
  */
 export class ManagedProcess {
   private child: ChildProcess | null = null;
+  private stopping: Promise<void> | undefined;
   private watching = false;
   private reusedExisting = false;
   private spawnedProcess = false;
@@ -430,16 +431,19 @@ export class ManagedProcess {
   /** Gracefully terminates the whole process group, then force-kills. A reused process was never ours to stop. */
   async stop(): Promise<void> {
     if (this.reusedExisting) return;
+    if (this.stopping !== undefined) return this.stopping;
     this.watching = false;
     const child = this.child;
     this.child = null;
     if (child === null) return;
     const stopped = this.terminate(child);
+    this.stopping = stopped;
     stopping.add(stopped);
     try {
       await stopped;
     } finally {
       stopping.delete(stopped);
+      if (this.stopping === stopped) this.stopping = undefined;
     }
   }
 

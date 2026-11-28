@@ -5,8 +5,8 @@ description: Use sua assinatura do ChatGPT, GitHub Copilot, OpenCode Console ou 
 "twitter:image": "https://e2e.com/docs/images/og/subscriptions.png?v=174d49a0e9"
 ---
 
-Rode os passos do agente em um plano que você já paga. Faça login uma vez e
-depois use o modelo do plano em `e2e.config.ts`.
+Rode os passos do agente com um plano que você já paga. Faça login uma vez e
+depois coloque o modelo do plano em `e2e.config.ts`.
 
 | Plano | Como conectar |
 | --- | --- |
@@ -102,9 +102,9 @@ const agent = { model: opencodeConsole('deepseek-v4.1-flash') };
 const goAgent = { model: opencodeConsole('go/deepseek-v4.1-flash') };
 ```
 
-Na rota da Anthropic, uma chamada que não define `maxOutputTokens` pede 8192:
-o SDK da Anthropic não conhece os ids que o OpenCode disponibiliza ali e, por
-conta própria, limita a requisição a 4096 tokens e apenas emite um aviso.
+Na rota da Anthropic, quando `maxOutputTokens` não está definido, as
+requisições usam 8192 como padrão, para que o SDK da Anthropic não limite a
+4096 tokens os modelos do OpenCode cujos ids ele não conhece.
   </Tab>
   <Tab title="SuperGrok">
 <CodeGroup>
@@ -198,45 +198,36 @@ Com `OPENCODE_API_KEY` definida, `e2e models opencode-console` lista os ids
 que essa chave disponibiliza, a mesma chave que `opencodeConsole()` usa no
 lugar do login.
 
-- **Copilot** marca `not enabled` (ative o modelo nas configurações do Copilot
-  no GitHub ou peça ao administrador que gerencia sua licença) e `no chat
-  or responses` (use outro modelo). Ele não consegue ver o que seu plano
-  disponibiliza: no Copilot Free, o GitHub disponibiliza modelos
-  [somente por seleção automática de modelo](https://docs.github.com/en/copilot/get-started/plans),
-  então um modelo chamado pelo id costuma ser recusado. A execução então é
-  interrompida com `MODEL_UNAVAILABLE`, que indica o modelo. Escolha outro id ou um
-  [provedor de API](/models).
-- **OpenCode Console** lista modelos `go/` somente se você tiver o Go. Ele
-  deixa de fora os modelos que seu workspace desativou e os modelos gratuitos
-  do Zen. Em `providerOptions`, use a chave `opencode` para modelos de chat
-  completions e, nos outros, `openai`, `anthropic` ou `google`.
+- **Copilot** marca os modelos como `not enabled` (ative-os nas
+  configurações do GitHub Copilot ou peça ao administrador da sua
+  organização) ou `no chat or responses` (escolha outro modelo). O Copilot
+  Free só disponibiliza modelos por
+  [seleção automática de modelo](https://docs.github.com/en/copilot/get-started/plans),
+  então chamar um id de modelo específico costuma falhar; escolha outro id ou
+  um [provedor de API](/models).
+- **OpenCode Console** lista modelos `go/` somente se você tiver o Go, e
+  esconde os modelos desativados e os gratuitos do Zen. Em `providerOptions`,
+  use a chave `opencode` para modelos de chat completions e, nos outros
+  casos, `openai`, `anthropic` ou `google`.
 
 ## Ajuda com o login
 
-- O ChatGPT abre um navegador. Para usar um código de dispositivo, adicione
-  `--device`.
-- O Copilot usa seu login do GitHub CLI. Sem o `gh`, passe `--client-id` com
-  seu próprio app OAuth do GitHub que tenha o device flow ativado. Para o
-  GitHub Enterprise, adicione `--enterprise-url`.
-- O OpenCode Console mostra um código de dispositivo. Aprove-o e selecione o
-  workspace. A página mostra o e2e como um cliente desconhecido. Para trocar
-  de workspace, rode `npx e2e logout opencode-console` e faça login de novo.
-- O SuperGrok mostra um código de dispositivo e a URL onde você o digita.
+- **ChatGPT** abre o seu navegador. Passe `--device` para usar um código de
+  dispositivo em vez disso.
+- **Copilot** reutiliza o seu login do GitHub CLI (`gh`). Sem o `gh`, passe
+  em `--client-id` o id do seu próprio app OAuth do GitHub com o device flow
+  ativado (adicione `--enterprise-url` para o GitHub Enterprise).
+- **OpenCode Console** exibe um código de dispositivo para você aprovar no
+  seu workspace. Para trocar de workspace depois, rode
+  `npx e2e logout opencode-console` e faça login de novo.
+- **SuperGrok** exibe um código de dispositivo e a URL de verificação.
 
-`npx e2e login` sem provedor abre um menu que mostra quais contas estão
-autenticadas. `npx e2e logout` remove um login. Quando um login salvo deixa de
-funcionar, o passo falha com `MODEL_PROVIDER_FAILED`, e a mensagem traz o
-comando `npx e2e login <provider>` a rodar. Veja a
-[referência da CLI](/reference/cli#e2e-login) para todas as flags.
-
-O cancelamento de chamadas ao modelo também vale durante a espera pela
-renovação de um token.
-
-Quando um login salvo com `npx e2e login` expira, os workers em paralelo o
-renovam uma única vez entre eles. Um worker espera até 30 segundos pela
-renovação de outro worker. Depois disso, o passo dele falha com
-`MODEL_PROVIDER_FAILED`, a menos que o tempo limite do próprio passo o
-encerre antes, como `STEP_TIMEOUT`.
+Rode `npx e2e login` sem argumentos para ver quais contas estão conectadas,
+e `npx e2e logout` para remover uma. Tokens expirados são renovados
+automaticamente (inclusive entre workers em paralelo). Se um login salvo
+deixar de funcionar, o e2e diz qual comando `npx e2e login <provider>` rodar
+de novo. Veja a [referência da CLI](/reference/cli#e2e-login) para todas as
+flags.
 
 ## CI
 
@@ -293,21 +284,17 @@ export default {
 ```
   </Tab>
   <Tab title="Codex">
-Instale o pacote e o adaptador do Codex. Faça login com `codex login` ou
-defina `OPENAI_API_KEY`: quando o Codex não tem login, `codex()` faz o login
-dele com a primeira variável não em branco entre `CODEX_API_KEY` e
-`OPENAI_API_KEY`, a menos que você defina um `DEFAULT_AUTH_REQUEST` não
-em branco. O Codex salva a chave como o login dele, como
-`codex login --with-api-key` (em `CODEX_HOME/auth.json` com o armazenamento
-de credenciais padrão, em lugar nenhum com `ephemeral`), e a mantém até
-`codex logout`. Enquanto `APP_SERVER_LOGS` estiver definida, `codex()` não
-passa nenhuma requisição de login, nem a sua, já que o log do adaptador
-escreveria as credenciais em texto puro. Um login salvo continua funcionando.
-Uma variável em `codex({ env })` substitui a do ambiente, então
-`env: { OPENAI_API_KEY: '' }` mantém longe do Codex uma chave que você definiu
-para o app em teste. Inicie as primeiras sessões em um `CODEX_HOME` novo uma
-de cada vez: várias ao mesmo tempo costumam falhar com
-`failed to initialize sqlite state runtime`.
+Instale o pacote e o adaptador do Codex e depois faça login com
+`codex login`, ou defina `OPENAI_API_KEY` ou `CODEX_API_KEY`. Quando o Codex
+não tem login, `codex()` faz o login dele com essa chave, e o Codex salva a
+chave como o login dele (em `CODEX_HOME/auth.json` com o armazenamento
+padrão) até você rodar `codex logout`. Quando `APP_SERVER_LOGS` está
+definida, `codex()` pula o login com chave de API para que o log do
+adaptador não escreva credenciais em texto puro (um login salvo continua
+funcionando). Passe `env: { OPENAI_API_KEY: '' }` para esconder do
+Codex uma chave que o seu app usa, e inicie a primeira sessão em um
+`CODEX_HOME` novo sem outras sessões ao mesmo tempo, para que o Codex
+inicialize o próprio estado local sem problemas.
 
 <CodeGroup>
 ```bash npm
@@ -340,44 +327,39 @@ export default {
 
 | Opção | O que faz |
 | --- | --- |
-| `model` | Um modelo que o agente oferece, como `sonnet`. Quando o agente não o oferece, a sessão não inicia e o erro lista os modelos que ele oferece. Se for omitido, roda o modelo padrão do agente. |
-| `env` | Variáveis adicionadas ao ambiente do agente. |
-| `system` | Texto acrescentado às regras que o agente recebe com o primeiro passo. |
-| `name` | O nome do executor nos relatórios. |
-
-Falhas inesperadas de encaminhamento param a sessão ACP e aparecem na saída
-de falha do runner, com os segredos ocultados. O cliente HTTP recebe um erro
-genérico ou um stream fechado, sem o texto da exceção.
+| `model` | Qual modelo usar (por exemplo, `'sonnet'`). Sem esta opção, o agente usa o próprio modelo padrão; se o agente não oferecer o modelo pedido, o erro lista os modelos disponíveis. |
+| `env` | Variáveis de ambiente extras para o processo do agente. |
+| `system` | Instruções extras acrescentadas ao prompt inicial do agente. |
+| `name` | Rótulo mostrado para este executor nos relatórios. |
 
 ### O que o agente pode usar
 
-Uma ação que o agente executa com as próprias ferramentas não é gravada, não
-pode ser reproduzida e pode alcançar arquivos ou a web. Por isso, o e2e
-restringe o agente às ferramentas de passo:
+Como as ações feitas com as ferramentas próprias de um agente de código
+(shell, sistema de arquivos, busca na web) não são gravadas e não podem ser
+reproduzidas com segurança, o e2e restringe o agente estritamente às
+ferramentas de passo:
 
-- O processo do agente inicia no seu projeto. A sessão dele abre em um
-  diretório temporário vazio, e o e2e não oferece a ele acesso ao sistema de
-  arquivos nem ao terminal.
-- O e2e permite pedidos de permissão para ferramentas de passo e rejeita
-  todos os outros.
-- Quando uma ferramenta própria do agente roda sem pedir permissão, o e2e
-  interrompe o turno e faz o passo falhar com `POLICY_DENIED`. Chamadas
-  posteriores a ferramentas de passo não executam nenhuma ação. A sessão
-  fecha, então o próximo passo inicia um agente novo, que nunca viu o que a
-  ferramenta leu.
+- As sessões abrem em um diretório temporário vazio, sem acesso ao sistema
+  de arquivos nem ao terminal.
+- Só os pedidos de permissão de ferramentas de passo são aprovados; todos os
+  outros são rejeitados.
+- Se o agente chamar mesmo assim uma das próprias ferramentas, o e2e faz o
+  passo falhar na hora e fecha a sessão, para que os passos seguintes
+  comecem do zero.
 
-Cada preset também desativa as ferramentas próprias do agente que rodam sem
-pedir permissão:
+Os dois presets também desativam, nessas sessões, as ferramentas próprias do
+agente, os servidores MCP do usuário e o acesso ao shell e à web.
 
-- **Claude Code**: nenhuma ferramenta embutida, nenhuma configuração de
+<Accordion title="Detalhes do isolamento por preset">
+- **Claude Code:** nenhuma ferramenta embutida, nenhuma configuração de
   usuário, de projeto ou local, nenhum servidor MCP além das ferramentas de
   passo, nenhuma sessão salva e nenhum desvio dos pedidos de permissão.
-- **Codex**: modo somente leitura, sem shell, busca na web, apps, plugins,
-  navegador ou computer use, e sem snapshots do shell, que copiariam seu
-  ambiente, chaves incluídas, para o disco. Todo servidor MCP da sua
-  configuração do Codex fica desativado somente nessas sessões. O Codex ainda
-  pode iniciar um subagente, o que faz o passo falhar como qualquer
-  ferramenta própria dele.
+- **Codex:** modo somente leitura, sem shell, busca na web, apps, plugins,
+  navegador, computer use ou snapshots do shell (que copiariam as chaves do
+  ambiente para o disco), e todos os servidores MCP do usuário no Codex
+  desativados nessas sessões. Se o Codex iniciar um subagente, o e2e faz o
+  passo falhar como com qualquer outra ferramenta não autorizada.
+</Accordion>
 
 ### Segredos
 

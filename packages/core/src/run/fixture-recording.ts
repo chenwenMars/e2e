@@ -9,7 +9,7 @@ export class FixtureRecorder {
   private readonly declared = new WeakMap<object, string>();
 
   constructor(
-    private readonly environment: AttemptEnvironment,
+    private readonly environment: Pick<AttemptEnvironment, 'steps' | 'budget' | 'config'>,
     /** The default operation timeout, read per call: an `@e2e-dev/core` session's `setDefaultTimeout` moves it. */
     private readonly actionTimeout: () => number = () => environment.config.actionTimeout,
   ) {}

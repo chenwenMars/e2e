@@ -945,14 +945,9 @@ Rules that apply across the matcher groups.
 
 ### Negation
 
-`.not` inverts a matcher. A negated matcher passes only once the negation
-has held:
-
-- It passes after 1000 ms of continuous truth.
-- When `{ timeout }` is shorter than 1000 ms, it passes at the deadline if the
-  negation held for the whole budget.
-- The window counts from the moment the first read that saw the negation
-  started, so a slow read counts toward it.
+`.not` inverts a matcher. A negated matcher passes on the first read that
+satisfies the negation, as in Playwright, and fails when none does before the
+timeout.
 
 ### Strictness
 
@@ -1062,7 +1057,7 @@ export interface Expect extends ExpectCall {
  * not a boolean, is `INVALID_ARGUMENT` before the first read.
  */
 export interface AsyncExpectation {
-  /** Inverts the matcher. A negated matcher passes after 1000 ms of continuous truth. */
+  /** Inverts the matcher. A negated matcher passes on the first read that satisfies the negation. */
   readonly not: AsyncExpectation;
   /** Waits for visibility; `visible: false` waits for hidden or absent state, as `toBeHidden`. */
   toBeVisible(options?: { visible?: boolean; timeout?: number }): Promise<void>;
@@ -1266,7 +1261,7 @@ export interface AsymmetricMatcher {
 
 ```ts
 export interface PollOptions {
-  /** Deadline in milliseconds. Default 5000. */
+  /** Deadline in milliseconds. Default `config.assertionTimeout` in an e2e test, suite hook, or `openHost()` session, else 5000. */
   timeout?: number;
   /**
    * Pause between reads in milliseconds.
@@ -1307,9 +1302,17 @@ export type NegatedPollExpectation<T> = {
 
 ```ts
 export type PassOptions = {
-  /** Timeout in milliseconds. By default, only the phase deadline applies. */
+  /**
+   * Timeout in milliseconds. In `config.toPass` it defaults to 0: only the test, hook, or session deadline applies.
+   * On a call it defaults to the configured value when an e2e test, suite hook, or `openHost()` session
+   * supplies it, else 0. With none of them active, 0 is `INVALID_CONFIG`.
+   */
   timeout?: number;
-  /** Pauses between tries in milliseconds. Default [100, 250, 500, 1000]. The last pause is repeated. */
+  /**
+   * Pauses between tries in milliseconds. The last pause is repeated. In `config.toPass` they default to
+   * [100, 250, 500, 1000]. On a call they default to the configured value when an e2e test, suite hook,
+   * or `openHost()` session supplies it, else [100, 250, 500, 1000].
+   */
   intervals?: readonly number[];
 };
 

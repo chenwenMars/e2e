@@ -48,6 +48,7 @@ const CALLS: Record<string, Call> = {
   dragTo: (locator, options, screen) => locator.dragTo(screen.getByRole('region', { name: 'Bin' }), options),
   scrollIntoView: (locator, options) => locator.scrollIntoView(options),
   swipe: (locator, options) => locator.swipe({ direction: 'down', ...options }),
+  scrollTo: (locator, options) => locator.scrollTo('bottom', options),
 };
 
 /** A screen over a checkbox and a drop region, logging every node lookup and every action the engine receives. */

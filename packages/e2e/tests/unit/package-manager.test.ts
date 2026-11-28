@@ -6,8 +6,10 @@ import {
   addDevDependencyCommand,
   detectPackageManager,
   detectWorkspacePackageManager,
+  execArgv,
   execCommand,
   installCommand,
+  projectManager,
   runScriptCommand,
   type PackageManager,
 } from '../../src/internal/package-manager.ts';
@@ -75,15 +77,15 @@ describe('detectWorkspacePackageManager', () => {
     writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
     expect(detectWorkspacePackageManager(member, {}).manager).toBe('pnpm');
     writeFileSync(path.join(member, 'package-lock.json'), '{}');
-    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'npm', root: member });
+    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'npm', root: member, yarnBerry: false });
     rmSync(path.join(member, 'package-lock.json'));
-    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'pnpm', root: dir });
+    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'pnpm', root: dir, yarnBerry: false });
   });
 
   it('reads a pnpm workspace root with no lockfile yet as pnpm', () => {
     writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
     writeFileSync(path.join(dir, 'package.json'), '{}');
-    expect(detectWorkspacePackageManager(dir, { npm_config_user_agent: 'npm/11.0.0' })).toEqual({ manager: 'pnpm', root: dir });
+    expect(detectWorkspacePackageManager(dir, { npm_config_user_agent: 'npm/11.0.0' })).toEqual({ manager: 'pnpm', root: dir, yarnBerry: false });
   });
 
   it.each([
@@ -118,7 +120,116 @@ describe('detectWorkspacePackageManager', () => {
   });
 });
 
+describe('a devEngines pin', () => {
+  it.each([
+    ['names the manager of a project with no lockfile yet', { devEngines: { packageManager: { name: 'pnpm', onFail: 'error' } } }, {}, 'pnpm'],
+    ['yields to the packageManager field', { packageManager: 'yarn@4.19.0', devEngines: { packageManager: { name: 'pnpm' } } }, {}, 'yarn'],
+    ['yields to a lockfile, which says what installed the project', { devEngines: { packageManager: { name: 'pnpm' } } }, { 'package-lock.json': '{}' }, 'npm'],
+    ['is read from a list of one', { devEngines: { packageManager: [{ name: 'pnpm' }] } }, {}, 'pnpm'],
+    ['is not read when it lists several managers', { devEngines: { packageManager: [{ name: 'pnpm' }, { name: 'yarn' }] } }, {}, 'npm'],
+    ['is not read when it names no manager e2e knows', { devEngines: { packageManager: { name: 'deno' } } }, {}, 'npm'],
+  ] as const)('%s', (_name, manifest, files, expected) => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify(manifest));
+    for (const [name, content] of Object.entries(files)) writeFileSync(path.join(dir, name), content);
+    expect(detectWorkspacePackageManager(dir, {}).manager).toBe(expected);
+    expect(detectPackageManager(dir, 'packageManager' in manifest ? manifest.packageManager : undefined, {})).toBe(expected);
+  });
+
+  it("names a manager and never an install root: a member that repeats its workspace's pin installs at the workspace root", () => {
+    writeFileSync(path.join(dir, 'package.json'), '{"private":true,"packageManager":"pnpm@12.0.0"}');
+    writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+    writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+    const member = path.join(dir, 'apps', 'web');
+    mkdirSync(member, { recursive: true });
+    writeFileSync(path.join(member, 'package.json'), '{"name":"web","devEngines":{"packageManager":{"name":"pnpm","onFail":"error"}}}');
+    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'pnpm', root: dir, yarnBerry: false });
+  });
+
+  it("names the manager of a member whose workspace root names none", () => {
+    writeFileSync(path.join(dir, 'package.json'), '{"private":true,"workspaces":["apps/*"]}');
+    const member = path.join(dir, 'apps', 'web');
+    mkdirSync(member, { recursive: true });
+    writeFileSync(path.join(member, 'package.json'), '{"name":"web","devEngines":{"packageManager":{"name":"pnpm"}}}');
+    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'pnpm', root: dir, yarnBerry: false });
+  });
+
+  it('names the manager of a workspace whose root has no field and no lockfile yet', () => {
+    writeFileSync(path.join(dir, 'package.json'), '{"private":true,"workspaces":["apps/*"],"devEngines":{"packageManager":{"name":"yarn","version":"^4.0.0"}}}');
+    const member = path.join(dir, 'apps', 'web');
+    mkdirSync(member, { recursive: true });
+    writeFileSync(path.join(member, 'package.json'), '{"name":"web"}');
+    expect(detectWorkspacePackageManager(member, {})).toEqual({ manager: 'yarn', root: dir, yarnBerry: true });
+  });
+});
+
+describe('Yarn flavor', () => {
+  const flavor = (files: Record<string, string>, invoking = 'yarn/1.22.22'): boolean => {
+    for (const [name, content] of Object.entries(files)) writeFileSync(path.join(dir, name), content);
+    return detectWorkspacePackageManager(dir, { npm_config_user_agent: `${invoking} npm/? node/v24.0.0 darwin arm64` }).yarnBerry;
+  };
+  const CLASSIC_LOCK = '# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\n';
+  const BERRY_LOCK = '# This file is generated by running "yarn install" inside your project.\n\n__metadata:\n  version: 10\n  cacheKey: 10c0\n';
+
+  it.each([
+    ['a .yarnrc.yml', { '.yarnrc.yml': '', 'yarn.lock': '' }, true],
+    ['a packageManager field on Yarn 4', { 'package.json': '{"packageManager":"yarn@4.19.0"}' }, true],
+    ['a packageManager field on Yarn 3', { 'package.json': '{"packageManager":"yarn@3.8.7"}' }, true],
+    ['a packageManager field on Yarn 2', { 'package.json': '{"packageManager":"yarn@2.4.3"}' }, true],
+    ['a packageManager field on a two-digit major', { 'package.json': '{"packageManager":"yarn@10.0.0"}' }, true],
+    ['a packageManager field on Yarn 1', { 'package.json': '{"packageManager":"yarn@1.22.22"}', 'yarn.lock': BERRY_LOCK }, false],
+    ['only a Yarn 2+ lockfile', { 'package.json': '{}', 'yarn.lock': BERRY_LOCK }, true],
+    ['only a Yarn 1 lockfile', { 'package.json': '{}', 'yarn.lock': CLASSIC_LOCK }, false],
+    ['nothing', {}, false],
+  ] as const)('reads Yarn 2 or later from %s', (_name, files, expected) => {
+    expect(flavor(files)).toBe(expected);
+  });
+
+  it.each([
+    ['Yarn 4 with nothing on disk yet', 'yarn/4.19.0', {}, true],
+    ['Yarn 10 with nothing on disk yet', 'yarn/10.0.0', {}, true],
+    ['Yarn 1 with nothing on disk yet', 'yarn/1.22.22', {}, false],
+    ['Yarn 4 over a Yarn 1 lockfile, which decides', 'yarn/4.19.0', { 'yarn.lock': CLASSIC_LOCK }, false],
+    ['Yarn 4 over a Yarn 1 packageManager field, which decides', 'yarn/4.19.0', { 'package.json': '{"packageManager":"yarn@1.22.22"}' }, false],
+    ['Yarn 1 over a Yarn 2+ lockfile, which decides', 'yarn/1.22.22', { 'yarn.lock': BERRY_LOCK }, true],
+    ['Yarn 4 over an empty lockfile, which decides nothing', 'yarn/4.19.0', { 'yarn.lock': '' }, true],
+    ['Yarn 1 over an empty lockfile, which decides nothing', 'yarn/1.22.22', { 'yarn.lock': '' }, false],
+    ['Yarn 1 under a devEngines pin on Yarn 4', 'yarn/1.22.22', { 'package.json': '{"devEngines":{"packageManager":{"name":"yarn","version":"^4.0.0"}}}' }, true],
+    ['Yarn 4 under a devEngines pin on Yarn 1', 'yarn/4.19.0', { 'package.json': '{"devEngines":{"packageManager":{"name":"yarn","version":"1.22.22"}}}' }, false],
+    ['Yarn 4 under a devEngines pin that leaves the major open', 'yarn/4.19.0', { 'package.json': '{"devEngines":{"packageManager":{"name":"yarn","version":">=1"}}}' }, true],
+    ['Yarn 4 under a devEngines pin that allows two majors', 'yarn/4.19.0', { 'package.json': '{"devEngines":{"packageManager":{"name":"yarn","version":"^1.22.0 || ^4.0.0"}}}' }, true],
+    ['Yarn 1 under a devEngines pin that allows two majors', 'yarn/1.22.22', { 'package.json': '{"devEngines":{"packageManager":{"name":"yarn","version":"^4 || ^1"}}}' }, false],
+  ] as const)('reads the Yarn that started the process only when no project file decides: %s', (_name, invoking, files, expected) => {
+    expect(flavor(files, invoking)).toBe(expected);
+  });
+
+  it("reads a workspace member's flavor at the workspace root, not in its own folder", () => {
+    writeFileSync(path.join(dir, 'package.json'), '{"private":true,"workspaces":["apps/*"]}');
+    writeFileSync(path.join(dir, 'yarn.lock'), BERRY_LOCK);
+    const member = path.join(dir, 'apps', 'web');
+    mkdirSync(member, { recursive: true });
+    writeFileSync(path.join(member, 'package.json'), '{"name":"web"}');
+    expect(detectWorkspacePackageManager(member, { npm_config_user_agent: 'yarn/1.22.22' })).toEqual({ manager: 'yarn', root: dir, yarnBerry: true });
+  });
+
+  it('is false for another manager, whatever Yarn left behind', () => {
+    writeFileSync(path.join(dir, '.yarnrc.yml'), '');
+    writeFileSync(path.join(dir, 'package.json'), '{"packageManager":"pnpm@10.0.0"}');
+    expect(detectWorkspacePackageManager(dir, {})).toEqual({ manager: 'pnpm', root: dir, yarnBerry: false });
+    expect(projectManager('yarn', dir).yarnBerry).toBe(true);
+  });
+});
+
 describe('manager commands', () => {
+  it.each([
+    ['npm', false, 'npx', []],
+    ['pnpm', false, 'pnpm', ['exec']],
+    ['yarn', false, 'yarn', ['--silent', 'exec', '--']],
+    ['yarn', true, 'yarn', ['exec']],
+    ['bun', false, 'bunx', []],
+  ] as const)('starts an installed binary for another program with %s (Yarn 2 or later: %s)', (manager, yarnBerry, command, args) => {
+    expect(execArgv({ manager, yarnBerry })).toEqual({ command, args });
+  });
+
   it('spells the script run, the binary exec, and the dev dependency add for each manager', () => {
     expect((['npm', 'pnpm', 'yarn', 'bun'] as const satisfies readonly PackageManager[]).map((manager) => [
       runScriptCommand(manager, 'test:e2e'),
@@ -127,7 +238,7 @@ describe('manager commands', () => {
     ])).toEqual([
       ['npm run test:e2e', 'npm exec -- e2e guide', 'npm install --save-dev ai'],
       ['pnpm test:e2e', 'pnpm exec e2e guide', 'pnpm add -D ai'],
-      ['yarn test:e2e', 'yarn e2e guide', 'yarn add -D ai'],
+      ['yarn test:e2e', 'yarn exec -- e2e guide', 'yarn add -D ai'],
       ['bun run test:e2e', 'bun run e2e guide', 'bun add -d ai'],
     ]);
   });

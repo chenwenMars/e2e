@@ -1,0 +1,25 @@
+{
+  "name": "@e2e-dev/electron-testbed",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Electron testbed: runs the e2e runner against a small Electron app through @e2e-dev/electron",
+  "type": "module",
+  "main": "app/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit && node node_modules/e2e/dist/cli/bin.js run",
+    "test:agent": "node node_modules/e2e/dist/cli/bin.js run --config e2e.agent.config.ts"
+  },
+  "dependencies": {
+    "@e2e-dev/electron": "workspace:*",
+    "e2e": "workspace:*"
+  },
+  "devDependencies": {
+    "@napi-rs/image": "1.16.0",
+    "@types/node": "26.6.11",
+    "ai": "7.0.183",
+    "electron": "45.5.0",
+    "typescript": "7.0.2"
+  }
+}

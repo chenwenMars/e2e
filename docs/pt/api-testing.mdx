@@ -1,0 +1,98 @@
+---
+title: API
+description: Verifique sua API com a fixture request e os matchers de valor, nos mesmos arquivos e na mesma execução dos testes de UI.
+"og:image": "https://e2e.com/docs/images/og/api-testing.png?v=bd427bf4fd"
+"twitter:image": "https://e2e.com/docs/images/og/api-testing.png?v=bd427bf4fd"
+---
+
+Os testes de API usam a fixture [`request`](/reference/request) e os matchers
+de valor lado a lado com os seus testes de UI, sem chamadas ao modelo.
+
+```ts title="tests/users-api.e2e.ts"
+import { test, expect } from 'e2e';
+import { z } from 'zod';
+
+const User = z.object({ id: z.number(), name: z.string() });
+
+test('GET /api/users returns the seeded users', async ({ request }) => {
+  const response = await request.get('/api/users');
+  expect(response).toBeOK();
+  expect(response.headers['content-type']).toContain('application/json');
+  const users = expect(await response.json()).toMatchSchema(z.array(User));
+  expect(users).toHaveLength(3);
+  expect(users.map((user) => user.name)).toEqual(['Ada', 'Grace', expect.any(String)]);
+});
+```
+
+Cada chamada é um passo no relatório, como `GET /api/users`, e faz o teste
+falhar quando passa de `actionTimeout`.
+
+[`toBeOK`](/reference/expect#tobeok) exige um status 2xx. Quando falha, ele
+informa o status e também a origem e o caminho da resposta.
+
+`toMatchSchema` aceita qualquer [Standard Schema](/reference/expect#matching-a-schema),
+como Zod, Valibot ou ArkType, e retorna o valor já tipado. Use o schema com
+que o seu app faz o parse da API, e o teste falha quando a API deixa de
+corresponder a ele.
+
+## Onde a API roda
+
+Um caminho como `/api/users` é resolvido em relação ao `app.url` do alvo, com
+a porta que a execução escolheu quando a URL declara a porta `0`. Assim, um
+mesmo arquivo roda contra o `app.command` que a configuração inicia e contra
+um deploy de preview. Uma `/` no início parte da origem: quando `app.url` tem
+um caminho, como `/shop`, escreva ``request.get(`${app.baseUrl}/api/users`)``.
+
+Quando a API salva o estado depois de responder, use
+[`expect.poll`](/reference/expect#polling-a-value) para ler de novo até um
+matcher passar.
+
+## Requisições autenticadas
+
+`request` não envia os cookies do navegador. Para chamar a API como o usuário
+que o teste autenticou, envie em um cabeçalho os cookies que o navegador
+guarda para aquela URL. `browser` precisa de um alvo web:
+
+```ts title="tests/orders-api.e2e.ts"
+import { expect } from 'e2e';
+import { test } from '@e2e-dev/web';
+
+test('lists my orders', async ({ app, browser, request }) => {
+  await app.open('/sign-in');
+  // ...sign in through the UI...
+  const cookies = await browser.cookies('/api/orders');
+  const headers = { cookie: cookies.map((c) => `${c.name}=${c.value}`).join('; ') };
+  expect(await request.get('/api/orders', { headers })).toBeOK();
+});
+```
+
+[`browser.cookies(url)`](/reference/web#cookies) retorna só os cookies que o
+navegador enviaria para aquela URL, então os de outro site, como os de um
+provedor de login, ficam fora do cabeçalho. Sem URL, ele retorna todos os
+cookies do navegador.
+
+## Sem navegador
+
+Em um alvo web, um teste de API abre mesmo assim um contexto de navegador. Se
+você quer testes de API puros, sem o custo de um navegador, omita a engine no
+alvo e passe uma URL absoluta vinda de uma variável de ambiente:
+
+```ts
+const response = await request.get(`${process.env.API_URL}/api/users`);
+```
+
+`e2e init` pode criar um alvo sem engine para você.
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="request" icon="plug" href="/reference/request">
+    Todos os métodos, opções e campos da resposta.
+  </Card>
+  <Card title="Matchers de valor" icon="circle-check" href="/reference/expect#value-matchers">
+    Todos os matchers, `toMatchSchema` e `expect.poll`.
+  </Card>
+  <Card title="Autenticação" icon="key" href="/authentication">
+    Faça login uma vez e reutilize a sessão em todos os testes.
+  </Card>
+</CardGroup>

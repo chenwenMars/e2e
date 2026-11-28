@@ -25,11 +25,17 @@ export interface PackageManifest {
 
 const WIDE_RANGE = /^>=(\d+)\.\d+\.\d+ <(\d+)$/;
 
-/** Every publishable package under `packages/`: a named manifest without `private: true`. */
+/**
+ * Every publishable package under `packages/`: a named manifest without
+ * `private: true`, in `packages/<name>` or, for the platform packages of a
+ * native addon, `packages/<name>/npm/<platform>` (`pnpm-workspace.yaml`).
+ */
 export function publicPackages(): { path: string; manifest: PackageManifest }[] {
   const packages: { path: string; manifest: PackageManifest }[] = [];
-  for (const dir of readdirSync(join(REPO_ROOT, 'packages'))) {
-    const path = join(REPO_ROOT, 'packages', dir, 'package.json');
+  const root = join(REPO_ROOT, 'packages');
+  const dirs = readdirSync(root).flatMap((dir) => [join(root, dir), ...subdirectories(join(root, dir, 'npm'))]);
+  for (const dir of dirs) {
+    const path = join(dir, 'package.json');
     let manifest: Partial<PackageManifest>;
     try {
       manifest = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageManifest>;
@@ -40,6 +46,15 @@ export function publicPackages(): { path: string; manifest: PackageManifest }[] 
     packages.push({ path, manifest: manifest as PackageManifest });
   }
   return packages;
+}
+
+/** The directories in `dir`, or none when it does not exist. */
+function subdirectories(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? [join(dir, entry.name)] : []));
+  } catch {
+    return [];
+  }
 }
 
 /** The peer range on a sibling at `version`, its prerelease suffix dropped: `>=0.15.0 <1` for `0.15.0-canary-x`. */

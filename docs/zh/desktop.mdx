@@ -3,10 +3,10 @@ title: 桌面端
 description: 通过辅助功能树测试 macOS 上的原生桌面应用。
 ---
 
-`@e2e-dev/desktop` 在原生桌面应用上运行测试。它使用 [agent-desktop](https://github.com/vercel-labs/agent-desktop)，通过操作系统的辅助功能树读取并操作应用。测试使用与浏览器测试相同的 `agent`、`screen` 和 `expect` API。
+`@e2e-dev/desktop` 在原生桌面应用上运行测试。它使用运行在测试进程中的原生驱动程序，通过操作系统的辅助功能树读取并操作应用。测试使用与浏览器测试相同的 `agent`、`screen` 和 `expect` API。
 
 <Note>
-  桌面端引擎是原型，仅支持 macOS。包含桌面端测试目标的配置仍可在 Windows 和 Linux 上加载，使用 `--target` 选择其他测试目标即可运行它们。如果运行包含桌面端测试目标，则会在任何测试开始前停止。
+  桌面端引擎是原型，仅支持 macOS 13 或更高版本。包含桌面端测试目标的配置仍可在 Windows 和 Linux 上加载，用 `--target` 选择其他测试目标时，它们可以在这些系统上运行。包含桌面端测试目标的运行会在任何测试开始前以 `UNSUPPORTED_CAPABILITY` 停止。
 </Note>
 
 ## 设置
@@ -27,12 +27,12 @@ bun add --dev e2e @e2e-dev/desktop
 ```
 </CodeGroup>
 
-在 macOS 上，启动 e2e 的应用需要在**系统设置 > 隐私与安全性**中获得两项权限。该应用可能是终端、IDE 或 CI 智能体。
+在 macOS 上，启动 e2e 的应用需要在**系统设置 > 隐私与安全性**中获得两项权限。该应用是你的终端、IDE 或 CI 智能体。
 
 - **辅助功能**，用于读取并操作应用。
 - **屏幕录制**，用于截图。
 
-首次运行会下载 agent-desktop 并校验其 SHA-256 摘要。要使用自行安装的版本（例如通过 Homebrew 安装的版本），请设置 `desktop({ binary: '/path/to/agent-desktop' })`。
+npm 会随引擎一起安装适用于你的 Mac 的驱动程序，即 `@e2e-dev/desktop-darwin-arm64` 或 `@e2e-dev/desktop-darwin-x64`。你不需要 Rust 或 Xcode。
 
 检查设置：
 
@@ -50,13 +50,13 @@ bunx e2e doctor
 ```
 </CodeGroup>
 
-它会检查 agent-desktop、两项权限和 `appPath` 构建。
+它会检查驱动程序、两项权限和 `appPath` 构建。
 
 ## 指定应用
 
 将测试目标的 `app.appPath` 设为已构建的 `.app` 包，或将 `app.bundleId` 设为已安装应用的 bundle ID 或名称，例如 `com.apple.calculator`。同时设置两者时，会启动 `appPath` 构建，且其 bundle ID 必须是 `bundleId`。每次启动都会传入 `app.launchArguments`。与 iOS 一样，对象条目会变为 `-name value`，因此 `{ AppleLanguages: ['fr'] }` 会以法语打开应用。
 
-启动的应用只会收到最小环境变量集：`HOME`、`USER`、`LOGNAME`、`SHELL`、`PATH`、`TMPDIR`、`LANG`、`LC_*`、`__CF_USER_TEXT_ENCODING`，以及用于跟踪进程的 `E2E_DESKTOP_LAUNCH`，或按 `bundleId` 启动时的 `AGENT_DESKTOP_HOME`。因此机密值、模型密钥和 CI 令牌不会泄漏到应用中。macOS 内置应用和带有 `restrict` 签名标志的构建必须通过 `bundleId` 启动，不能使用 `appPath`。
+启动的应用只会得到最小的环境（`HOME`、`USER`、`LOGNAME`、`SHELL`、`PATH`、`TMPDIR`、`LANG`、`LC_*`、`__CF_USER_TEXT_ENCODING`，以及用于跟踪进程的 `E2E_DESKTOP_LAUNCH`），因此你的机密值、模型密钥和 CI 令牌不会泄漏到应用中。macOS 会在它自带的应用、Apple 的 App Store 应用（Numbers、Pages、Xcode）以及带有 `restrict` 签名标志的构建中隐藏该变量，因此这些应用还会收到 `-E2EDesktopLaunch=<token>` 作为最后一个启动参数。引擎通过签名识别 App Store 应用，因此每个 Mac App Store 应用都会收到该参数。
 
 ```ts title="e2e.config.ts"
 import type { E2EConfig } from 'e2e';
@@ -78,7 +78,7 @@ export default {
 
 ## 编写测试
 
-从 `@e2e-dev/desktop` 导入 `test`。默认情况下，`app.open()` 将应用留在后台。对于必须进入前台才显示窗口的应用，请使用 `desktop({ headed: true })`。`e2e run --headed` 也会在前台启动应用，但只有 `desktop({ headed: true })` 会启用下文所述的物理输入。如果引擎之前启动过该应用，会先退出那个实例。你手动打开的实例保持原样，引擎不会读取或操作它。每个测试结束时都会退出应用，也不会恢复应用上次退出时保存的窗口。
+从 `@e2e-dev/desktop` 导入 `test`。默认情况下，`app.open()` 将应用留在后台。对于必须进入前台才显示窗口的应用，请使用 `--headed` 运行。`desktop({ physicalInput: true })` 也会将应用置于前台，并启用下文所述的物理输入。如果引擎之前启动过该应用，会先退出那个实例。你自己打开的实例保持原样，引擎不会读取或操作它。同一时间只运行一个实例的应用会把启动交给已在运行的实例，因此 `app.open()` 会失败并指出那个实例：请先退出它。每个测试结束时应用都已退出，应用上次退出时保存的窗口也不会恢复。
 
 ```ts title="tests/sign-in.e2e.ts"
 import { test } from '@e2e-dev/desktop';
@@ -95,45 +95,72 @@ test('signs in', async ({ app, screen }) => {
 });
 ```
 
-角色采用网页端名称：`textbox`、`checkbox`、`combobox`、`button`。静态文本的角色为 `text`，请用 `getByText` 查找。控件名称由 macOS 辅助功能提供，即其标题或辅助功能标签。按钮的标题同时是它的名称和文本，因此 `getByText('Sign in')` 会找到按钮以及相同内容的静态文本；`getByRole('button', 'Sign in')` 则只找到按钮。暂不支持 `getByPlaceholder`：macOS 不报告占位符，而是将无标签字段的占位符作为名称，因此请用 `getByRole('textbox', 'Username')` 查找该字段。`getByTestId` 查找控件的 `AXIdentifier`，对应 AppKit 的 `accessibilityIdentifier` 和 SwiftUI 的 `.accessibilityIdentifier`。
+角色采用网页端使用的名称：`textbox`、`checkbox`、`combobox`、`button`。树中的静态文本列为 `text`，它不是 `getByRole` 的角色：请用 `getByText` 查找。控件的名称由 macOS 辅助功能提供：即其标题或辅助功能标签。按钮的标题既是它的名称也是它的文本，因此 `getByText('Sign in')` 会找到按钮以及内容相同的静态文本；`getByRole('button', 'Sign in')` 只找到按钮。不支持 `getByPlaceholder`：引擎用占位符为没有标签的字段命名，因此请用 `getByRole('textbox', 'Username')` 查找该字段。`getByTestId` 查找控件的 `AXIdentifier`（AppKit 中的 `accessibilityIdentifier`，SwiftUI 的 `.accessibilityIdentifier`）。
 
-`desktop` 测试夹具可列出应用窗口（`desktop.windows()`）、选择 `screen` 读取的窗口（`desktop.useWindow(window)`），以及退出应用（`desktop.closeApp()`）。
+## desktop 测试夹具
+
+| 方法 | 作用 |
+| --- | --- |
+| `windows()` | 应用已打开的窗口 |
+| `waitForWindow(trigger, { timeout }?)` | 运行 `trigger`，等待它打开的窗口，并将该窗口设为活动窗口 |
+| `window({ title }, { timeout }?)` | 按标题等待窗口并返回它，不会将它设为活动窗口 |
+| `keyboard.press(key)` | 向活动窗口按下一个按键或 `ControlOrMeta+2` 这样的组合键，用于没有可获得键盘焦点的控件的应用 |
+| `keyboard.type(text)` | 向获得焦点的字段输入文本 |
+| `closeApp()` | 退出应用。`app.open()` 会再次启动它 |
+| `platform` | 应用运行所在的操作系统，即 `'macos'` |
+
+## 处理多个窗口
+
+`screen` 读取活动窗口。在测试选定窗口之前，活动窗口就是应用的焦点窗口，因此获得焦点的对话框无需单独的步骤即可读取。`desktop.waitForWindow()` 运行打开窗口的步骤，并将该窗口设为活动窗口。此后无论哪个窗口拥有焦点，它都保持活动，直到关闭为止。之后 `screen` 会重新读取焦点窗口。
+
+```ts
+const settings = await desktop.waitForWindow(() =>
+  screen.getByRole('button', 'Settings…').tap(),
+);
+await expect(screen.getByRole('checkbox', 'Launch at login')).toBeVisible();
+
+const main = await desktop.window({ title: 'My App' });
+await main.activate();
+await settings.close();
+```
+
+窗口有 `title()`、`isActive()`、`isClosed()`、`activate()` 和 `close()`。每个方法都会询问 macOS，因此都要 `await`。`close()` 会按下窗口的关闭按钮，因此如果窗口为了询问未保存的更改而保持打开，它会失败。`title` 接受精确字符串或 `RegExp`。对于应用自行打开的窗口，请使用 `desktop.window()`。
 
 ## 与网页端的区别
 
-| 方面 | 桌面端测试目标的行为 |
+| 方面 | 在桌面端测试目标上 |
 | --- | --- |
-| 输入 | 应用通过 macOS Accessibility API 在后台运行，你仍可自由使用鼠标和键盘。不在后台打开窗口的应用（如文档型应用）需要 `headed: true` 或 `--headed`。 |
-| 物理输入 | `doubleTap`、`hover`、`press`、坐标点击和焦点输入需要 `desktop({ headed: true })`。它会将应用置于前台，并使用真实的鼠标和键盘输入。注意浮动窗口不要遮挡目标区域。 |
-| 按键 | `press` 只向活动窗口中获得焦点的控件发送按键（`headed: true`）。支持命名按键、字母、数字和 ``, . / ; ' [ ] \ - = ` ``，拒绝 `!` 或 `é` 等其他字符，并阻止 `ControlOrMeta+q` 等系统快捷键（请改用 `desktop.closeApp()`）。 |
-| 选择 | `selectOption` 按选项标签匹配，不按索引匹配。可编辑的组合框请使用 `fill()`。 |
-| 窗口 | `screen` 读取 `desktop.useWindow()` 选中的窗口，否则读取当前焦点窗口，再否则读取第一个可见窗口。包含附属对话框，但不包含关闭、最小化、缩放等窗口装饰控件。最小化窗口视为隐藏，其他 macOS Space 中的窗口仍可读取。 |
-| 读取 | 只有没有打开窗口的应用才被读取为空。如果屏幕锁定或窗口树深度超过 `maxDepth`，定位器会持续重试直到超时，避免错误地判定元素不存在。屏幕锁定时 `app.open()` 会失败。 |
-| 菜单栏 | 尚不能读取应用菜单栏；请用快捷键触发菜单项（`press` + `headed: true`）。 |
-| 网页内容 | 不支持浏览器窗口、Electron 应用和 WebView，请使用 `@e2e-dev/web`。 |
-| 工作进程 | 每个桌面端测试目标仅限一个工作进程。运行两个 `headed: true` 的桌面端测试目标时，请设置 `workers: 1`，避免争用鼠标和键盘。 |
-| 状态 | 尚不支持 `app.clearState()`。 |
-| 机密值 | 密码字段不会暴露其值，截图中会涂黑。无法读取状态的字段不会涂黑，而是显示圆点。如果截图无法遮盖可读取的密码字段，或窗口超过 `maxDepth`，则会失败而不保存截图。 |
+| 输入 | 应用在后台运行。动作使用 macOS Accessibility API，按键进入应用自己的事件队列，因此你的鼠标和键盘不受占用。不在后台打开窗口的应用（如文档型应用）需要 `--headed` 或 `physicalInput: true`。对已禁用的控件执行点击、`doubleTap`、`secondaryTap`、`check`、`uncheck`、`fill`、`clear` 或 `selectOption` 时，会在动作的超时内等待应用启用它，然后以 `ACTION_FAILED` 失败（被拒绝，因此没有发送任何内容）；如果复选框已经显示 `check` 或 `uncheck` 要求的状态，则保持原样。 |
+| 物理输入 | `doubleTap`、`hover` 和坐标点击需要 `desktop({ physicalInput: true })`，它会将应用置于前台并使用真实的指针。此时按键和输入使用真实的键盘。如果在指针移动之前或之后，指针下方是另一个窗口（无论属于该应用还是其他应用），或是元素内部的控件（某一行中的按钮或文本字段），点击会被拒绝；如果该位置上方有另一个窗口，在某一点上的点击或悬停会被拒绝。双击是一个手势，与人的双击一样：第一次点击发出后，第二次会立即跟上，不管第一次打开了什么。注意浮动窗口不要与目标区域重叠。 |
+| 按键 | `press` 和输入只向应用关键窗口中获得焦点的控件发送按键；未启用 `physicalInput` 时，通过 `activate()` 设为活动但不是关键窗口的窗口收不到任何按键。它支持命名按键、字母、数字和 ``, . / ; ' [ ] \ - = ` ``（`!` 或 `é` 等其他字符会被拒绝），并阻止 `ControlOrMeta+q` 等系统快捷键（请改用 `desktop.closeApp()`）。快捷键中的字母是 Mac 键盘布局上的那个字母，因此在 AZERTY 上 `ControlOrMeta+a` 也是全选。带数字或标点的快捷键需要不按 Shift 就能输入该字符的布局：在 AZERTY 上，`ControlOrMeta+2` 会因不受支持而失败。未启用 `physicalInput` 时，`ControlOrMeta` 快捷键只能到达应用的菜单栏：菜单项的快捷键有效，但由获得焦点的控件或关键窗口处理的快捷键（拷贝、粘贴、全选、SwiftUI 按钮的 `.keyboardShortcut`）不起任何作用，而 `press` 仍会成功。这些情况请使用 `physicalInput: true`。定位器的 `press` 需要一个可获得键盘焦点的控件；对于没有这类控件的应用（如计算器），请使用 `desktop.keyboard.press()`。 |
+| 选择 | `selectOption` 按选项标签匹配，不按索引匹配。表格行的标签是它显示的全部文本，逐个单元格排列，与它的无障碍名称一致；两行都显示的标签会被拒绝。在弹出按钮上，它会检查按钮是否显示所选的选项。已禁用的选项会在动作的超时内等待应用启用它，然后以指明该选项的 `ACTION_FAILED` 失败，菜单随之关闭；如果两个选项标题相同，选择操作会从菜单中选取已启用的那个，而已经显示该标题的弹出按钮保持原样，因为关闭的弹出按钮不显示可用于区分它们的菜单项。对于可编辑的组合框，请改用 `fill()`；不接受输入值的组合框会被拒绝，因此请先点击它，再点击选项。 |
+| 窗口 | `screen` 读取[活动窗口](#work-with-several-windows)：即测试设为活动的窗口，否则是焦点窗口，否则是应用的主窗口，否则是第一个可见窗口。macOS 27 可能覆盖在应用上方的 Siri 对话框，只有在测试将它设为活动窗口时才会被读取。打开了表单（sheet）的窗口算作拥有焦点。表单以及打开的上下文菜单或弹出菜单都包含在内，因此 `getByRole('menuitem', 'Copy')` 能找到菜单中的项；窗口装饰控件（关闭、最小化、缩放）不包含在内。最小化的窗口以及滚动到列表可见范围之外的行会被读取为隐藏，因此 `getByRole` 会跳过它们。`getByText` 和 `getByTestId` 仍会匹配隐藏的节点。两者查找的都是带有该文本或标识符的节点，因此 `getByText('Item 40')` 找到的是行的标签，而不是行本身。对隐藏节点执行点击、辅助点击、`check` 或 `uncheck` 时，会先将它滚动到可见范围内，否则会被拒绝；滚动之后的失败会以 `ACTION_FAILED` 失败，被视为可能已经生效的动作，绝不重试，因为列表已经移动。位于其他 macOS Space 的窗口仍可读取。 |
+| 读取 | 只有没有打开窗口的应用才会被读取为空。如果屏幕已锁定、窗口树的深度超过 `maxDepth`，或窗口包含的元素超过一次读取所取的 8,000 个，定位器会持续重试直到超时，而不是返回错误的否定结果，并且该窗口的截图会被拒绝。屏幕锁定时 `app.open()` 会失败。 |
+| 菜单栏 | 应用的菜单栏尚不可读取；请用快捷键触发菜单项（`press`）。 |
+| 网页内容 | 不支持浏览器窗口、Electron 应用和 Web 视图。网页应用请使用 `@e2e-dev/web`，Electron 应用请使用 [`@e2e-dev/electron`](/electron)。 |
+| 工作进程 | 每个桌面端测试目标仅限一个工作进程。如果运行两个使用 `physicalInput: true` 的桌面端测试目标，请设置 `workers: 1`，以免它们争用光标和键盘。 |
+| 滚动 | 不支持 `scrollTo(edge)`，它会以 `UNSUPPORTED_CAPABILITY` 失败。请改用 `scrollUntilVisible`。 |
+| 状态 | 尚不支持 `app.clearState()` 和 `app.back()`。`test.setup` 会话和 `video: 'on'` 会在收集测试时被拒绝，因为引擎不保存状态，也不录制视频。 |
+| 不支持 | `getByPlaceholder`、`toBeInViewport`、`toBeEmpty`、`blur`、`longPress`、`dragTo`、`setInputFiles`、点击的 `modifiers` 以及 `selectOption({ index })` 会失败，并给出说明这一点的消息。 |
+| 机密值 | 密码字段从不暴露其值，在截图中会被涂黑。如果截图无法遮盖某个密码字段，或者窗口的深度超过 `maxDepth` 或大小超过一次读取所能取的范围，截图会失败而不是保存。 |
 
-运行退出时会清理临时辅助功能状态。如果应用或工作进程在运行中被强制终止，下次桌面端运行会自动清理残留的应用进程。
+运行退出时会清理临时状态。如果应用或工作进程在运行中途被终止，下一次桌面端运行会自动清理残留的应用进程。
 
 <Accordion title="桌面端的其他边界情况">
-- **无法读取的窗口：** 不会被视为空，因此 `not.toBeVisible()` 无法因此通过。
-- **过大的字段值：** 超过 64 KiB 的字段值，或 agent-desktop 无法读取的字段值，会被读取为空。
-- **弹出菜单：** 在弹出按钮中选择不存在的选项可能使菜单保持打开。e2e 会尝试发送 Escape 关闭它，但只有在 `headed: true` 模式下按键才能到达应用。
+- **无法读取的窗口：** 无法读取的窗口绝不会被读取为空，因此 `not.toBeVisible()` 无法在它上面通过。
+- **弹出菜单：** 在弹出按钮中选择不存在的选项时，它的菜单会再次关闭；如果菜单保持打开，错误消息会说明这一点。
 </Accordion>
 
 ## 选项
 
 | 选项 | 类型 | 默认值 |
 | --- | --- | --- |
-| `binary` | `string` | 下载的发行版 |
 | `snapshot` | `'full' \| 'interactive'` | `'full'` |
-| `headed` | `boolean` | `false` |
+| `physicalInput` | `boolean` | `false` |
 | `settle` | `number \| false` | `150` |
 | `maxDepth` | `number` | `24` |
 
-`snapshot: 'interactive'` 使智能体观察时只读取控件，不读取静态文本；无论此设置为何，定位器和 `expect` 都读取整个窗口。`settle` 是智能体执行动作后、读取屏幕前引擎等待的毫秒数。`maxDepth` 是读取窗口时深入的层级数，范围为 1 到 50；如果嵌套较深的应用只能被部分读取，导致定位器超时，请增大此值。
+`snapshot: 'interactive'` 使智能体的观察只读取控件，不读取静态文本；无论哪种设置，定位器和 `expect` 都读取整个窗口。`physicalInput` 允许使用真实的指针和键盘，这会移动你的光标并将应用置于前台。`settle` 是智能体执行动作之后、读取屏幕之前引擎等待的时间，以毫秒为单位。`maxDepth` 是一次读取深入窗口的层级数，范围为 1 到 50；如果嵌套很深的应用因为只读取到一部分而导致定位器超时，请增大此值。
 
 ## 下一步
 

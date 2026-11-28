@@ -1,0 +1,964 @@
+---
+title: Mobile
+description: Siapkan simulator, emulator, atau ponsel yang terhubung sebagai target, tulis tes perangkat, dan pahami perbedaannya dengan web.
+"og:image": "https://e2e.com/docs/images/og/mobile.png?v=0a8bfea0a3"
+"twitter:image": "https://e2e.com/docs/images/og/mobile.png?v=0a8bfea0a3"
+---
+
+import { Video } from '../snippets/video.jsx';
+
+`@e2e-dev/mobile` menjalankan tes pada simulator iOS, emulator Android, dan
+ponsel yang terhubung ke komputer Anda. Engine ini dibangun di atas
+[agent-device](https://github.com/callstack/agent-device). Tes menggunakan API
+`agent`, `screen`, dan `expect` yang sama dengan tes browser.
+
+## Persiapan
+
+Instal Xcode dengan runtime simulator iOS, atau Android SDK dengan emulator.
+Lalu ikuti [Panduan cepat](/quickstart) dan pilih **Mobile (iOS/Android)**.
+Wizard memilih iOS di macOS dan Android di sistem operasi lain. Wizard juga
+menggunakan aplikasi Settings sebagai target dengan satu worker, sehingga tes
+dapat dijalankan sebelum Anda mengarahkannya ke aplikasi sendiri. Perangkat
+menyala sebelum waktu tes mulai dihitung dan tidak mengurangi `launchTimeout`.
+Lihat [contoh proyek](/example-projects) untuk konfigurasi lengkap.
+
+Periksa konfigurasi Anda:
+
+<CodeGroup>
+```bash npm
+npx e2e doctor
+```
+
+```bash pnpm
+pnpm exec e2e doctor
+```
+
+```bash bun
+bunx e2e doctor
+```
+</CodeGroup>
+
+Perintah ini memeriksa agent-device, Xcode atau Android SDK, setiap perangkat
+yang disebutkan target, serta build pada `appPath`. Tanpa `appPath`, perintah
+memeriksa apakah `bundleId` sudah terinstal ketika perangkat aktif. Lihat
+[`e2e doctor`](/reference/cli#e2e-doctor).
+
+## Arahkan ke aplikasi Anda
+
+Tetapkan `app.bundleId` pada target ke bundle id atau nama paket aplikasi
+Anda. `app.open()`, `app.restart()`, dan `app.clearState()` akan membuka aplikasi
+tersebut. Tambahkan `appPath` untuk menentukan build: bundle `.app` untuk iOS
+atau `.apk` untuk Android:
+
+```ts
+{
+  name: 'ios',
+  engine: mobile({ platform: 'ios' }),
+  app: {
+    bundleId: 'com.example.app',
+    appPath: './build/MyApp.app', // the iOS .app bundle
+  },
+}
+```
+
+Target perangkat memerlukan `bundleId`, `appPath`, atau keduanya. Engine tidak
+menginstal aplikasi dengan sendirinya. Panggil `device.installApp()` sekali
+untuk setiap perangkat di [fixture worker](/fixtures#share-a-fixture-across-a-worker)
+dengan [`auto: true`](/fixtures#run-a-fixture-for-every-test). Jika jalur tidak
+diberikan, metode ini menginstal `app.appPath`.
+Tanpa `bundleId`, `app.open()` membuka aplikasi yang diinstal dari build tersebut.
+
+Untuk menjalankan rangkaian tes di CI, lihat [Job mobile](/ci#mobile-jobs).
+
+### Argumen peluncuran dan izin
+
+`app.launchArguments` dan `app.permissions` berlaku pada setiap peluncuran baru.
+
+```ts
+app: {
+  bundleId: 'com.example.app',
+  launchArguments: ['-e2e', 'YES'],
+  permissions: { camera: 'grant', notifications: 'deny', location: 'reset' },
+},
+```
+
+- Argumen peluncuran menjadi argumen proses di iOS dan argumen `am start`
+  di Android.
+- Izin ditetapkan sebelum aplikasi dibuka, sehingga prompt sistem tidak muncul.
+  `app.clearState()` mereset izin bersama data, lalu menetapkannya kembali.
+- `deny` di iOS menolak izin tanpa menampilkan prompt. Di Android, opsi ini
+  mencabut izin sehingga OS akan meminta izin lagi.
+- Proses pemanasan sebelum eksekusi tidak menerapkan keduanya, jadi mulai setiap tes
+  dengan `app.open()`.
+- Argumen yang memilih mode build mengubah aplikasi yang dijalankan. Berikan
+  setiap mode `app.identity` tersendiri agar rekamannya tetap terpisah.
+
+Untuk menjalankan satu tes dengan argumen atau izin tersendiri, gunakan
+`device.openApp`. Setiap opsi yang diberikan menggantikan seluruh nilai target:
+`permissions: { camera: 'deny' }` menghapus izin target lainnya. Saat aplikasi
+target dibuka ulang, opsi yang tidak diberikan tetap menggunakan nilai target:
+
+```ts
+await device.openApp('com.example.app', { relaunch: true, permissions: { camera: 'deny' } });
+```
+
+### Jalankan aplikasi dalam bahasa lain
+
+Di iOS, argumen peluncuran menetapkan bahasa dan wilayah aplikasi untuk satu
+kali peluncuran. Bahasa perangkat tidak berubah. Tambahkan satu target untuk
+setiap bahasa:
+
+```ts
+{
+  name: 'ios-fr',
+  engine: mobile({ platform: 'ios' }),
+  app: {
+    bundleId: 'com.example.app',
+    launchArguments: { AppleLanguages: ['fr'], AppleLocale: 'fr_FR' },
+  },
+}
+```
+
+- Aplikasi harus menyertakan bahasa tersebut. Jika tidak, iOS menampilkan
+  bahasa development aplikasi.
+- Jika memakai array, argumen peluncuran yang sama ditulis sebagai
+  `['-AppleLanguages', '(fr)', '-AppleLocale', 'fr_FR']`.
+- Android tidak memiliki argumen peluncuran untuk bahasa. `AppleLanguages`
+  atau `AppleLocale` dalam objek `launchArguments` pada target Android membuat
+  konfigurasi gagal dimuat. Pada perangkat cloud, tetapkan `language` dan
+  `locale` di
+  `browserstack()` atau `testmu()`. Pada perangkat lokal, ubah bahasa perangkat
+  sebelum eksekusi.
+
+### Build development Expo
+
+Build development (`expo-dev-client`) membuka dev launcher dan memuat JavaScript
+dari dev server. Pada simulator iOS, argumen peluncuran berikut langsung
+membuka server serta menonaktifkan menu development, lembar onboarding, dan
+tombol mengambangnya. `app.command` menjalankan server:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+
+export default {
+  targets: [
+    {
+      engine: mobile({ platform: 'ios' }),
+      app: {
+        bundleId: 'com.example.app',
+        launchArguments: [
+          '--initialUrl', 'http://localhost:8081',
+          '-EXDevMenuShowsAtLaunch', 'NO',
+          '-EXDevMenuIsOnboardingFinished', 'YES',
+          '-EXDevMenuShowFloatingActionButton', 'NO',
+        ],
+        command: { executable: 'npx', args: ['expo', 'start', '--port', '8081'] },
+        readyUrl: 'http://localhost:8081/status',
+      },
+    },
+  ],
+} satisfies E2EConfig;
+```
+
+- Proses pemanasan membiarkan aplikasi berada di dev launcher. Mulai setiap tes
+  dengan `app.open()`.
+- Peluncuran pertama menunggu dev server membuat bundle aplikasi. Berikan batas
+  waktu lebih lama untuk pemeriksaan pertama tes.
+- Di Android, expo-dev-launcher tidak membaca `--initialUrl`. Buka server dengan
+  `device.openLink` dan tautan build
+  `exp+<slug>://expo-development-client/?url=<encoded server URL>`.
+
+## Tulis tes perangkat
+
+`screen` memetakan kontrol native ke role umum seperti `button`, `textbox`,
+`listitem`, dan `switch`. Gunakan `getByTestId` untuk identifier elemen native.
+
+```ts
+import { test } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+test('shows the version in dark mode', async ({ agent, app, device, screen }) => {
+  await device.setAppearance('dark');
+  await app.open();
+  await agent.act('go to General, then About');
+  await expect(screen.getByRole('button', /^iOS Version/)).toBeVisible();
+  await expect(device.locator('role=navigation-bar id=About')).toBeVisible();
+});
+```
+
+Di antara tes, aplikasi tetap berada di keadaan saat tes sebelumnya berakhir.
+Perangkat tidak mendukung `selectOption`, `setInputFiles`, `scrollIntoView`,
+`secondaryTap`, atau `modifiers` pada `tap` dan `doubleTap`. Gunakan tap dan
+swipe pada kontrol native.
+
+### Test ID berdasarkan kerangka kerja
+
+`getByTestId` membaca accessibility identifier di iOS dan resource id di
+Android. Setiap kerangka kerja UI menetapkannya dengan cara tersendiri:
+
+| Kerangka kerja | Cara menetapkan id | Contoh |
+| --- | --- | --- |
+| React Native | `testID` | [with-expo](https://github.com/e2e-inc/e2e/tree/main/examples/with-expo) |
+| SwiftUI | `.accessibilityIdentifier()` | [with-swiftui](https://github.com/e2e-inc/e2e/tree/main/examples/with-swiftui) |
+| UIKit | `view.accessibilityIdentifier`, atau Identifier di Identity inspector Interface Builder | - |
+| Jetpack Compose | `Modifier.testTag()` | [with-compose](https://github.com/e2e-inc/e2e/tree/main/examples/with-compose) |
+| Compose Multiplatform | `Modifier.testTag()` | [with-kotlin-multiplatform](https://github.com/e2e-inc/e2e/tree/main/examples/with-kotlin-multiplatform) |
+| Flutter | `Semantics(identifier:)` | [with-flutter](https://github.com/e2e-inc/e2e/tree/main/examples/with-flutter) |
+| .NET MAUI | `AutomationId` | [with-maui](https://github.com/e2e-inc/e2e/tree/main/examples/with-maui) |
+| NativeScript | `testID` | [Norrix guide](https://docs.norrix.net/guides/e2e-testing/#3-write-a-first-test) |
+
+- Di Android, `android:id` native dan `AutomationId` .NET MAUI dibaca sebagai
+  `<package>:id/<id>`. `getByTestId('greet')` dapat menemukannya tanpa nama
+  paket aplikasi, seperti di iOS. ID kerangka kerja seperti `android:id/content`
+  hanya cocok jika ditulis lengkap.
+- Di Android, Compose menyembunyikan test tag sampai root composable menetapkan
+  `Modifier.semantics { testTagsAsResourceId = true }`. Tanpanya, `getByTestId`
+  tidak menemukan apa pun. iOS membaca tag Compose Multiplatform apa adanya,
+  jadi layar bersama menetapkan flag tersebut di activity Android.
+- Di SwiftUI, `.accessibilityIdentifier()` pada container seperti `VStack`
+  menggantikan ID semua elemen di dalamnya. `getByTestId` kemudian gagal dengan
+  `LOCATOR_AMBIGUOUS` pada ID container dan tidak menemukan ID anak-anaknya.
+  Letakkan `.accessibilityElement(children: .contain)` sebelum identifier agar
+  keduanya tetap tersedia.
+- Di Flutter, bungkus `Semantics` tombol dengan `MergeSemantics` agar ID dan
+  role tombol berada pada satu node.
+- Di NativeScript, `testID` dan `accessibilityIdentifier` menetapkan ID yang
+  sama: `getByTestId('login-button')` menemukan
+  `<Button text="Login" testID="login-button" />` di kedua platform.
+  `accessibilityLabel` menetapkan nama, bukan ID. Di Android, NativeScript
+  meletakkannya sebelum teks sehingga `<Button text="Help" accessibilityLabel="Open help" />`
+  bernama `Open help. Help`. Cocokkan dengan
+  `getByRole('button', /^Open help/)`.
+
+## Fixture perangkat
+
+`device` mengubah pengaturan perangkat tanpa memanggil model, termasuk jaringan,
+izin, tampilan, instalasi aplikasi, dan lainnya. Setiap pemanggilan menjadi
+langkah `device.<method>` dalam laporan. Semua method tercantum di
+[referensi engine mobile](/reference/mobile#device).
+
+`device.locator` menerima selector agent-device, seperti pada tes di atas,
+untuk kontrol yang tidak dapat dinamai dengan query `screen`.
+
+`device.installApp` juga dapat menguji upgrade dan instalasi baru:
+
+```ts
+const { app } = await device.installApp('./build/MyApp.app', { reinstall: true });
+await device.openApp(app);
+```
+
+`device.uninstallApp(id)` menghapus aplikasi dan `device.isAppInstalled(id)`
+memeriksa apakah aplikasi terinstal. Jika tanpa id, keduanya menggunakan
+aplikasi yang ditetapkan pada target.
+
+`device.openApp` menerima bundle id, paket, atau nama tampilan, bukan tautan.
+`device.openLink` membuka deep link atau tautan web di aplikasi yang ditetapkan
+pada target, atau di `app` pada opsinya, untuk login melalui magic link dan
+route deep link:
+
+```ts
+await device.openLink('myapp://orders/42');
+await expect(screen.getByText('Order #42')).toBeVisible();
+```
+
+`device.setNetwork('offline')` dan `device.setAirplaneMode(true)` hanya berfungsi
+di Android. Simulator iOS berbagi jaringan dengan Mac dan simctl hanya dapat
+mengubah status bar-nya, sehingga keduanya gagal dengan `UNSUPPORTED_CAPABILITY`
+di iOS. `setNetwork('online')` dan `setAirplaneMode(false)` tidak melakukan apa
+pun di iOS, jadi hook cleanup yang berjalan di kedua platform tetap berhasil.
+
+Di Android, `setNetwork('offline')` hanya mematikan Wi-Fi, sehingga aplikasi
+tetap dapat terhubung melalui jaringan seluler. Untuk memutus koneksi aplikasi,
+gunakan `setAirplaneMode(true)`. Fitur ini memerlukan Android 11 atau lebih
+baru. Engine tidak memulihkan jaringan setelah tes, jadi aktifkan kembali di
+`afterEach`, yang juga berjalan saat tes gagal:
+
+```ts
+import { afterEach, test } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+afterEach(async ({ device }) => {
+  await device.setAirplaneMode(false);
+});
+
+test('shows the offline banner', { platforms: ['android'] }, async ({ app, device, screen }) => {
+  await app.open();
+  await device.setAirplaneMode(true);
+  await expect(screen.getByText('You are offline')).toBeVisible();
+});
+```
+
+`device.clearKeychain()` mereset keychain simulator. Berbeda dengan
+`app.clearState()`, metode ini menghapus token sesi tersimpan sehingga token
+tersebut tidak ada pada peluncuran berikutnya. Fitur ini hanya tersedia di iOS.
+
+Untuk kemampuan yang tidak disediakan `device`, `device.unstable_raw` berisi
+klien [agent-device](https://github.com/callstack/agent-device) yang terikat
+ke sesi tes, nama sesi, id dan nama perangkat, serta `selection` yang dapat
+diteruskan ke pemanggilan klien. API ini tidak stabil dan dapat berubah atau
+dihapus pada rilis mendatang:
+
+```ts
+const { client, deviceId } = device.unstable_raw;
+const { nodes } = await client.capture.snapshot({});
+```
+
+Pemanggilan klien bukan langkah tes: laporan dan trace tidak mencatatnya, cache
+agent tidak memutarnya ulang, secret yang diberikan tidak disamarkan, dan layar
+tidak ditunggu hingga stabil setelah pemanggilan.
+
+<Accordion title="Ukuran teks dan animasi">
+`device` tidak memiliki method untuk mengatur ukuran teks sistem atau animasi,
+jadi ubah pengaturan tersebut melalui `unstable_raw`. Ubah ukuran teks sebelum
+`app.open()`. Aplikasi yang sedang berjalan dapat mempertahankan ukuran lama
+sampai dibuka kembali, jadi panggil `app.restart()` jika mengubahnya di tengah tes:
+
+```ts
+import { afterEach, test } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+afterEach(async ({ app, device }) => {
+  const { client, selection } = device.unstable_raw;
+  await client.settings.update({ ...selection, setting: 'text-size', state: 'large' });
+});
+
+test('the checkout button shows at the largest text size', async ({ app, device, screen }) => {
+  const { client, selection } = device.unstable_raw;
+  await client.settings.update({ ...selection, setting: 'text-size', state: 'accessibility-extra-extra-extra-large' });
+  await app.open();
+  await expect(screen.getByRole('button', 'Checkout')).toBeVisible();
+});
+```
+
+`text-size` berfungsi di simulator iOS dan Android; nilai default keduanya
+adalah `large`. `setting: 'animations'` dengan `state: 'off'` atau `'on'` hanya
+berfungsi di Android dan gagal di iOS. Di Android, opsi ini mengatur skala
+window, transition, dan animator ke 0 atau 1. Kedua pengaturan bertahan setelah
+tes, jadi pulihkan di `afterEach`. `app.open()` pada tes berikutnya membuka
+ulang aplikasi, sehingga cukup dengan memulihkan pengaturannya.
+</Accordion>
+
+<Accordion title="Foto untuk tes pemilih gambar">
+`device` tidak dapat menambahkan foto ke library, jadi tambahkan foto dari host
+sebelum `app.open()`. Pada simulator iOS, gunakan `xcrun simctl addmedia`, dan
+`deviceId` adalah UDID simulator. `addmedia` menambahkan salinan pada setiap
+pemanggilan, sementara langkah agent tidak dapat membedakan foto yang identik.
+Karena itu, contoh menyimpan file penanda di direktori data simulator lalu
+menambahkan foto satu kali. Penanda akan ikut terhapus saat simulator dihapus:
+
+```ts
+import { execFileSync } from 'node:child_process';
+import { existsSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { test, type Device } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+// Put a JPEG named receipt.jpg beside this test.
+const receipt = resolve(import.meta.dirname, 'receipt.jpg');
+
+function addPhotoOnce(device: Device, file: string): void {
+  const { deviceId } = device.unstable_raw;
+  const listing = execFileSync('xcrun', ['simctl', 'list', 'devices', '-j'], { encoding: 'utf8' });
+  const { devices } = JSON.parse(listing) as {
+    devices: Record<string, { udid: string; dataPath: string }[]>;
+  };
+  const simulator = Object.values(devices).flat().find((d) => d.udid === deviceId);
+  if (!simulator) throw new Error(`No simulator ${deviceId}`);
+  const marker = resolve(simulator.dataPath, 'tmp', 'receipt-photo-added');
+  if (existsSync(marker)) return;
+  execFileSync('xcrun', ['simctl', 'addmedia', deviceId, file]);
+  writeFileSync(marker, file);
+}
+
+test('attaches the receipt from the photo library', { platforms: ['ios'] }, async ({ app, device, screen }) => {
+  addPhotoOnce(device, receipt);
+  await app.open();
+  await screen.getByLabel('Choose photo').tap();
+  await screen.getByRole('image', /^Photo, /).first().tap();
+  await expect(screen.getByText(/^Receipt attached/)).toBeVisible();
+});
+```
+
+Pemilih sistem berjalan di luar aplikasi, tetapi fotonya muncul di screen tree.
+Setiap foto berupa `image` dengan nama `Photo, ` dan tanggal pengambilan.
+Pemilih mengurutkannya berdasarkan tanggal tersebut, yang berasal dari data
+EXIF foto, bukan tanggal Anda menambahkannya.
+
+Pada emulator Android, file perlu dikirim dengan `adb` lalu dipindai sebagai
+media. Pemilihnya merupakan aplikasi terpisah dengan nama-namanya sendiri.
+Bagian ini belum diperiksa di Android, jadi baca tree pemilih pada trace sebelum
+menulis locator.
+</Accordion>
+
+<Accordion title="Simulator dan emulator perangkat lipat">
+`device.fold(pose)` mengatur posisi engsel simulator iPhone Duo atau emulator
+Android perangkat lipat (profil Pixel Fold atau "7.6in Foldable" generik).
+`closed` menyalakan layar luar. `half-open` dan `open` menyalakan layar dalam.
+Di Duo, pemanggilan selesai saat engsel mencapai posisi tersebut, biasanya
+setelah 10 sampai 16 detik. Karena itu, tetapkan `actionTimeout` minimal 20 detik;
+posisi `half-open` pada perangkat ini menyerupai buku dengan sudut 130°. Pada
+emulator Android, pemanggilan selesai dalam beberapa detik setelah Android
+menerapkan status perangkat yang sesuai. Posisi `half-open` mengikuti sudut
+profilnya sendiri (90° pada Pixel Fold), dan melipat ke layar luar menutup
+layar kunci "Swipe up to continue" yang ditampilkan emulator. Observasi
+berikutnya membaca aplikasi di layar lainnya.
+
+Engine tidak pernah mereset posisi engsel, jadi retry dan tes berikutnya
+memulai dari posisi terakhir. Kembalikan ke posisi semula di `afterEach`, yang
+juga berjalan jika tes gagal:
+
+```ts
+import { afterEach, test } from '@e2e-dev/mobile';
+
+afterEach(async ({ device }) => {
+  await device.fold('closed');
+});
+
+test('the list and the detail split across the fold', async ({ agent, app, device }) => {
+  await app.open();
+  await device.fold('half-open');
+  await agent.assert('the list and the detail sit on either side of the fold', { vision: true });
+});
+```
+
+Agent melipat perangkat dengan tool `fold` dari `foldTools`. Tambahkan tool itu
+ke konfigurasi agent agar `agent.act`, `e2e explore`, dan MCP server dapat
+melipat serta membuka perangkat. Posisi lipatan terakhir agent tetap aktif.
+Pertahankan langkah di `afterEach` yang mengembalikan perangkat ke posisi
+tertutup:
+
+```ts
+import { foldTools, mobileTools } from '@e2e-dev/mobile/tools';
+
+tools: { ...mobileTools(iphoneDuo), ...foldTools(iphoneDuo) },
+```
+</Accordion>
+
+### Rekam transisi
+
+[`app.startRecording()` dan `app.stopRecording()`](/reference/app#startrecording)
+merekam satu bagian layar sebagai `.mp4`. `boundingBox()` pada locator
+mengembalikan posisi elemen dalam point (piksel fisik di Android).
+
+```ts
+test('the sheet slides up', { video: 'off' }, async ({ app, screen }) => {
+  await app.open();
+  await app.startRecording({ name: 'sheet' });
+  await screen.getByRole('button', 'Open sheet').tap();
+  await expect(screen.getByText('Sheet title')).toBeVisible();
+  const [video] = await app.stopRecording();
+});
+```
+
+Mulai merekam setelah `app.open()`. Rekaman yang dimulai setelah
+`device.closeApp()` akan mengakhiri sesi perangkat saat dihentikan, jadi buka
+kembali aplikasi setelahnya. Tap ditampilkan kecuali
+[`videoTouches`](/reference/mobile#videotouches) bernilai `false`.
+
+## Beberapa perangkat
+
+<Video>
+  <video src="/images/cross-platform.mp4" aria-label="Satu rangkaian tes berjalan di web, iOS, dan Android secara bersamaan." muted loop playsInline controls />
+
+  Satu rangkaian tes berjalan di web, iOS, dan Android.
+</Video>
+
+Tambahkan satu target untuk setiap platform:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+
+const app = { bundleId: 'com.example.app' };
+
+export default {
+  targets: [
+    { name: 'iphone', engine: mobile({ platform: 'ios' }), app },
+    { name: 'pixel', engine: mobile({ platform: 'android' }), app },
+  ],
+  workers: 1,
+} satisfies E2EConfig;
+```
+
+Tes berjalan pada kedua target. Tetapkan `platforms: ['ios']` atau
+`platforms: ['android']` pada tes yang memiliki label atau perilaku khusus
+platform.
+
+Untuk menjalankan file secara paralel, berikan pool perangkat dan tetapkan
+`workers` setidaknya sebanyak jumlah perangkat. Setiap perangkat mendapat satu
+worker:
+
+```ts
+mobile({ platform: 'ios', device: ['iPhone 17', 'iPhone 17 Pro'] })
+```
+
+Tanpa `device`, engine menggunakan perangkat yang sudah aktif hingga batas
+jumlah worker. iPhone atau iPad yang sudah dipasangkan dan dapat dijangkau
+melalui USB atau jaringan dihitung aktif. Jika belum ada perangkat aktif,
+engine menyalakan perangkat yang mati: di iOS, iPhone lebih dahulu, lalu iPad,
+lalu Apple TV; di Android, ponsel atau tablet lebih dahulu, lalu TV. Setelah
+itu, engine memilih OS terbaru, kemudian mengurutkan berdasarkan nama. Dua
+worker tidak pernah mengendalikan perangkat yang sama.
+
+Untuk menjalankan target pada perangkat lain dalam satu eksekusi, berikan nama
+perangkat, UDID simulator, atau serial emulator melalui `--device`. Jika
+beberapa target terpilih dapat menggunakan perangkat tersebut, tentukan target
+dengan `--target`, misalnya `e2e run --target iphone --device 'iPad Pro 13-inch (M5)'`.
+Eksekusi tersebut mengendalikan perangkat itu sebagai pengganti `device` pada target.
+
+## Tool agent
+
+Agent sudah memiliki tindakan dasar seperti `tap`, `type`, dan `scroll`.
+Tambahkan `mobileTools` untuk berpindah aplikasi, melakukan swipe bebas, dan
+menangani alert sistem. Berikan semua engine perangkat di konfigurasi dalam
+satu pemanggilan:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+import { mobileTools } from '@e2e-dev/mobile/tools';
+import { gateway } from 'ai';
+
+const app = { bundleId: 'com.example.app' };
+const iphone = mobile({ platform: 'ios' });
+const pixel = mobile({ platform: 'android' });
+
+export default {
+  targets: [
+    { name: 'iphone', engine: iphone, app },
+    { name: 'pixel', engine: pixel, app },
+  ],
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast'), tools: mobileTools(iphone, pixel) } },
+} satisfies E2EConfig;
+```
+
+Pemanggilan diarahkan ke engine yang menjalankan attempt saat ini. `open_app`,
+`swipe`, dan `alert` mengubah keadaan perangkat, sehingga agent menjalankannya
+secara langsung selama cache replay. [Referensi engine mobile](/reference/mobile#agent-tools)
+menjelaskan setiap tool. Untuk menambahkan tool sendiri, lihat
+[Tool proyek](/tools).
+
+## Perangkat fisik
+
+agent-device mengendalikan ponsel yang terhubung ke komputer Anda seperti
+mengendalikan simulator, tanpa engine atau opsi tambahan. Tampilkan daftar
+perangkat yang terdeteksi:
+
+<CodeGroup>
+```bash npm
+npx agent-device devices --platform ios
+```
+
+```bash pnpm
+pnpm exec agent-device devices --platform ios
+```
+
+```bash bun
+bunx agent-device devices --platform ios
+```
+</CodeGroup>
+
+Lalu tetapkan nama ponsel pada `device` sesuai nama yang ditampilkan:
+
+```ts
+mobile({ platform: 'ios', device: 'QA iPhone' })
+```
+
+Gunakan nama, bukan id. Engine hanya membaca string `device` sebagai id jika
+nilainya berupa UDID simulator atau serial `emulator-<port>`. Perangkat pertama
+dengan nama yang cocok akan dipilih, jadi beri nama unik pada setiap ponsel.
+Tanpa `device`, iPhone atau iPad yang sudah dipasangkan dan dapat dijangkau
+melalui USB atau jaringan, serta ponsel Android yang terhubung, dianggap aktif
+dan bergabung ke pool bersama simulator yang menyala.
+
+Siapkan ponsel satu kali:
+
+<Tabs>
+  <Tab title="iOS">
+  - Pasangkan dan percayai ponsel, buka kuncinya, lalu aktifkan Developer Mode.
+  - agent-device membuat dan menandatangani runner XCTest ke ponsel. Tetapkan
+    `AGENT_DEVICE_IOS_TEAM_ID` ke ID tim dan
+    `AGENT_DEVICE_IOS_BUNDLE_ID` ke ID reverse-DNS unik, misalnya
+    `com.example.agentdevice.runner`. Profil penandatanganan harus mengizinkan
+    ID tersebut dan `<id>.uitests`. Eksekusi pertama membuat runner dan memerlukan
+    waktu lebih lama.
+  - Setelah mengubah variabel ini, jalankan `npx agent-device daemon stop`.
+    Daemon yang sedang berjalan tetap menggunakan environment saat daemon itu
+    dimulai.
+  - `app.appPath` harus menunjuk build perangkat yang sudah ditandatangani,
+    bukan file `.app` simulator.
+
+  `npx agent-device help physical-device` menjelaskan penandatanganan iOS lebih lanjut.
+  </Tab>
+  <Tab title="Android">
+  - Aktifkan USB debugging dan izinkan komputer mengakses ponsel. `adb devices`
+    akan menampilkannya sebagai `device`.
+  - `app.appPath` menggunakan file `.apk` yang sama dengan emulator.
+  </Tab>
+</Tabs>
+
+Pada ponsel, `localhost` di dalam aplikasi merujuk ke ponsel itu sendiri.
+Arahkan aplikasi ke alamat jaringan komputer Anda, atau teruskan port di
+Android dengan `adb reverse tcp:<port> tcp:<port>`.
+
+<Accordion title="Fitur yang tidak berfungsi di ponsel">
+Beberapa kontrol perangkat memerlukan simulator atau emulator. Di ponsel,
+kontrol tersebut gagal dengan pesan dari agent-device.
+
+- Di iPhone, semua pengaturan perangkat hanya tersedia di simulator:
+  `app.permissions`, `device.setPermission`, `app.clearState()`,
+  `device.setLocation`, `device.clearLocation`, `device.setAppearance`, method
+  biometrik, dan `device.clearKeychain`. Hal yang sama berlaku untuk
+  `device.clipboard`, `device.setClipboard`, dan `device.fold`.
+- Untuk memulai dari awal di iPhone, instal ulang dengan
+  `device.installApp(path, { reinstall: true })`. Tetapkan `app.bundleId` atau
+  opsi `app` agar agent-device mengetahui aplikasi yang harus dihapus.
+- agent-device mengendalikan iPhone lama tanpa CoreDevice jika perangkat itu
+  tidak tercantum dalam `xcrun devicectl list devices`. Tap, pengetikan, dan
+  layar tetap berfungsi. Instalasi, `--video`, `device.openLink`, dan
+  `app.launchArguments` gagal. Instal build dari Xcode dan tetapkan
+  `app.bundleId`.
+- Di ponsel Android, `device.setLocation` hanya tersedia di emulator.
+  `device.setBiometrics('fingerprint', ...)` hanya berfungsi jika ponsel
+  menyediakan `cmd fingerprint`.
+- `--video` di iPhone dibuat dari screenshot sekitar 15 frame per detik,
+  sehingga beberapa frame terlewat.
+</Accordion>
+
+## Perangkat cloud
+
+Gunakan [Limrun](/integrations/limrun) untuk simulator iOS dan emulator Android
+cloud dengan instalasi aplikasi serta pembersihan perangkat otomatis.
+
+Tetapkan `device` ke `DeviceProvider` untuk menjalankan tes pada perangkat yang
+dihosting layanan. Layanan apa pun yang menjalankan daemon agent-device di
+samping simulator, emulator, atau ponsel dapat digunakan. Provider menyewa satu
+perangkat untuk setiap slot worker saat eksekusi dimulai, lalu melepasnya saat eksekusi
+berakhir.
+
+Untuk [Expo Simulators](/integrations/eas), gunakan `expoSimulators()` dari
+`@e2e-dev/eas`. Untuk [TestMu AI](/integrations/testmu), gunakan `testmu()` dari
+`@e2e-dev/testmu`. Untuk [BrowserStack](/integrations/browserstack), gunakan
+`browserstack()` dari `@e2e-dev/browserstack`. Untuk Android di [E2B](/integrations/e2b),
+gunakan `e2b()` dari `@e2e-dev/e2b`. Untuk [Revyl](/integrations/revyl), gunakan
+`revyl()` dari `@e2e-dev/revyl`. Untuk layanan lain, tulis provider sepanjang
+beberapa puluh baris, seperti `hostedDevices` pada contoh berikut:
+
+```ts
+mobile({
+  platform: 'ios',
+  device: hostedDevices({ serviceUrl: 'https://devices.example.com', image: 'ios-18-iphone-17' }),
+})
+```
+
+- Setiap worker menyewa sesinya sendiri, dan layanan menagih biaya selama sesi
+  berlangsung. Sesuaikan `workers` dengan kapasitas rangkaian tes.
+- Cache replay menggunakan `app.bundleId` sebagai key, sehingga rekaman lokal
+  dapat diputar ulang di perangkat cloud.
+- Perangkat sewaan menjalani pemanasan seperti perangkat lokal sebelum waktu tes
+  mulai dihitung.
+
+<Accordion title="Kontrak DeviceProvider">
+```ts
+export interface DeviceProvider {
+  /** Label in progress lines and error messages. */
+  readonly name: string;
+  acquire(request: DeviceRequest): Promise<DeviceLease>;
+  release(lease: DeviceLease, context: DeviceReleaseContext): Promise<void>;
+  record?(lease: DeviceLease, context: ProviderRecordContext): Promise<ProviderRecording>;
+}
+
+export interface DeviceLease {
+  /** The provider's handle (a session id), handed back to `release`. */
+  readonly id: string;
+  /** The agent-device daemon the worker connects to; a lease names this, `client`, or both. */
+  readonly daemon?: { readonly baseUrl: string; readonly authToken?: string };
+  /** agent-device client configuration the worker's client is created with: a lease scope, a `stateDir`. */
+  readonly client?: DeviceClientConfig;
+  /** Device to select inside that daemon, when it hosts more than one. */
+  readonly device?: string;
+  /** Device to select inside that daemon by the id agent-device lists it under: a simulator UDID or an Android serial. */
+  readonly deviceId?: string;
+  /** Bundle id or package the provider installed itself; skips the target's `app.appPath`. */
+  readonly installedApp?: string;
+}
+```
+
+**`acquire`** berjalan untuk setiap slot worker secara bersamaan di proses
+runner. Request membawa `platform`, `runId`, `targetName`, `slot`, `slots`,
+`app` (`app.bundleId` milik target), `appPath` yang sudah di-resolve,
+`agentDeviceVersion` (untuk layanan yang menjalankan daemon dengan versi
+tertentu), `projectRoot`, `env`, `signal` untuk interupsi, serta `log` yang
+terhubung ke reporter.
+
+- Baca token dari `request.env`, bukan `process.env`. Baca file proyek di
+  bawah `request.projectRoot`, bukan `process.cwd()`.
+- Target yang tidak menjalankan apa pun tidak menyewa perangkat.
+- Tetapkan `installedApp` hanya jika request memiliki `appPath`. Jika tidak,
+  eksekusi akan gagal.
+
+**`release`** berjalan setelah worker terakhir berhenti, dalam batas
+`cleanupTimeout`, untuk semua jalur keluar: kegagalan, interupsi, atau error
+dari `prepare`. Method ini menerima objek yang dikembalikan oleh `acquire`,
+sehingga provider dapat menyimpan field miliknya di sana. Hanya field
+`DeviceLease` yang diteruskan ke worker. Jika satu slot gagal menyewa perangkat,
+eksekusi berhenti sebelum tes dimulai, dan engine tetap melepas semua lease yang
+berhasil diperoleh.
+
+**`client`** adalah konfigurasi klien agent-device dalam bentuk data JSON,
+yang diterapkan bersama nama sesi dan alamat `daemon`. Lease yang menetapkan
+`session`, `daemonBaseUrl`, `daemonAuthToken`, atau `daemonTransport` akan
+ditolak. Untuk runtime cloud perangkat milik agent-device, `client` membawa
+scope lease dari hasil `leases.allocate`: `tenant`, `runId`, `leaseId`,
+`leaseBackend`, dan `leaseProvider`. Perintah tanpa scope kembali menggunakan
+perangkat lokal. `stateDir` di `client` mengarahkan worker ke daemon yang
+dijalankan provider, sehingga alamat `daemon` tidak diperlukan.
+
+**`record`** bersifat opsional. Saat attempt merekam video, worker memanggilnya
+sebagai pengganti perekaman layar agent-device. Worker dapat berjalan di proses
+lain, jadi `record` hanya menerima field lease, bukan state yang disimpan oleh
+`acquire`. Method ini mengembalikan `ProviderRecording` (tipe dari `e2e/engine`)
+yang `stop`-nya akan menulis file ke direktori yang diterima lalu mengembalikan
+`{ file }` untuk disimpan sebagai `video/<file>`, atau mengembalikan
+`{ url, mediaType }` untuk rekaman yang disimpan oleh layanan dan ditautkan
+oleh laporan. Kegagalan `record` membuat peluncuran attempt gagal. Jika `stop`
+gagal, method tersebut dicoba sekali lagi saat attempt berakhir.
+</Accordion>
+
+<Accordion title="Contoh: provider untuk API sesi">
+API sesi umumnya memerlukan tiga request: membuat sesi, memeriksanya sampai
+daemon dapat dijangkau, lalu menghentikannya.
+
+```ts title="device-provider.ts" expandable
+import type { DeviceProvider } from '@e2e-dev/mobile';
+
+/**
+ * Leases devices from a service that starts an agent-device daemon per
+ * session. Replace the three requests with your service's API.
+ */
+export function hostedDevices(options: { serviceUrl: string; image: string }): DeviceProvider {
+  return {
+    name: 'hosted-devices',
+    async acquire(request) {
+      const token = request.env['DEVICE_SERVICE_TOKEN'];
+      if (token === undefined || token === '') throw new Error('DEVICE_SERVICE_TOKEN is not set');
+      const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      // 1. Ask for a device; name the session after the run so it can be found later.
+      const created = await fetch(`${options.serviceUrl}/sessions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          platform: request.platform,
+          image: options.image,
+          name: `e2e ${request.runId} ${request.targetName} ${request.slot + 1}/${request.slots}`,
+        }),
+        signal: request.signal,
+      });
+      if (!created.ok) throw new Error(`device service: HTTP ${created.status}`);
+      const { id } = (await created.json()) as { id: string };
+      // 2. Wait until the session exposes its agent-device daemon.
+      for (;;) {
+        const response = await fetch(`${options.serviceUrl}/sessions/${id}`, { headers, signal: request.signal });
+        const session = (await response.json()) as { status: string; daemonUrl?: string; daemonToken?: string; viewerUrl?: string };
+        if (session.status === 'ready' && session.daemonUrl !== undefined) {
+          if (session.viewerUrl !== undefined) request.log(`watch at ${session.viewerUrl}`);
+          return { id, daemon: { baseUrl: session.daemonUrl, authToken: session.daemonToken } };
+        }
+        if (session.status !== 'starting') throw new Error(`device service: session ${id} is ${session.status}`);
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
+    },
+    async release(lease, context) {
+      // 3. Stop the session; the run waits for this within cleanupTimeout.
+      const token = context.env['DEVICE_SERVICE_TOKEN'] ?? '';
+      await fetch(`${options.serviceUrl}/sessions/${lease.id}/stop`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: context.signal,
+      });
+    },
+  };
+}
+```
+</Accordion>
+
+<Accordion title="Contoh: cloud perangkat yang didukung agent-device">
+Cloud perangkat yang terhubung langsung dengan agent-device tidak memerlukan
+API sesi buatan Anda. `agentDeviceLeases()` dari `@e2e-dev/mobile/lease`
+menjalankan daemon agent-device untuk setiap slot worker dengan kredensial
+dari `env`, membuat lease menggunakan `selectors`, mempertahankan lease selama
+eksekusi berlangsung, lalu saat melepasnya akan gagal jika agent-device tidak
+mengonfirmasi bahwa sesi telah berakhir. `testmu()` dari `@e2e-dev/testmu`
+menggunakan cara ini untuk [TestMu AI](/integrations/testmu), `browserstack()`
+dari `@e2e-dev/browserstack` untuk [BrowserStack](/integrations/browserstack),
+dan `revyl()` dari `@e2e-dev/revyl` untuk [Revyl](/integrations/revyl).
+
+Jika cloud memerlukan plugin provider agent-device, tambahkan dependensinya
+lalu berikan `agentDevicePlugin(import.meta.resolve('@agent-device/<plugin>'))`.
+Panggil `assertVersion(request.agentDeviceVersion)` di dalam `acquire`, lalu
+berikan `prepareHome` bersama lease agar plugin didaftarkan di home daemon.
+
+```ts title="device-cloud-provider.ts" expandable
+import type { DeviceProvider } from '@e2e-dev/mobile';
+import { agentDeviceLeases } from '@e2e-dev/mobile/lease';
+
+/**
+ * Leases devices from a device cloud agent-device itself speaks to. Each
+ * worker slot gets its own agent-device daemon, whose runtime for the cloud
+ * starts the session when the lease is allocated and ends it on release.
+ * `provider` is agent-device's name for the cloud.
+ */
+export function cloudDevices(options: { provider: string; device: string; osVersion: string; app: string }): DeviceProvider {
+  const leases = agentDeviceLeases({ provider: options.provider, label: options.provider });
+  return {
+    name: options.provider,
+    async acquire(request) {
+      const token = request.env['CLOUD_TOKEN'];
+      if (token === undefined || token === '') throw new Error('CLOUD_TOKEN is not set');
+      return leases.acquire(request, {
+        // The daemon's runtime reads the credentials from its environment.
+        env: { CLOUD_TOKEN: token },
+        selectors: { device: options.device, providerOsVersion: options.osVersion, providerApp: options.app },
+        summary: `${options.device}, ${request.platform} ${options.osVersion}`,
+      });
+    },
+    release: (lease, context) => leases.release(lease, context),
+  };
+}
+```
+</Accordion>
+
+## Perbedaan dari web
+
+| Di web | Di perangkat |
+| --- | --- |
+| `app.open('/path')` dan verb `navigate` pada agent | Tidak ada URL aplikasi atau `navigate`. `app.open()` membuka `app.bundleId` dari awal, sedangkan `device.openLink(url)` membuka tautan di dalamnya. Dengan [`app.linkBase`](/reference/config#linkbase), `app.open('/path')` membuka jalur sebagai tautan |
+| `test.setup` menyimpan sesi, `session:` memulihkannya | Tidak tersedia. Simulator tidak memiliki snapshot sesi yang portabel; lakukan login pada setiap tes atau siapkan data aplikasi |
+| Input secret | `type_secret` dan `screen.getByLabel(...).fill(secret)` mengisi secret yang sudah dideklarasikan ke kolom aman |
+| `--video` menulis screencast WebM | `--video` menulis MP4 layar perangkat dengan tap terlihat (`videoTouches: false` menyembunyikannya), atau menyimpan rekaman milik provider perangkat |
+| Cache menggunakan jalur halaman sebagai acuan | Cache menggunakan lokasi `<bundle id> / <screen title>` sebagai acuan. Judul dibaca dari navigation bar di iOS dan toolbar di Android |
+
+### Batasan perangkat yang diketahui
+
+- `placeholder` adalah satu-satunya atribut yang dimiliki node perangkat.
+- Tab React Native (`accessibilityRole="tab"`) di iOS memiliki role `other`.
+  Cari dengan test id atau label, lalu periksa dengan `toBeSelected`. Checkbox,
+  radio, dan `toBeChecked` berfungsi di kedua platform.
+- Di iOS, `View` React Native biasa tidak memiliki anak di tree. Karena itu,
+  `filter({ has })` dan query yang dibatasi ke dalamnya tidak menemukan apa pun,
+  sedangkan `filter({ hasNot })` mempertahankan semua baris semacam itu,
+  termasuk baris yang seharusnya dikecualikan. Batasi pencarian ke `ScrollView`
+  layar (`device.locator('role=scroll-area')`) atau beri test id pada elemen anak.
+- Elemen clickable Jetpack Compose yang ukurannya kurang dari 48dp muncul
+  sebagai dua tombol di tree, dan tap gagal dengan `has no parent-owned touch
+  point`. Buat kontrol setidaknya 48dp, ukuran minimum target sentuh Android.
+- Elemen yang disembunyikan dengan `display: none` tidak ada di tree, sehingga
+  `toBeAttached` gagal. Gunakan assertion `toHaveCount(0)` atau `toBeHidden`.
+- Node yang bagian tengahnya tertutup keyboard lunak dianggap tersembunyi,
+  seperti node yang tergulir ke luar layar. Tombol keyboard, baris saran, dock,
+  dan kolom yang sedang fokus tetap terlihat. Container tetap terlihat selama
+  salah satu anaknya muncul di atas keyboard. `toBeVisible()` gagal pada node
+  lain yang tertutup, dan tap padanya gagal dengan `ACTION_FAILED`. Panggil
+  `device.dismissKeyboard()` atau gulir node sampai terlihat. Lihat
+  [Visibilitas](/reference/mobile#visibility).
+- `doubleTap()` dan `screen.doubleTapAt()` di iOS menjalankan dua tap dengan
+  jarak sekitar 285 sampai 335 ms. Atur jendela deteksi double tap setidaknya 350 ms.
+- Di iOS, `device.foregroundApp()` tetap menyebut aplikasi sesi setelah
+  `device.home()`. Periksa layar sebagai gantinya.
+- Pada build Android tanpa perintah shell untuk layanan clipboard (misalnya
+  emulator Android 16), `device.clipboard()` dan `device.setClipboard()` gagal
+  dengan `UNSUPPORTED_CAPABILITY`. Untuk memeriksa penyalinan, tempelkan teks
+  ke kolom lalu baca kembali nilainya.
+- Di iPhone Duo, `--video` merekam layar yang aktif saat perekaman dimulai.
+  Setelah `device.fold` memindahkan aplikasi ke layar lain, sisa video akan
+  berwarna hitam.
+
+## Pemecahan masalah
+
+Kegagalan perangkat menampilkan pesan dari agent-device. Pada penggunaan
+agent, error engine tanpa kode yang lebih spesifik dilaporkan sebagai
+`APP_UNREACHABLE`. Baca pesannya sebelum melihat kodenya: sering kali yang
+bermasalah bukan aplikasinya.
+
+**Runner otomasi iOS sibuk, macet, atau tidak dapat menampilkan
+snapshot.** Layar yang berat atau terus beranimasi dapat membebani runner.
+Eksekusi yang dihentikan dengan Ctrl-C juga dapat membuatnya sibuk. Pesan error
+menyebutkan runner dan langkah pertama yang perlu dicoba, biasanya menjalankan
+ulang tes. Jika masalah muncul lagi pada eksekusi berikutnya, hentikan daemon dan
+boot ulang simulator dengan perintah di bawah.
+
+**`device.installApp()` di Android melaporkan tidak ada bundle id atau paket.**
+agent-device tidak dapat mengenali paket pada build, sehingga `app.open()`
+tidak memiliki aplikasi untuk dibuka. Jika tidak dapat membaca manifest APK,
+agent-device menggunakan `aapt` dari Android SDK, yang biasanya berada di
+`ANDROID_SDK_ROOT`, `ANDROID_HOME`, `~/Library/Android/sdk` pada macOS, atau
+`~/Android/Sdk`. Tetapkan `app.bundleId` pada target. Atau ekspor
+`ANDROID_HOME`, lalu hentikan daemon agent-device agar eksekusi berikutnya
+memulainya dengan variabel tersebut.
+
+**Android melaporkan konten aplikasi foreground tidak cukup, atau iOS
+melaporkan aplikasi tidak berjalan.** agent-device belum dapat membaca layar,
+biasanya karena aplikasi masih memuat setelah cold start. Di iOS, kondisi ini
+hanya berlaku sampai layar pertama dapat dibaca setelah `app.open()`,
+`app.restart()`, atau `device.openLink()`, seperti pada iPhone fisik yang masih
+membuka aplikasi. Jika aplikasi keluar setelah itu, tes langsung gagal.
+Tindakan locator yang menunggu atau `expect` akan terus menunggu, seperti saat
+elemen belum tersedia. Jika layar masih tidak dapat dibaca saat waktu tunggu
+habis, langkah gagal dengan pesan ini. Pembacaan langsung seperti `count()` dan
+`isVisible()` justru tidak menemukan hasil, sehingga `not.toBeVisible()` dapat
+berhasil meski layar tidak terbaca, termasuk jika aplikasi crash sebelum
+merender layar. Observasi, misalnya giliran agent berikutnya, langsung gagal.
+
+**Timeout pada perangkat.** Boot simulator, koneksi runner, atau peluncuran
+aplikasi yang kehabisan waktu di perangkat menghasilkan `ENGINE_FAILURE`
+dengan pesan dan petunjuk dari agent-device, bukan `LAUNCH_TIMEOUT`,
+`ACTION_FAILED`, atau `STEP_TIMEOUT`.
+
+**Tindakan melewati batas waktunya.** Tap, fill, key, swipe, atau `back`
+menggunakan `timeout` masing-masing (default-nya `actionTimeout`). Jika
+perangkat tidak merespons tepat waktu, langkah gagal dengan `ACTION_FAILED`
+dan tidak dicoba ulang karena input mungkin sudah diterima. Tap, double tap,
+fokus, centang, atau hapus centang yang masih menunggu akan dibatalkan saat
+langkah berhenti menunggunya atau eksekusi terinterupsi. Input yang sudah dikirim ke
+perangkat mungkin tetap selesai diproses. `longPress` yang durasinya sama atau
+lebih lama daripada sisa waktu akan ditolak sebelum dikirim; naikkan nilai
+`timeout`-nya. Snapshot dan screenshot menggunakan batas waktu pemanggilan yang
+mengambilnya. Jadi, jika perangkat berhenti merespons, langkah gagal dengan
+`ACTION_FAILED` alih-alih menunggu sampai timeout tes. `locator.waitFor`,
+`expect`, dan `toHaveScreenshot` memberi waktu tambahan untuk snapshot terakhir,
+sampai durasi terlama yang pernah dicoba dan tetap dalam batas waktu tes. Dengan
+demikian, layar yang muncul selama waktu tambahan masih dapat membuat tes
+berhasil. Elemen yang tidak pernah muncul gagal dengan `LOCATOR_NOT_FOUND`,
+atau `ASSERTION_FAILED` untuk `expect`.
+
+<CodeGroup>
+```bash npm
+npx e2e doctor                   # agent-device, the toolchain, the devices, the app
+npx agent-device daemon stop     # after a wedge: drops every session, the next run starts the daemon
+xcrun simctl shutdown <udid> && xcrun simctl boot <udid>
+```
+
+```bash pnpm
+pnpm exec e2e doctor                   # agent-device, the toolchain, the devices, the app
+pnpm exec agent-device daemon stop     # after a wedge: drops every session, the next run starts the daemon
+xcrun simctl shutdown <udid> && xcrun simctl boot <udid>
+```
+
+```bash bun
+bunx e2e doctor                   # agent-device, the toolchain, the devices, the app
+bunx agent-device daemon stop     # after a wedge: drops every session, the next run starts the daemon
+xcrun simctl shutdown <udid> && xcrun simctl boot <udid>
+```
+</CodeGroup>
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Referensi engine mobile" icon="mobile-screen" href="/reference/mobile">
+    Semua opsi, fixture `device`, dan kumpulan tool.
+  </Card>
+  <Card title="Locator" icon="crosshairs" href="/core-concepts#locators">
+    Tap, swipe, dan pemeriksaan presisi dengan `screen` dan `expect` di platform apa pun.
+  </Card>
+</CardGroup>

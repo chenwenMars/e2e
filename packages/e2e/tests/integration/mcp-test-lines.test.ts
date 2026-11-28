@@ -3,7 +3,8 @@
  * by a real MCP client. Every action answers with the line that repeats it,
  * a password by its credential and never its value, a button repeated per
  * row scoped under its row, twins in plain divs by their order, a shadow
- * root's twin by the box it never left, and an icon button by its test id;
+ * root's twin by the box it never left, an icon button by its test id, and a
+ * bare tap at a point as screen.tapAt;
  * `test_lines` returns them in order. Pasted into a test file, that draft passes a run.
  */
 
@@ -50,6 +51,31 @@ describe('e2e mcp test lines', { timeout: 120_000 }, () => {
     return match[1]!;
   };
 
+  /**
+   * Taps a checkbox at its point in the screenshot with `tap_at`, as the bare
+   * point it is on the web, and returns the lines that printed: a probe at the
+   * screenshot's corner first, whose landing point gives the image's scale.
+   */
+  const tapAtPoint = async (name: string): Promise<string[]> => {
+    const box = JSON.parse(/Returned: (.*)/.exec((await call('run_code', { code: `return await screen.getByRole('checkbox', ${JSON.stringify(name)}).boundingBox();` })).text)![1]!) as {
+      x: number; y: number; width: number; height: number;
+    };
+    const shot = (await client.callTool({ name: 'call', arguments: { tool: 'screenshot', args: {} } })) as { content: { type: string; data?: string }[] };
+    const png = Buffer.from(shot.content.find((part) => part.type === 'image')!.data!, 'base64');
+    const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
+    const probe = await call('tap_at', { x: width - 1, y: height - 1 });
+    const landed = /the point \(([\d.]+), [\d.]+\)/.exec(probe.text);
+    expect(landed, probe.text).not.toBeNull();
+    const scale = (width - 1) / Number(landed![1]);
+    const tapped = await call('tap_at', { x: (box.x + box.width / 2) * scale, y: (box.y + box.height / 2) * scale });
+    return [probe, tapped].map((result) => {
+      expect(result.isError, result.text).toBe(false);
+      const line = result.text.split('\n')[1]!;
+      expect(line).toMatch(/^Test line: await screen\.tapAt\(\{ x: [\d.]+, y: [\d.]+ \}\); \/\/ a bare point holds only while the layout does/);
+      return line.replace(/^Test line: /, '');
+    });
+  };
+
   beforeAll(async () => {
     app = await startFixtureApp();
     project = createProject({ 'e2e.config.ts': CONFIG });
@@ -84,6 +110,9 @@ describe('e2e mcp test lines', { timeout: 120_000 }, () => {
       ['type_secret', { target: nodeId(screen, /textbox "Password"/), name: 'admin.password' }, 'await screen.getByRole("textbox", "Password").fill(credentials.user("admin").password);'],
       ['select', { target: nodeId(screen, /combobox "Plan"/), value: 'Pro' }, 'await screen.getByRole("combobox", "Plan").selectOption("Pro");'],
       ['check', { target: nodeId(screen, /checkbox "Accept terms"/) }, 'await screen.getByRole("checkbox", "Accept terms").check();'],
+      // Tapped twice more at its point with tap_at, a bare point on the web, which prints screen.tapAt: off, then on.
+      ['tap_at', { name: 'Accept terms' }, ''],
+      ['tap_at', { name: 'Accept terms' }, ''],
       [
         'tap',
         { target: nodeId(screen.slice(screen.indexOf('Offer B')), /button "Reserve"/) },
@@ -102,11 +131,17 @@ describe('e2e mcp test lines', { timeout: 120_000 }, () => {
       ['tap', { target: nodeId(screen, /button testid="star"/) }, 'await screen.getByTestId("star").tap();'],
       ['tap', { target: nodeId(screen, /button "Sign in"/) }, 'await screen.getByRole("button", "Sign in").tap();'],
     ];
+    const lines = ['await app.open();', 'await app.open("/test-lines");'];
     for (const [tool, args, line] of steps) {
+      if (tool === 'tap_at') {
+        lines.push(...(await tapAtPoint(String(args['name']))));
+        continue;
+      }
       const result = await call(tool, args);
       expect(result.isError, result.text).toBe(false);
       expect(result.text.split('\n')[1], tool).toBe(`Test line: ${line}`);
       expect(result.text).not.toContain(PASSWORD);
+      lines.push(line);
     }
     expect((await call('observe')).text).toContain('status "Summary" text="user=ada@example.test password=set plan=Pro terms=true offer=B kept=shadow picked=2 starred=true"');
 
@@ -115,7 +150,7 @@ describe('e2e mcp test lines', { timeout: 120_000 }, () => {
     expect(drafted.text).not.toContain(PASSWORD);
     expect(drafted.text).toContain("Import credentials from 'e2e'.");
     const body = drafted.text.split('\n').filter((line) => line.startsWith('await ') || line.startsWith('// '));
-    expect(body).toEqual(['await app.open();', 'await app.open("/test-lines");', ...steps.map(([, , line]) => line)]);
+    expect(body).toEqual(lines);
     await client.callTool({ name: 'close_session', arguments: {} });
 
     // The real proof: the draft, pasted as is, replays the flow in a run.

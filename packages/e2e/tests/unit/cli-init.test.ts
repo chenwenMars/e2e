@@ -161,6 +161,32 @@ describe('e2e init', () => {
     expect(read('.codex/config.toml')).toContain('command = "bunx"');
   });
 
+  it.each([
+    ['Yarn 4', 'yarn/4.19.0 npm/? node/v24.0.0 darwin arm64', ['exec', 'e2e', 'mcp']],
+    ['Yarn 1', 'yarn/1.22.22 npm/? node/v24.0.0 darwin arm64', ['--silent', 'exec', '--', 'e2e', 'mcp']],
+  ] as const)('registers the MCP server for the %s that started init in a project with nothing installed yet', async (_name, agent, args) => {
+    vi.stubEnv('npm_config_user_agent', agent);
+    expect((await init(dir, { yes: true })).exitCode).toBe(0);
+    expect(JSON.parse(read('.mcp.json'))).toEqual({ mcpServers: { e2e: { command: 'yarn', args } } });
+  });
+
+  it('registers the MCP server of a Yarn 2 or later workspace member by the flavor of its workspace root', async () => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*'] }));
+    writeFileSync(path.join(dir, 'yarn.lock'), '__metadata:\n  version: 8\n');
+    const project = path.join(dir, 'apps', 'web');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'web', type: 'module' }));
+    expect((await init(project, { yes: true })).exitCode).toBe(0);
+    expect(JSON.parse(read('apps/web/.mcp.json'))).toEqual({ mcpServers: { e2e: { command: 'yarn', args: ['exec', 'e2e', 'mcp'] } } });
+  });
+
+  it('installs with --immutable in the pipeline of a project only its lockfile marks as Yarn 2 or later', async () => {
+    writeFileSync(path.join(dir, 'yarn.lock'), '__metadata:\n  version: 8\n');
+    expect((await init(dir, { yes: true, ci: 'github-actions' })).exitCode).toBe(0);
+    expect(read('.github/workflows/e2e.yml')).toContain('yarn install --immutable');
+    expect(read('.github/workflows/e2e.yml')).not.toContain('--frozen-lockfile');
+  });
+
   it('hands back what --yes chose, then that a second run had nothing to do', async () => {
     expect(await init(dir, { yes: true })).toEqual({
       exitCode: 0,
@@ -1132,6 +1158,32 @@ describe('e2e init', () => {
       expect(output()).toContain('Not copying the skill into .claude/skills: the package manager links it from the installed e2e in this project; create the folder and install again to link it there');
       expect(output()).not.toContain('Not copying the skill into .agents/skills');
       expect(output()).toContain('Linked to the installed e2e, not touching: .agents/skills/pnpm-e2e-e2e');
+    });
+
+    it('does not repair a partial copy beside a pnpm link in the same skill directory', async () => {
+      pnpmLink('.claude/skills', 'pnpm-e2e-e2e');
+      mkdirSync(path.join(dir, '.claude/skills/e2e'), { recursive: true });
+      writeFileSync(path.join(dir, '.claude/skills/e2e/project-notes.md'), 'mine');
+      expect((await init(dir, { yes: true, skills: ['.claude/skills'], mcp: [] })).exitCode).toBe(0);
+      expect(existsSync(path.join(dir, '.claude/skills/e2e/SKILL.md'))).toBe(false);
+      expect(read('.claude/skills/e2e/project-notes.md')).toBe('mine');
+      expect(read('.claude/skills/pnpm-e2e-e2e/SKILL.md')).toBe('installed');
+      expect(existsSync(path.join(dir, 'CLAUDE.md'))).toBe(false);
+    });
+
+    it('repairs a partial member copy when it detects the pnpm link at the workspace root', async () => {
+      pnpmLink('.agents/skills');
+      writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - app\n');
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'root', private: true }));
+      const member = path.join(dir, 'app');
+      mkdirSync(path.join(member, '.claude/skills/e2e'), { recursive: true });
+      writeFileSync(path.join(member, 'package.json'), JSON.stringify({ name: 'app', private: true }));
+      writeFileSync(path.join(member, '.claude/skills/e2e/project-notes.md'), 'mine');
+      expect((await init(member, { yes: true, skills: ['.claude/skills'], mcp: [] })).exitCode).toBe(0);
+      expect(read('app/.claude/skills/e2e/SKILL.md')).toMatch(/^---\nname: e2e\n/);
+      expect(read('app/.claude/skills/e2e/project-notes.md')).toBe('mine');
+      expect(read('app/CLAUDE.md')).toContain('.claude/skills/e2e/SKILL.md');
+      expect(read('.agents/skills/e2e/SKILL.md')).toBe('installed');
     });
 
     it('warns about a copy beside a link and still refreshes the copy', async () => {

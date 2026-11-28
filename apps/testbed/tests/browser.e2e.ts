@@ -1,5 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { content } from './helpers.ts';
 
 test.describe('browser fixture', { platforms: ['web'], tags: ['browser'] }, () => {
   test.beforeEach(async ({ app }) => {
@@ -19,6 +20,23 @@ test.describe('browser fixture', { platforms: ['web'], tags: ['browser'] }, () =
     await expect(browser).toHaveURL('/browser');
     await browser.forward();
     await expect(browser).toHaveURL(/about$/);
+  });
+
+  test('a negated matcher passes on the first read that sees the negation', async ({ screen, browser }) => {
+    // Each save hides the banner and renames the page for 900 ms, then puts both back.
+    await browser.goto(
+      content(`<title>Idle</title>
+<button onclick="setTimeout(() => { banner.hidden = true; document.title = 'Saving'; }, 200); setTimeout(() => { banner.hidden = false; document.title = 'Idle'; }, 1100)">Save</button>
+<p id="banner" role="status">All changes saved</p>`),
+    );
+    const banner = screen.getByRole('status');
+    await screen.getByRole('button', 'Save').tap();
+    await expect(banner).not.toBeVisible();
+    await expect(banner).toBeVisible();
+
+    await screen.getByRole('button', 'Save').tap();
+    await expect(browser).not.toHaveTitle('Idle');
+    await expect(browser).toHaveTitle('Idle');
   });
 
   test('reload runs the page again', async ({ screen, browser }) => {

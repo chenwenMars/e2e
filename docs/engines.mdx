@@ -6,8 +6,8 @@ description: Choose how to build an engine for a UI platform, in TypeScript or a
 An engine drives a user interface, such as a browser, a simulator, or a TV,
 for `screen`, `app`, and the agent. The runner drives every engine over the
 [engine protocol](/reference/engine-protocol): JSON-RPC messages, one per
-engine member. `@e2e-dev/web`, `@e2e-dev/mobile`, and `@e2e-dev/desktop` are
-engines too.
+engine member. `@e2e-dev/web`, `@e2e-dev/mobile`, `@e2e-dev/desktop`, and
+`@e2e-dev/electron` are engines too.
 
 ```mermaid
 flowchart LR
@@ -28,6 +28,22 @@ flowchart LR
 An engine from `defineEngine` runs in the runner's process. Every call still
 crosses the protocol, so an engine that passes its suite needs nothing a
 server elsewhere couldn't receive.
+
+## Learn from the Electron engine
+
+[`@e2e-dev/electron`](/electron) is the model for an engine built outside
+this repository. It imports only `@e2e-dev/core/engine`, and speaks the
+DevTools protocol itself: no automation library and nothing from another
+engine. Building it showed
+where the contract assumed a browser or a device:
+
+| Assumption | What changed |
+| --- | --- |
+| A selector is answered synchronously in `resolveExpression` | Core exports `expressionSelectors`, so an engine queries every selector first, over any protocol |
+| An app without a URL is a device app | `app.open()` calls `session.restart`, a fresh launch. Without `session.open`, an engine needs no navigation and no browser context per attempt |
+| A surface has tabs | Windows fit `EngineSnapshot.tabs`, `switchTab`, and `closeTab` |
+| The engine decides headed or headless | Electron has neither. The app decides, and the engine ignores `--headed` |
+| A `file:` page belongs to a file app | Not fixed. The file-app bound keys on `app.url`, so the `file:` pages an Electron app loads on its own are outside it |
 
 ## Next
 

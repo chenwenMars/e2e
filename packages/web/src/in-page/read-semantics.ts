@@ -1547,7 +1547,9 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
    * origin (`data:`, `javascript:`) carries its payload as its path, a whole
    * file or script, so it is reduced to `scheme:…`. The path is whole
    * otherwise: the harness bounds what it renders after redaction, and marks
-   * what it cuts.
+   * what it cuts. The Electron engine has a copy, `originAndPath` in
+   * `packages/electron/src/fields.ts`: a change to what either hides belongs
+   * in both.
    */
   const originAndPath = (value: string, base: string): string => {
     const elided = (query: boolean, fragment: boolean): string => `${query ? '?…' : ''}${fragment ? '#…' : ''}`;

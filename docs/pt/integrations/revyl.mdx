@@ -1,12 +1,15 @@
 ---
-title: Teste apps mobile no Revyl
+title: Teste apps e sites no Revyl
 sidebarTitle: Revyl
-description: Rode testes de apps mobile nos simuladores iOS e emuladores Android hospedados do Revyl com @e2e-dev/revyl.
+description: Rode testes de apps mobile nos simuladores iOS e emuladores Android hospedados do Revyl, e testes web no Chrome hospedado do Revyl, com @e2e-dev/revyl.
 ---
 
 `@e2e-dev/revyl` é um provedor de dispositivos hospedados para a engine mobile.
 Ele inicia um dispositivo do Revyl para cada worker, instala o seu app nele e libera o dispositivo quando a execução termina.
 Use as APIs padrão `app`, `screen` e `expect` para testar os fluxos de usuário do seu app.
+Para sites, `revylBrowsers()` de `@e2e-dev/revyl/web` é um
+[provedor de navegadores](/browser#hosted-browsers) que roda cada teste no
+Chrome do Revyl ([Rode alvos web em navegadores](#run-web-targets-in-browsers)).
 
 ## Instale e autentique-se
 
@@ -86,9 +89,10 @@ nele: um `.app` de simulador iOS em zip ou um `.apk` Android. Não chame também
 }
 ```
 
-Uma leitura da tela em um dispositivo do Revyl leva cerca de 2,5 s, e às vezes
-mais de 5 s. Defina `assertionTimeout` como `15_000`. Com o padrão de 5 s, um
-`expect` pode falhar antes de ler a tela uma única vez.
+Uma leitura da tela em um dispositivo do Revyl leva cerca de 2,5 s (às vezes
+mais de 5 s), então defina `assertionTimeout` como `15_000`. Com o padrão de
+5 s, um `expect` pode esgotar o tempo limite antes mesmo de ler a tela uma
+única vez.
 
 ## Teste um fluxo do app
 
@@ -125,6 +129,13 @@ com `INVALID_CONFIG`.
 - Se o runner for encerrado à força antes de liberar um dispositivo, nada
   envia outro comando à sessão, e o Revyl encerra a sessão depois de
   5 minutos sem atividade.
+- Uma liberação faz a execução falhar quando o agent-device não consegue
+  confirmar que encerrou a sessão, mesmo quando todos os testes passaram.
+  Isso acontece quando a limpeza da sessão do Revyl falha (com mais de
+  20 segundos de `cleanupTimeout` restantes) ou fica sem confirmação durante
+  a parada do daemon, ou quando o daemon termina durante a execução. No
+  Windows, encerrar a sessão antes da parada do daemon também exige mais de
+  20 segundos de `cleanupTimeout` restantes (mantenha o padrão de 30 segundos).
 - O `app` precisa estar acessível por `https` sem credenciais na URL. Uma URL
   pré-assinada de armazenamento funciona. Defina `app` ou `app.appPath`, não
   os dois.
@@ -150,6 +161,96 @@ com `INVALID_CONFIG`.
   `setAirplaneMode`, `setLocation` no Android, `clearLocation`,
   `setBiometrics`, `enrollBiometrics`, `clipboard` e `setClipboard`.
   `foregroundApp` falha no Android, e `back` falha no iOS.
+
+## Rode alvos web em navegadores
+
+`revylBrowsers()` inicia uma sessão web do Revyl para cada tentativa de teste
+e conecta a engine web ao Chrome dessa sessão por CDP, então os testes web
+usam as mesmas APIs `app`, `screen`, `browser` e `expect` de um navegador
+local.
+
+Instale a integração junto com a engine web:
+
+<CodeGroup>
+```bash npm
+npm install --save-dev e2e @e2e-dev/web @e2e-dev/revyl
+```
+
+```bash pnpm
+pnpm add -D e2e @e2e-dev/web @e2e-dev/revyl
+```
+
+```bash bun
+bun add -d e2e @e2e-dev/web @e2e-dev/revyl
+```
+</CodeGroup>
+
+Crie um app Web no Revyl, por exemplo com
+`revyl app create --name "My site" --platform web`, e passe o id desse app
+como `app`. `url` é a página em que cada sessão abre; o Revyl registra essa
+página como um build do app e verifica se ela carrega antes de o teste
+começar. Defina o `viewport` da engine como `null` e passe o tamanho da
+sessão para `revylBrowsers()` em vez disso, já que um navegador do Revyl
+mantém o tamanho com que a sessão foi aberta:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { revylBrowsers } from '@e2e-dev/revyl/web';
+
+export default {
+  targets: [
+    {
+      name: 'revyl',
+      engine: web({
+        browser: revylBrowsers({ app: '<Revyl Web app id>', url: 'https://staging.example.com', viewport: { width: 1280, height: 800 } }),
+        viewport: null,
+      }),
+      app: { url: 'https://staging.example.com' },
+    },
+  ],
+} satisfies E2EConfig;
+```
+
+O reporter registra `session <id>, watch at <link>` no log para cada sessão.
+O link abre a sessão no Revyl, ao vivo enquanto o teste roda, e exige login
+no Revyl. Com `REVYL_API_URL` definida, o reporter registra só
+`session <id>`.
+
+| Opção | Padrão | Finalidade |
+| --- | --- | --- |
+| `app` | obrigatório | Id do app Web do Revyl em que as sessões rodam. |
+| `url` | obrigatório | URL `http(s)` em que cada sessão abre, sem credenciais nela. O Revyl precisa conseguir carregá-la. |
+| `viewport` | o padrão do Revyl | `{ width, height }` em pixels CSS, de 320 a 3840 por 240 a 2160. O navegador mantém esse tamanho durante a sessão inteira. |
+| `idleTimeoutSeconds` | `600` | Segundos sem atividade antes de o Revyl encerrar uma sessão que a execução deixou aberta, no mínimo 60. |
+
+Opções desconhecidas ou inválidas fazem o carregamento da configuração falhar
+com `INVALID_CONFIG`.
+
+### Limites na web
+
+- Toda tentativa, incluindo as novas tentativas, inicia uma sessão nova e
+  roda no único contexto de navegador dessa sessão, na primeira aba desse
+  contexto. Cada teste arca com o custo de iniciar uma sessão, e os
+  [limites de uma reserva por tentativa](/browser#pick-a-lease-scope) se
+  aplicam.
+- O `viewport` da engine web precisa ser `null`. O Revyl se recusa a
+  redimensionar o navegador, então `browser.setViewport` e um `viewport`
+  definido falham.
+- A URL CDP funciona uma única vez. Uma conexão perdida não é reconectada, e
+  a tentativa falha; uma nova tentativa inicia uma sessão nova.
+- Uma tentativa que grava vídeo, por exemplo com `--video`, recebe a
+  gravação da sessão feita pelo próprio Revyl como `video/recording.mp4`. O
+  Revyl só publica essa gravação depois que a sessão termina, então
+  interromper uma gravação encerra a sessão. Em um teste com `video: 'off'`
+  que chama `app.startRecording()`, a chamada `app.stopRecording()` encerra a
+  sessão, e o resto do teste fica sem navegador.
+- Downloads não estão disponíveis: o navegador do Revyl os recusa.
+- O site roda na rede do Revyl, então aponte `url` e `app.url` para a URL de
+  um deploy, não para `localhost`.
+- Quando uma tentativa termina, em todo caminho de saída, o provedor encerra
+  a sessão da tentativa. Se a própria execução cair, o Revyl encerra cada
+  sessão depois de `idleTimeoutSeconds` sem atividade.
 
 ## Próximos passos
 

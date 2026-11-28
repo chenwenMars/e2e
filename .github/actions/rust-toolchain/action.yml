@@ -1,0 +1,47 @@
+name: Rust toolchain
+description: >-
+  Installs rustup from a pinned, checksum-verified rustup-init when the image
+  has none, then the toolchain the root rust-toolchain.toml
+  pins, with that toolchain's cargo first on PATH.
+
+# The release builds what npm ships after this action, so the installer is a
+# fixed rustup-init release whose SHA-256 is recorded here, never the script
+# at sh.rustup.rs. The toolchain itself stays pinned in rust-toolchain.toml.
+# To move to a newer rustup, take the version from
+# https://static.rust-lang.org/rustup/release-stable.toml and each checksum
+# from https://static.rust-lang.org/rustup/archive/<version>/<target>/rustup-init.sha256.
+runs:
+  using: composite
+  steps:
+    - name: Install rustup
+      shell: bash
+      env:
+        RUSTUP_VERSION: 1.29.3
+        SHA256_AARCH64_APPLE_DARWIN: 63752a1919a3a4793173ec70f8f212621a7ce38ba6a246095984482f4de20f9f
+        SHA256_X86_64_APPLE_DARWIN: bc107f1fb0228de7fa32413c89c1b305cea9cd256e94b01150cd054128145429
+      run: |
+        set -euo pipefail
+        if command -v rustup >/dev/null; then
+          exit 0
+        fi
+        case "$(uname -s) $(uname -m)" in
+          "Darwin arm64") target=aarch64-apple-darwin sha256="$SHA256_AARCH64_APPLE_DARWIN" ;;
+          "Darwin x86_64") target=x86_64-apple-darwin sha256="$SHA256_X86_64_APPLE_DARWIN" ;;
+          *) echo "no pinned rustup-init for $(uname -s) $(uname -m)" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/rustup-init"
+        mkdir -p "$dir"
+        curl --proto '=https' --tlsv1.2 -sSf --retry 3 -o "$dir/rustup-init" \
+          "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$target/rustup-init"
+        echo "$sha256  $dir/rustup-init" | shasum -a 256 -c -
+        chmod +x "$dir/rustup-init"
+        "$dir/rustup-init" -y --no-modify-path --default-toolchain none
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    # The pinned toolchain's own cargo, first on PATH: a rustup that was already there, such as Homebrew's, may put no
+    # cargo on PATH, and a standalone cargo there may lack the targets rust-toolchain.toml pins.
+    - name: Put cargo on PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup toolchain install
+        dirname "$(rustup which cargo)" >> "$GITHUB_PATH"

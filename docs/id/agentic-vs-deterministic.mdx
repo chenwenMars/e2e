@@ -1,0 +1,131 @@
+---
+title: Agentic atau deterministik
+description: Pilih tindakan dan assertion agentic atau deterministik untuk tes end-to-end.
+---
+
+Pengujian agentic memungkinkan Anda menjelaskan maksud pengguna dan hasil yang
+diharapkan dengan bahasa alami. Agent memilih tindakan yang perlu dilakukan
+dan menilai apakah layar sesuai harapan. Tes berfokus pada hasil, tanpa selector
+yang perlu dipelihara setiap kali UI berubah.
+
+Pengujian deterministik menetapkan tindakan dan pemeriksaan di dalam kode.
+Keduanya dapat menguji hasil yang dialami pengguna, dan e2e memungkinkan Anda
+menggabungkan keduanya dalam satu tes.
+
+## Kapan menggunakan tes agentic?
+
+Gunakan tes agentic jika perubahan UI terus memaksa Anda memperbarui selector.
+Tes ini juga cocok untuk alur yang melibatkan banyak interaksi tetapi mudah
+dijelaskan dengan bahasa sehari-hari, seperti mengisi dan mengirim formulir.
+
+`agent.act` memungkinkan Anda menjelaskan maksud pengguna, misalnya menerapkan
+kode diskon. Agent menentukan kontrol yang harus digunakan dan tindakan yang
+perlu dilakukan. `agent.assert` memeriksa apakah layar menunjukkan hasil yang
+Anda jelaskan, misalnya diskon sudah diterapkan pada total.
+
+Contoh berikut menggunakan fixture `app` dan `agent` dalam sebuah tes:
+
+```ts
+await app.open('/checkout');
+await agent.act('apply the discount code SUMMER');
+await agent.assert('the checkout shows code SUMMER applied with a 10% discount');
+```
+
+Anda tidak perlu menyebut nama kolom diskon, tombol untuk menerapkannya,
+atau elemen yang menampilkan hasil.
+
+Tes yang bergantung pada class CSS atau test ID perlu diubah saat identifier
+tersebut berubah. Jika tombol dipindahkan atau formulir didesain ulang, agent
+tetap dapat menjalankan maksud pengguna berdasarkan tampilan layar.
+
+Tes agentic memungkinkan pemantauan dengan data nyata di staging atau produksi
+tanpa menyiapkan data deterministik, karena agent menyesuaikan diri dengan
+aplikasi Anda. Gunakan akun tes: model dapat melihat apa yang tampil di layar.
+Lihat [Keamanan](/security).
+
+Untuk alur yang kompleks, tulis serangkaian tujuan dengan bahasa sehari-hari.
+Batasi setiap tujuan pada satu hasil, lalu periksa hasilnya sebelum melanjutkan.
+Lihat [Tujuan](/core-concepts#goals) untuk mempelajari cara membagi alur menjadi
+beberapa langkah.
+
+## Kapan menggunakan assertion agentic?
+
+Assertion agentic berguna saat beberapa pilihan kata atau tata letak dapat
+memenuhi persyaratan yang sama. Misalnya, pesan validasi dapat menjelaskan
+masalah tanpa harus sama persis dengan satu kalimat tertentu:
+
+```ts
+await agent.assert('the error message explains that an email address is required');
+```
+
+Untuk pemeriksaan visual, tambahkan `vision: true` agar model juga melihat
+screenshot:
+
+```ts
+await agent.assert('the chart trends upward', { vision: true });
+```
+
+`agent.assert` memeriksa layar saat ini dan gagal jika pernyataannya salah atau
+indikasinya tidak cukup. Gunakan `agent.waitFor` jika UI masih memerlukan waktu
+untuk mencapai keadaan yang diharapkan. Lihat [Assertion](/core-concepts#assertions)
+untuk kedua metode tersebut.
+
+## Kapan menggunakan tes deterministik?
+
+Gunakan locator untuk alur singkat dan stabil saat Anda sudah mengetahui
+kontrol yang perlu digunakan. Tetapkan setiap kolom dan tombol di dalam kode,
+seperti pada tes diskon ini:
+
+```ts
+await app.open('/checkout');
+await screen.getByLabel('Discount code').fill('SUMMER');
+await screen.getByRole('button', 'Apply').tap();
+await expect(screen.getByRole('status')).toHaveText('10% off');
+```
+
+Tindakan dan pemeriksaan ini tidak memanggil model. Utamakan role dan label
+agar tes merujuk pada kontrol yang dikenali pengguna. Tes deterministik tidak
+harus bergantung pada class CSS atau test ID.
+
+Gunakan assertion deterministik jika hasil yang diharapkan dapat dinyatakan
+sebagai nilai, jumlah, atau keadaan yang pasti. Pemeriksaan dilakukan tanpa
+penilaian model. Jika pesan validasi harus memakai kata-kata tertentu, periksa
+teksnya dengan `expect`.
+
+## Gabungkan tes agentic dan deterministik
+
+Pilih tindakan dan assertion secara terpisah. Anda dapat meminta agent
+menavigasi UI yang berubah, lalu memeriksa nilai yang pasti dengan `expect`:
+
+```ts
+await agent.act('apply the discount code SUMMER');
+await expect(screen.getByRole('status')).toHaveText('10% off');
+```
+
+Anda juga dapat memakai locator untuk mengisi dan mengirim formulir, lalu
+menggunakan `agent.assert` untuk memeriksa apakah pesan validasinya menjelaskan
+masalah.
+
+Penyesuaian agent mengikuti tujuan yang Anda tulis. Instruksi yang samar dapat
+menghasilkan sesuatu yang tidak Anda maksud. Jika jalur tertentu penting,
+sebutkan di dalam tujuan atau gunakan locator untuk tindakan tersebut.
+`expect` setelah `agent.act` membantu menangkap tujuan yang berhasil dengan
+cara yang keliru.
+
+Tindakan dan assertion yang menggunakan model menambah waktu dan biaya, serta
+dapat keliru. [Cache replay](/cache) dapat mengulang tindakan `agent.act` yang
+telah direkam tanpa memanggil model. Assertion dijalankan kembali pada setiap
+tes. Jika rekaman tidak lagi cocok, agent dapat menyesuaikan diri dengan UI
+yang berubah, kecuali mode cache ketat diaktifkan. Lihat
+[Tes self-healing](/self-healing) untuk detailnya.
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Konsep inti" icon="lightbulb" href="/core-concepts">
+    Tulis tujuan, assertion, dan langkah dengan locator.
+  </Card>
+  <Card title="Tes self-healing" icon="bandage" href="/self-healing">
+    Pelajari cara agent menyesuaikan diri saat alur yang direkam berubah.
+  </Card>
+</CardGroup>

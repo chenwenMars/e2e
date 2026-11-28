@@ -199,7 +199,7 @@ const agent = {
 模型输入包括经过脱敏的屏幕、步骤指令，以及智能体请求的截图。响应返回后，e2e 不会从提供方读取任何先前数据，因此运行过程无需提供方存储状态。
 
 每个模型请求都会标识 e2e：`User-Agent` 以 `e2e/<version> (<platform>; <arch>)` 开头；对于 Vercel AI Gateway 和 OpenRouter，还会添加 `HTTP-Referer:
-https://tester.army/e2e` 和 `X-Title: e2e`。这些值会替换提供方实例上设置的同名请求头。
+https://e2e.com` 和 `X-Title: e2e`。这些值会替换提供方实例上设置的同名请求头。
 
 <AccordionGroup>
 <Accordion title="OpenAI 和 Azure OpenAI：零数据保留">

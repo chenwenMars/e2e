@@ -1,5 +1,7 @@
 packages:
   - packages/*
+  # The platform packages of a package with a native addon (scripts/native/addons.ts).
+  - packages/*/npm/*
   - apps/*
   - docs
 

@@ -26,6 +26,9 @@ export interface Rgba {
 /** How far, in image pixels, the window in a capture may differ from the size its bounds give: points times scale, rounded. */
 const SIZE_TOLERANCE = 1;
 
+/** The widest outline macOS draws around a window in a capture, in image pixels on each side. */
+const MAX_OUTLINE = 4;
+
 /** How far each mask reaches past its field, in image pixels, so a field off by the tolerance is still covered. */
 const MASK_MARGIN = 2;
 
@@ -36,25 +39,34 @@ const MASK_MARGIN = 2;
  * the box of fully opaque pixels, which the shadow never is, and cropped to.
  * A capture within a pixel of `expected` (the window's size in image
  * pixels) is the window already; any other is cropped to its opaque box,
- * which must then be within a pixel of it. Undefined otherwise: the
- * rectangles would land somewhere else, and an image whose masking cannot
- * be proven must not leave the engine.
+ * which must then be within a pixel of it, or hold the window inside an
+ * outline of even width on either axis (`insideOutline`). An outline's
+ * width is not seen side by side, so its crop may sit off by up to half the
+ * extra on each axis: every mask then reaches that much further. Undefined
+ * otherwise: the rectangles would land somewhere else, and an image whose
+ * masking cannot be proven must not leave the engine.
  */
 export function windowImage(bytes: Uint8Array, expected: { width: number; height: number }, rects: readonly Rect[]): Rgba | undefined {
   const image = decodeRgba(bytes);
   const fits = (width: number, height: number): boolean =>
     Math.abs(width - expected.width) <= SIZE_TOLERANCE && Math.abs(height - expected.height) <= SIZE_TOLERANCE;
   let window = image;
+  let reachX = MASK_MARGIN;
+  let reachY = MASK_MARGIN;
   if (!fits(image.width, image.height)) {
     const box = opaqueBox(image);
-    if (box === undefined || !fits(box.width, box.height)) return undefined;
-    window = crop(image, box);
+    if (box === undefined) return undefined;
+    const inner = fits(box.width, box.height) ? box : insideOutline(box, expected);
+    if (inner === undefined) return undefined;
+    reachX += inner.x - box.x;
+    reachY += inner.y - box.y;
+    window = crop(image, inner);
   }
   for (const rect of rects) {
-    const x0 = Math.max(0, Math.floor(rect.x) - MASK_MARGIN);
-    const y0 = Math.max(0, Math.floor(rect.y) - MASK_MARGIN);
-    const x1 = Math.min(window.width, Math.ceil(rect.x + rect.width) + MASK_MARGIN);
-    const y1 = Math.min(window.height, Math.ceil(rect.y + rect.height) + MASK_MARGIN);
+    const x0 = Math.max(0, Math.floor(rect.x) - reachX);
+    const y0 = Math.max(0, Math.floor(rect.y) - reachY);
+    const x1 = Math.min(window.width, Math.ceil(rect.x + rect.width) + reachX);
+    const y1 = Math.min(window.height, Math.ceil(rect.y + rect.height) + reachY);
     for (let y = y0; y < y1; y += 1) {
       for (let x = x0; x < x1; x += 1) {
         const at = (y * window.width + x) * 4;
@@ -68,9 +80,32 @@ export function windowImage(bytes: Uint8Array, expected: { width: number; height
   return window;
 }
 
+/** What a capture holds, for an error that says why it was refused: its size, and the box of its fully opaque pixels. */
+export function describeCapture(bytes: Uint8Array): string {
+  const image = decodeRgba(bytes);
+  const box = opaqueBox(image);
+  return `${image.width}x${image.height}${box === undefined ? ', none of it opaque' : `, its opaque box ${box.width}x${box.height} at (${box.x}, ${box.y})`}`;
+}
+
 /** PNG bytes of an image. */
 export function encodePng(image: Rgba): Uint8Array {
   return encodeRgba(image);
+}
+
+/**
+ * The window inside the outline macOS can draw around it: equally wide on
+ * both sides of an axis, and on one axis or both. A box larger than the
+ * window by an even number of pixels on each axis, at most `MAX_OUTLINE` on
+ * each side, holds the window at its center. Undefined for a box of any
+ * other size; a one-sided outline would put the crop off by its width, so it
+ * is not taken.
+ */
+function insideOutline(box: { x: number; y: number; width: number; height: number }, expected: { width: number; height: number }): { x: number; y: number; width: number; height: number } | undefined {
+  const extraWidth = box.width - expected.width;
+  const extraHeight = box.height - expected.height;
+  const outline = (extra: number): boolean => extra >= 0 && extra % 2 === 0 && extra <= MAX_OUTLINE * 2;
+  if (!outline(extraWidth) || !outline(extraHeight)) return undefined;
+  return { x: box.x + extraWidth / 2, y: box.y + extraHeight / 2, width: expected.width, height: expected.height };
 }
 
 /** The smallest box holding every fully opaque pixel; undefined when there is none. */

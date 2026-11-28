@@ -1273,6 +1273,7 @@ honors in `actions` and `pointerActions`.
 | `setInputFilePayloads` | `files` with `name`, `mimeType`, and `Uint8Array` `buffer`. An empty `files` array clears the input. The runner uses it to clear when the engine declares this action without `setInputFiles`. | yes | - |
 | `dragTo` | `target`: a `NodeRef` or a `ViewportPoint` | yes | yes |
 | `swipe` | `direction`, `momentum?` | yes | yes |
+| `scrollTo` | `edge`: `'top'`, `'bottom'`, `'left'`, or `'right'`. On a node, the node or its nearest ancestor that scrolls along that axis; on the root, the screen's main scrolling content. Resolves once nothing scrolls further toward `edge`, at once when nothing does, within the operation's budget. Not in SPI v1, so list it explicitly. | yes | - |
 | `swipeTo` | `target`, `durationMs?` | - | yes |
 
 The grammar is closed. Anything beyond it is an agent-side `defineTool`.
@@ -1338,6 +1339,22 @@ export type LocatorAction =
       readonly kind: 'swipe';
       readonly direction: ScrollDirection;
       readonly momentum?: Momentum;
+    }
+  | {
+      /**
+       * Scrolls a container to one of its edges, as far as it goes. On a
+       * node: the node when it scrolls along the edge's axis, else its
+       * nearest ancestor that does; an engine that cannot tell which node
+       * scrolls drags inside the node's own box. On the observation root:
+       * the screen's main scrolling content, else what is under the
+       * viewport's center. The engine
+       * resolves once the container cannot scroll further toward `edge`, at
+       * once when it is there already or nothing scrolls along that axis,
+       * and stops when the operation's budget runs out. Not a kind of SPI v1,
+       * so an engine lists it explicitly.
+       */
+      readonly kind: 'scrollTo';
+      readonly edge: ScrollEdge;
     };
 
 /** Every action kind; what an engine declares in `actions`. */
@@ -1364,7 +1381,7 @@ export const LOCATOR_ACTION_KINDS = [
 ] as const satisfies readonly LocatorActionKind[];
 
 /** Every action kind understood by this version of core. */
-export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap'] as const satisfies readonly LocatorActionKind[];
+export const KNOWN_LOCATOR_ACTION_KINDS = [...LOCATOR_ACTION_KINDS, 'blur', 'setInputFilePayloads', 'multiTap', 'scrollTo'] as const satisfies readonly LocatorActionKind[];
 ```
 
 #### Pointer actions
@@ -1534,6 +1551,12 @@ export type EngineAppDeclaration = EngineAppInfo & {
 export interface EngineAppCheckInfo {
   /** The target declaring the app, for the message of a refusal. */
   readonly targetName: string;
+  /**
+   * The app's `url` names a file on the runner's disk, as the harness reads
+   * the URL. Only an engine that declares `fileApps` is handed one. Refuse
+   * here what cannot read that disk, such as a browser on another machine.
+   */
+  readonly fileApp?: boolean;
 }
 
 /** A permission's state when the app launches: held, refused, or not asked for yet, so the OS asks again. */
@@ -1772,9 +1795,7 @@ instead:
 | an action, `waitFor` | `LOCATOR_NOT_FOUND`, with the timeout as its cause |
 | an assertion | `ASSERTION_FAILED`, with the timeout as its cause |
 
-A negated assertion passes there if its negation had held long enough by the
-time the read was cut off. [`pollCondition`](#pollcondition) polls by these
-rules.
+[`pollCondition`](#pollcondition) polls by these rules.
 
 #### Runner error classes
 
@@ -1819,7 +1840,7 @@ reproduces these semantics; import them instead of carrying a copy.
 | Export | Returns |
 | --- | --- |
 | [`matchesText`, `toTextPattern`, `describePattern`](#text-patterns) | `boolean`, `TextPattern`, `string` |
-| [`resolveExpression`](#resolveexpression) | `SemanticNode[]` |
+| [`resolveExpression`, `expressionSelectors`](#resolveexpression) | `SemanticNode[]`, `readonly string[]` |
 | [`urlMatches`](#urlmatches) | `boolean` |
 | [`siteOf`, `sameSite`](#site-helpers) | `string`, `boolean` |
 | [`isRefusedLinkScheme`](#isrefusedlinkscheme) | `boolean` |
@@ -1830,7 +1851,8 @@ reproduces these semantics; import them instead of carrying a copy.
 | [`appleUserDefaults`](#appleuserdefaults) | `readonly string[]` |
 | [`rejectUnknownOptions`](#rejectunknownoptions) | `void` |
 | [`obj`](#obj) | `WithoutUndefined<T>` |
-| [`raceAbort`, `withTimeout`, `withinCleanupBudget`](#timing-helpers) | `Promise<T>`, `Promise<T>`, `Promise<void>` |
+| [`raceAbort`, `withTimeout`, `sleep`, `withinCleanupBudget`](#timing-helpers) | `Promise<T>`, `Promise<T>`, `Promise<void>`, `Promise<void>` |
+| [`readPngSize`](#readpngsize) | `{ width, height } \| undefined` |
 | [`isSecret`](#issecret) | `boolean` |
 | [`isProviderRecording`, `stopProviderRecording`](#provider-recordings) | `boolean`, `Promise<VideoSegment>` |
 
@@ -1865,6 +1887,8 @@ export function resolveExpression(
   nodes: readonly SemanticNode[],
   options?: ResolveExpressionOptions,
 ): SemanticNode[];
+
+export function expressionSelectors(expression: LocatorExpression): readonly string[];
 ```
 
 ```ts
@@ -1876,9 +1900,17 @@ async locate(expression) {
 
 - `text` and `label` answer with the innermost match when a container echoes
   a descendant's text.
+- A `text` query matches a node's name or its text. With
+  `textQuery: 'text'` it matches the text alone, as a browser does, for a
+  tree that carries every element's text. A scoped text query then also
+  answers with the scope element when the text is its own.
 - An engine whose tree is the whole truth (a device) calls it; a browser
   engine reproduces it.
-- A `selector` expression needs the `selector` option.
+- A `selector` expression needs the `selector` option, which answers
+  synchronously. An engine whose selector language is asynchronous (a
+  DevTools query, a device daemon) queries every selector
+  `expressionSelectors(expression)` returns first, then answers from those
+  results.
 - A `frame` expression is `FRAME_NOT_FOUND`.
 - A `union` expression matches either branch in document order, without duplicate nodes.
 
@@ -1932,7 +1964,7 @@ if (isRefusedLinkScheme(new URL(link).protocol)) throw new ConfigurationError('P
 
 #### `pollCondition`
 
-Assertion polling and the negation grace window.
+Assertion polling: until a read sees the condition hold or, negated, not hold.
 
 ```ts
 export function pollCondition(options: PollConditionOptions): Promise<void>;
@@ -2024,9 +2056,9 @@ const launchArguments = checkLaunchArguments('device.openApp({ launchArguments }
 // device.openApp({ launchArguments }).env must be a string, number, boolean, or array of strings, got null
 ```
 
-- A list holds strings. An object maps a non-empty name with no whitespace or
-  control characters to a string, a finite number below 2^53 in magnitude, a
-  boolean, or a list of strings. Nothing holds a NUL character.
+- A list holds strings. An object maps a non-empty name to a string, a finite
+  number below 2^53 in magnitude, a boolean, or a list of strings. A name has
+  no control characters, and no whitespace but spaces inside it. Nothing holds a NUL character.
 - An object's argument name does not start with a dash: write `AppleLocale`,
   not `-AppleLocale`. The engine adds the dash, so a dashed name fails.
 - The engine adds its platform's rules after this check, with the same
@@ -2091,6 +2123,7 @@ obj({ a: 1, b: undefined, c: 3 }); // { a: 1, c: 3 }
 ```ts
 export function raceAbort<T>(work: Promise<T> | (() => Promise<T>), signal: AbortSignal, label: string): Promise<T>;
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => Error): Promise<T>;
+export function sleep(ms: number, signal?: AbortSignal): Promise<void>;
 export function stepTimeout(timeout: unknown, api: string): number | undefined;
 export function withinCleanupBudget(
   promise: Promise<unknown>,
@@ -2107,11 +2140,24 @@ const operation = context.operation(stepTimeout(options?.timeout, 'kiosk.print')
   cancellation before dispatch.
 - `withTimeout` races a promise against a timeout and throws what
   `onTimeout` builds.
+- `sleep` waits `ms`, and rejects as soon as `signal` aborts, with the
+  error the signal was aborted with when it is a runner error, else
+  `CANCELLED`. A wait for a condition uses `pollCondition` instead.
 - `stepTimeout` turns a call's own `timeout` option into a budget for
   `context.operation`: `0` waits until the test timeout, or `cleanupTimeout` in `afterEach`, and a negative,
   `NaN`, or infinite one is `INVALID_ARGUMENT`.
 - `withinCleanupBudget` never rejects. It resolves when the promise settles,
   failures included, when `signal` aborts, or when `timeoutMs` passes.
+
+#### `readPngSize`
+
+```ts
+export function readPngSize(data: Uint8Array): { readonly width: number; readonly height: number } | undefined;
+```
+
+Reads a PNG's pixel size from its header, for `ObservationPixels.width` and
+`height`: the size must be that of the bytes, since the model's coordinates
+are relative to them. Returns `undefined` for bytes that are not a PNG.
 
 #### `isSecret`
 
@@ -2589,7 +2635,7 @@ return context.fixture('printer', printer, { print: { kind: 'resource' } });
 `TextPattern`, `SemanticQuery`, `LocatorExpression`,
 `NodeRef`, `SemanticNode`, `ViewportPoint`, `ViewportSize`,
 `ObservationPixels`, `LocatorAction`, `LocatorActionKind`, `PointerAction`,
-`PointerActionKind`, `ScrollDirection`, `Momentum`, `SelectOption`, `Key`,
+`PointerActionKind`, `ScrollDirection`, `ScrollEdge`, `Momentum`, `SelectOption`, `Key`,
 `KeyModifier`, `KeyName`, `ParsedKey`, `ENGINE_SPI_VERSION`,
 `LOCATOR_ACTION_KINDS`, `KNOWN_LOCATOR_ACTION_KINDS`, `POINTER_ACTION_KINDS`, `KEY_MODIFIERS`,
 `KEY_NAMES`, `parseKey`, `ENGINE_ERROR_CODES`, `RETRYABLE_ENGINE_ERROR_CODES`,

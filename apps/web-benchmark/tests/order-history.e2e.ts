@@ -1,5 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { failure } from './support.ts';
 
 test.describe('order history', () => {
   test.beforeEach(async ({ app }) => {
@@ -20,9 +21,13 @@ test.describe('order history', () => {
   test('the orders tab never leaves its loading state (planted bug)', async ({ screen }) => {
     await screen.getByRole('button', 'Orders').tap();
     const orders = screen.getByTestId('orders-panel');
-    // A negated matcher passes only after 1000 ms of continuous truth: the
-    // dwell that tells a stuck loading state from a slow one.
-    await expect(orders.getByText('Loading your orders...')).not.toBeHidden();
+    const loader = orders.getByText('Loading your orders...');
+    await expect(loader).toBeVisible();
+    // Stuck, not slow: a second later the loader is still up and no order came.
+    expect(await failure(() => expect(loader).toBeHidden({ timeout: 1000 }))).toHaveProperty(
+      'code',
+      'ASSERTION_FAILED',
+    );
     await expect(orders.getByRole('listitem')).toHaveCount(0);
 
     await screen.getByRole('button', 'Settings').tap();

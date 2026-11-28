@@ -1,5 +1,5 @@
 /**
- * The agent-desktop engine for e2e: a desktop body built with the public
+ * The desktop engine for e2e: a desktop body built with the public
  * `defineEngine`, validated by the same rules and graded by the same
  * capabilities as any other engine. Core imports nothing from here; this
  * package imports the contract from `@e2e-dev/core/engine` and contributes the
@@ -10,19 +10,19 @@ import { createRequire } from 'node:module';
 import { ConfigurationError, defineEngine, type EngineAppCheckInfo, type EngineAppDeclaration, type EngineHandle, type EngineIsolation, type LocatorActionKind, type PointerActionKind } from '@e2e-dev/core/engine';
 import { createDesktopFixture } from './desktop.ts';
 import type { DesktopFixtures } from './fixtures.ts';
-import { requireMacOS, resolveOptions, type DesktopOptions } from './options.ts';
+import { requireMacOS, resolveOptions, unsupportedPlatform, type DesktopOptions } from './options.ts';
 import { DesktopSurface } from './surface.ts';
 
-/** What `perform` honors through the accessibility API alone, on macOS. */
-const ACTIONS: readonly LocatorActionKind[] = ['tap', 'secondaryTap', 'fill', 'clear', 'check', 'uncheck', 'focus', 'scrollIntoView', 'selectOption', 'swipe'];
-
 /**
- * What physical input adds: a double click and the pointer over a control
- * (agent-desktop does both with the real pointer only), a key, which
- * agent-desktop sends only to the active window, and taps at a point.
+ * What `perform` honors without physical input, on macOS: the accessibility
+ * API, and keys sent into the app's own event queue, which reach its key
+ * window while it stays in the background.
  */
-const HEADED_ACTIONS: readonly LocatorActionKind[] = [...ACTIONS, 'press', 'doubleTap', 'hover'];
-const HEADED_POINTER_ACTIONS: readonly PointerActionKind[] = ['tap', 'doubleTap', 'secondaryTap', 'hover'];
+const ACTIONS: readonly LocatorActionKind[] = ['tap', 'secondaryTap', 'fill', 'clear', 'check', 'uncheck', 'focus', 'scrollIntoView', 'selectOption', 'swipe', 'press'];
+
+/** What physical input adds: a double click and the pointer over a control, which need the real pointer, and taps at a point. */
+const PHYSICAL_ACTIONS: readonly LocatorActionKind[] = [...ACTIONS, 'doubleTap', 'hover'];
+const PHYSICAL_POINTER_ACTIONS: readonly PointerActionKind[] = ['tap', 'doubleTap', 'secondaryTap', 'hover'];
 
 /**
  * The handle `desktop()` returns. Declared here so a config's inferred type
@@ -43,7 +43,7 @@ export function desktop(options: DesktopOptions = {}): DesktopEngine<'macos', 'a
   const resolved = resolveOptions(options);
   const platform = 'macos';
   const surface = new DesktopSurface(resolved, platform);
-  const headed = resolved.headed;
+  const physical = resolved.physicalInput;
   return defineEngine<DesktopFixtures, 'macos', 'attempt'>({
     name: 'desktop',
     version: ownVersion(),
@@ -51,12 +51,12 @@ export function desktop(options: DesktopOptions = {}): DesktopEngine<'macos', 'a
     platform,
     workers: 1,
     launchArgumentValues: true,
-    prepare: (info) => {
+    prepare: () => {
       requireMacOS();
-      return surface.prepare(info);
+      return surface.prepare();
     },
     doctor: async (info) =>
-      process.platform === 'darwin' ? await surface.doctor(info) : [{ id: 'platform', status: 'fail' as const, message: `desktop() drives macOS apps only for now; this machine runs ${process.platform}` }],
+      process.platform === 'darwin' ? await surface.doctor(info) : [{ id: 'platform', status: 'fail' as const, message: unsupportedPlatform() }],
     init: (info) => {
       requireMacOS();
       return surface.init(info);
@@ -67,19 +67,15 @@ export function desktop(options: DesktopOptions = {}): DesktopEngine<'macos', 'a
     observe: (operation, observeOptions) => surface.observe(operation, observeOptions),
     locate: (expression, operation) => surface.locate(expression, operation),
     perform: (ref, action, operation) => surface.perform(ref, action, operation),
-    actions: headed ? HEADED_ACTIONS : ACTIONS,
-    ...(headed
-      ? { performAt: (point, action, operation) => surface.performAt(point, action, operation), pointerActions: HEADED_POINTER_ACTIONS }
+    actions: physical ? PHYSICAL_ACTIONS : ACTIONS,
+    ...(physical
+      ? { performAt: (point, action, operation) => surface.performAt(point, action, operation), pointerActions: PHYSICAL_POINTER_ACTIONS }
       : {}),
-    // Typing into whatever has focus must send keystrokes, which agent-desktop does with physical input only.
-    ...(headed
-      ? {
-          keyboard: {
-            type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
-            press: (key, operation) => surface.pressKey(key, operation),
-          },
-        }
-      : {}),
+    // Keystrokes into whatever has focus: into the app's event queue, or with `physicalInput` through the real keyboard.
+    keyboard: {
+      type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
+      press: (key, operation) => surface.pressKey(key, operation),
+    },
     validateApp: (app, info) => validateApp(app, info),
     // No `open`: a desktop app has no URL, so the runner serves `app.open()`
     // with `restart`, a fresh launch of the target's app.

@@ -1,0 +1,328 @@
+---
+title: Web
+description: Arahkan engine web ke aplikasi Anda atau minta runner menjalankannya, lalu uji dengan beberapa ukuran viewport.
+"og:image": "https://e2e.com/docs/images/og/web.png?v=e860636537"
+"twitter:image": "https://e2e.com/docs/images/og/web.png?v=e860636537"
+---
+
+`@e2e-dev/web` menjalankan tes di browser pada URL aplikasi Anda. Untuk route,
+cookie, dialog, dan unduhan, lihat [Bekerja dengan browser](/browser).
+
+## Mulai aplikasi Anda
+
+Tetapkan URL aplikasi di `app` pada target. `app.open('/path')` akan
+menggunakan URL tersebut sebagai dasar:
+
+```ts title="Target fragment"
+engine: web(),
+app: { url: process.env.APP_URL ?? 'http://localhost:3000' },
+```
+
+URL tanpa scheme menggunakan HTTPS, atau HTTP jika host-nya loopback. HTTP biasa
+hanya berfungsi pada host loopback.
+
+### Biarkan runner menjalankannya
+
+Tambahkan `app.command` agar runner menjalankan dev server. Runner menunggu
+sampai `app.url` merespons, lalu menghentikan server yang dijalankannya saat eksekusi
+selesai, gagal, atau terinterupsi:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [{
+    engine: web(),
+    app: {
+      url: process.env.APP_URL ?? 'http://localhost:3000',
+      command: {
+        executable: 'npm',
+        args: ['run', 'dev'],
+        reuseExisting: true,
+        log: '.e2e/logs/app.log',
+      },
+    },
+  }],
+} satisfies E2EConfig;
+```
+
+```text
+ ✓ target "web" command at http://localhost:3000/ ready 1.20s
+```
+
+Perintah dijalankan tanpa shell: `executable` dicari melalui `PATH` dan `args`
+diteruskan apa adanya. Proses anak hanya menerima `PATH`, `HOME`, variabel
+folder sementara, `inheritEnv`, dan `env`.
+
+| Opsi | Kegunaan |
+| --- | --- |
+| `reuseExisting: true` | Gunakan server yang sudah berjalan, misalnya server yang dijalankan oleh [sesi MCP](/mcp-server#run-tests-next-to-a-session). Di CI, e2e mengabaikan opsi ini. Jika server sudah merespons, hasilnya `APP_ALREADY_RUNNING`. |
+| `log` | Simpan stdout dan stderr aplikasi ke file relatif terhadap proyek. Error startup atau proses yang berhenti tanpa diduga selama `e2e run` akan menampilkan baris yang ditambahkan proses ke file sejak perintah dimulai. Log hingga 40 baris dan 8 KiB ditampilkan seluruhnya. Jika lebih panjang, kutipan memuat hingga 20 baris dari awal dan akhir, dengan `[startup output omitted]` di antaranya. Untuk log di atas 8 KiB, baris tersebut diambil dari 4 KiB pertama dan terakhir. Nilai `command.env` dan `inheritEnv` yang panjangnya minimal empat karakter disamarkan dalam kutipan. File lognya sendiri tidak disamarkan. |
+| `env` | Variabel environment untuk aplikasi. |
+| `inheritEnv` | Variabel host yang diteruskan jika ditetapkan, berdasarkan nama atau awalan: `['DATABASE_URL', 'STRIPE_*']`. Nilai `env` memiliki prioritas lebih tinggi. |
+| `startupTimeout` | Lama waktu menunggu aplikasi merespons. Default-nya 60 detik. |
+| `readyUrl` | Tetapkan sejajar dengan `command`, bukan di dalamnya, untuk memeriksa health endpoint alih-alih `app.url`. |
+
+Lihat [referensi command](/reference/config#command) untuk semua opsi.
+
+<Note>
+Runner hanya menjalankan `app.command`. Jalankan database, mock, dan layanan
+lain sebelum eksekusi, atau jadikan `app.command` sebagai skrip yang menjalankan
+semuanya sekaligus menyajikan aplikasi. API untuk layanan akan tersedia di
+rilis mendatang.
+</Note>
+
+### Biarkan runner memilih port
+
+Gunakan port `0` untuk menjalankan beberapa checkout tanpa konflik port. Runner
+memilih port yang tersedia lalu mengganti `{port}` dalam `args` dan `env` perintah:
+
+```ts title="Target fragment"
+engine: web(),
+app: {
+  url: 'http://127.0.0.1:0',
+  command: { executable: 'pnpm', args: ['dev', '--port', '{port}'], env: { PORT: '{port}' } },
+},
+```
+
+- Gunakan `127.0.0.1` atau `[::1]`, alamat yang diikat oleh perintah.
+  `localhost:0` tidak diterima.
+- Tes membaca URL dengan port sebenarnya dari `app.baseUrl`.
+- Entri cache tetap valid meskipun port berubah.
+- `reuseExisting` tidak berfungsi dengan port `0`.
+- Dev server Next.js memerlukan entri `allowedDevOrigins` untuk host tersebut.
+  Lihat [Next.js](/frameworks/nextjs#fix-next-js-problems).
+
+Lihat [port bebas](/reference/config#free-ports).
+
+## Preview terlindungi
+
+Gunakan `headers` untuk membuka preview terlindungi atau melewati halaman
+peringatan tunnel. Misalnya, preview Vercel menerima header untuk melewati
+perlindungan:
+
+```ts title="Target fragment"
+engine: web({
+  headers: {
+    'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET ?? '',
+  },
+}),
+app: {
+  url: process.env.PREVIEW_URL ?? 'http://localhost:3000',
+  identity: 'storefront',
+},
+```
+
+Browser menambahkan `headers` hanya pada request yang dimulai dari origin
+`app.url`, yaitu scheme, host, dan port-nya. Header tetap disertakan saat request
+mengikuti redirect ke origin mana pun. Untuk menambahkannya ke origin lain,
+misalnya host API yang berada di balik perlindungan yang sama, cantumkan origin
+tersebut di `credentialOrigins`. Lihat [kredensial request](/reference/security#request-credentials).
+Untuk ngrok, gunakan `'ngrok-skip-browser-warning': '1'`.
+`app.identity` menjaga identitas cache tetap stabil saat URL preview berubah.
+
+<Note>
+Menetapkan `headers` menonaktifkan HTTP cache browser dan memblokir service
+worker.
+</Note>
+
+Gunakan `basicAuth` untuk autentikasi HTTP basic. Browser menjawab challenge
+`401` dari origin `app.url` dan setiap origin di `credentialOrigins`. WebKit
+menjawab challenge dari origin mana pun jika salah satunya menggunakan port
+default, seperti URL `https://` tanpa port, atau memiliki host IPv6.
+Deklarasikan password di `secrets` lalu berikan `secrets.get(name)`:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { secrets } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [
+    {
+      engine: web({
+        basicAuth: { username: 'preview', password: secrets.get('previewPassword') },
+      }),
+      app: { url: 'https://staging.example.com' },
+    },
+  ],
+  secrets: { previewPassword: () => process.env.PREVIEW_PASSWORD ?? '' },
+} satisfies E2EConfig;
+```
+
+Engine mengambil nilai secret saat setiap attempt dimulai, dan runner tidak
+menyertakannya dalam laporan, log, atau konten yang dibaca agent. Nama yang
+belum dideklarasikan membuat pemuatan konfigurasi gagal dengan `INVALID_CONFIG`.
+Password berupa string biasa juga berfungsi, tetapi e2e hanya menyamarkan
+password yang diambil melalui `secrets.get`.
+
+## Viewport
+
+Tetapkan viewport pada target untuk menjalankan rangkaian tes dengan ukuran
+tersebut, atau panggil `browser.setViewport()` selama tes. Agent mengubah
+ukurannya dengan tool [`resize_viewport`](/reference/agent#action-tools).
+
+### Satu ukuran per target
+
+`viewport` menetapkan ukuran awal setiap attempt dalam piksel. Ukuran default-nya
+1280 x 720. Tambahkan satu target untuk setiap ukuran:
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+const app = { url: 'http://localhost:3000' };
+
+export default {
+  targets: [
+    { name: 'desktop', engine: web(), app },
+    { name: 'tablet', engine: web({ viewport: { width: 820, height: 1180 } }), app },
+    { name: 'phone', engine: web({ browser: 'webkit', viewport: { width: 390, height: 844 } }), app },
+  ],
+} satisfies E2EConfig;
+```
+
+Setiap tes berjalan pada semua target dan menghasilkan hasil terpisah untuk
+setiap nama target. Setiap retry dimulai dengan ukuran target tersebut.
+
+- Jalankan satu ukuran dengan `npx e2e run --target phone`. Tampilkan pasangan
+  tes dan target dengan `npx e2e list`.
+- Target yang memakai `app.command` sama berbagi satu dev server.
+- Target perangkat dapat berada dalam daftar yang sama. Lihat
+  [referensi engine Mobile](/reference/mobile).
+
+### Layar dengan kepadatan piksel tinggi
+
+`deviceScaleFactor` menetapkan jumlah piksel perangkat untuk setiap piksel CSS.
+Nilai 2 menampilkan halaman seperti pada layar Retina. Screenshot yang disimpan
+berukuran dua kali viewport pada setiap sisinya:
+
+```ts title="Target fragment"
+{ name: 'retina', engine: web({ deviceScaleFactor: 2 }), app }
+```
+
+Faktor ini tidak mengubah gambar yang dibaca model atau gambar yang dibandingkan
+oleh `toHaveScreenshot`.
+
+### Penuhi jendela browser
+
+`viewport: null` tidak menetapkan ukuran sehingga halaman memenuhi jendela
+browser; agent, screenshot, dan video menggunakan ukuran tersebut. Gunakan
+opsi ini saat menjalankan tes dalam mode headed atau dengan browser cloud yang tampilan langsungnya
+akan menampilkan halaman 1280 x 720 di salah satu sudut:
+
+```ts title="Target fragment"
+{ name: 'window', engine: web({ viewport: null }), app }
+```
+
+Peluncuran headed lokal membuka jendela kecil. Browser cloud menggunakan
+ukuran jendela yang diminta dari layanannya. `browser.setViewport` tetap
+berfungsi.
+
+### Ubah ukuran di dalam tes
+
+`browser.setViewport` mengubah ukuran halaman selama sisa attempt, termasuk
+setelah `app.restart()` dan `app.clearState()`. Gunakan saat satu tes memeriksa
+tata letak sebelum dan sesudah viewport diubah:
+
+```ts
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('the menu collapses on a narrow screen', async ({ app, screen, browser }) => {
+  await app.open('/');
+  await expect(screen.getByRole('navigation')).toBeVisible();
+
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(screen.getByRole('button', 'Menu')).toBeVisible();
+  await expect(screen.getByRole('navigation')).toBeHidden();
+});
+```
+
+Panggil sebelum `app.open` untuk memuat halaman pertama langsung pada ukuran itu,
+tanpa merender tampilan desktop terlebih dahulu.
+
+### Hal yang dilihat agent
+
+Agent menerima ukuran viewport saat ini pada setiap observasi, jadi ubah ukuran
+sebelum `agent.act`. Screenshot mencakup viewport. Elemen di luar layar tetap
+dapat muncul di tree; ketukan akan menggulirnya ke tampilan, dan agent dapat
+menggulir untuk memuat konten lazy.
+
+Kalimat yang berisi tautan, penekanan, atau kode diteruskan ke agent secara utuh,
+dan tautannya juga dicantumkan sebagai kontrol. Agent membaca 512 karakter
+pertama dari setiap blok teks. Untuk blok yang lebih panjang, e2e juga
+mencantumkan tautan dan teks yang ditebalkan secara terpisah.
+
+Agent juga dapat melihat checkbox atau radio yang ukurannya diubah menjadi nol
+oleh library komponen di bawah labelnya sendiri, seperti yang dilakukan
+Element Plus, beserta status centangnya. Mengetuk kontrol itu berarti mengeklik
+labelnya. Jika label memuat tautan atau kontrol lain, agent melihat teks label
+dan kontrol tersebut, tetapi tidak melihat checkbox karena klik pada label
+mungkin mengenai tautannya. Locator tetap menganggap kontrol tersebut hidden,
+seperti di Playwright. Karena itu, periksa dengan `toBeChecked()`, bukan
+`toBeVisible()`.
+
+### Batasi tes ke satu ukuran
+
+`platforms` tidak dapat memilih viewport karena semua target browser memiliki
+platform `web`. Untuk melewati tes pada ukuran tertentu,
+baca lebarnya di dalam tes:
+
+```ts
+test('the sidebar stays open', async ({ app, screen, browser }) => {
+  await app.open('/');
+  test.skip((await browser.evaluate(() => window.innerWidth)) < 768, 'desktop layout only');
+  await expect(screen.getByRole('complementary')).toBeVisible();
+});
+```
+
+Untuk memisahkan grup tes khusus ukuran tertentu, buat konfigurasi tersendiri
+lalu jalankan dengan `--config`.
+
+### Batasan
+
+Viewport sempit hanya menguji tata letak responsif. Browser tetap browser
+desktop: faktor skala 1, pointer desktop, dan user agent biasanya. Browser
+tidak meniru sentuhan. Untuk menguji simulator atau emulator, gunakan
+[engine mobile](/mobile). Untuk mode gelap dan pengurangan gerakan, lihat
+[Tiru mode gelap dan pengurangan gerakan](/browser#emulate-dark-mode-and-reduced-motion).
+
+Video mempertahankan ukuran halaman saat perekaman dimulai. Tetapkan
+`web({ screencast: { size } })` untuk menggunakan satu ukuran tetap. Provider
+browser yang merekam, seperti [Kernel](/integrations/kernel#recordings), justru
+merekam seluruh layar.
+
+## Berikan izin kepada browser
+
+Chromium headless menolak izin yang tidak diberikan oleh target, sehingga
+`navigator.clipboard.writeText` gagal meskipun sudah diklik. Agar aplikasi
+dapat menggunakan clipboard, berikan izin pada target:
+
+```ts
+{
+  engine: web(),
+  app: {
+    url: 'http://localhost:3000',
+    permissions: { 'clipboard-read': 'grant', 'clipboard-write': 'grant' },
+  },
+}
+```
+
+- Setiap halaman pada setiap attempt menerima izin ini, di origin mana pun.
+- Target web hanya menerima `'grant'`. `'deny'` dan `'reset'` menghasilkan
+  `INVALID_CONFIG`; biarkan izin tersebut tidak ditetapkan.
+- Nama izin mengikuti Playwright, dan setiap browser memiliki kumpulan izinnya
+  sendiri. Lihat [`permissions`](/reference/config#permissions).
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Bekerja dengan browser" icon="globe" href="/browser">
+    Mock route, atur cookie, tangani dialog, dan unduh file.
+  </Card>
+  <Card title="Referensi engine web" icon="masks-theater" href="/reference/web">
+    Semua opsi `web()` dan setiap method `browser`.
+  </Card>
+</CardGroup>

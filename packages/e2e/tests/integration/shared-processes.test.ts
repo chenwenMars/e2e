@@ -236,4 +236,142 @@ require('./server.cjs');
     void start(new SharedProcesses(), config);
     await expect.poll(serving, PROCESS_POLL).toBe(true);
   });
+
+  it('cancels a queued acquire immediately while an earlier stop is draining, without calling start', async () => {
+    const pool = new SharedProcesses({ waitForAbandonedStart: true });
+    let releaseFirstStop!: () => void;
+    const firstStopGate = new Promise<void>((resolve) => {
+      releaseFirstStop = resolve;
+    });
+    const first = await pool.acquire('app:queued', async () => ({ stop: () => firstStopGate }), new AbortController().signal);
+    const stoppingFirst = first.stop(() => undefined);
+
+    let secondStartCalls = 0;
+    const cancel = new AbortController();
+    const second = pool.acquire(
+      'app:queued',
+      async () => {
+        secondStartCalls += 1;
+        return { stop: async () => undefined };
+      },
+      cancel.signal,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    cancel.abort();
+
+    const outcome = await Promise.race([
+      second.then(() => 'resolved', (cause: { code?: string }) => `rejected:${cause.code ?? 'unknown'}`),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still-blocked'), 250)),
+    ]);
+
+    releaseFirstStop();
+    await stoppingFirst;
+    await second.catch(() => undefined);
+    await pool.drained();
+
+    expect(outcome).toBe('rejected:CANCELLED');
+    expect(secondStartCalls).toBe(0);
+  });
+
+  it('waits for stop and never double-stops when abort fires in the microtask right as start resolves', async () => {
+    const pool = new SharedProcesses({ waitForAbandonedStart: true });
+    const cancel = new AbortController();
+    let stopCalls = 0;
+    let stopFinished = false;
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const held: AppProcesses = {
+      async stop() {
+        stopCalls += 1;
+        if (stopCalls === 1) {
+          await stopGate;
+          stopFinished = true;
+        }
+      },
+    };
+
+    const pending = pool.acquire(
+      'app:race',
+      () => {
+        queueMicrotask(() => cancel.abort());
+        return held as unknown as Promise<AppProcesses>;
+      },
+      cancel.signal,
+    );
+    const releaseTimer = setTimeout(() => releaseStop(), 150);
+
+    try {
+      const proc = await pending;
+      if (cancel.signal.aborted) {
+        await proc.stop(() => undefined);
+      }
+    } catch {
+      // Cancelled path waited for the abandoned stop.
+    } finally {
+      clearTimeout(releaseTimer);
+      releaseStop();
+    }
+
+    expect(stopFinished).toBe(true);
+    expect(stopCalls).toBe(1);
+    await pool.drained();
+  });
+
+  it('stops a process whose start settled one microtask before the abort won the wait', async () => {
+    const pool = new SharedProcesses({ waitForAbandonedStart: true });
+    const cancel = new AbortController();
+    let stopCalls = 0;
+    let resolveStart!: (held: AppProcesses) => void;
+    const startGate = new Promise<AppProcesses>((resolve) => {
+      resolveStart = resolve;
+    });
+    const pending = pool.acquire('app:late-race', () => startGate, cancel.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Registered after the pool's own wait on the start, so the abort lands right after the start settled.
+    void startGate.then(() => cancel.abort());
+    resolveStart({
+      async stop() {
+        stopCalls += 1;
+      },
+    });
+
+    await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(stopCalls).toBe(1);
+
+    let freshStarts = 0;
+    const fresh = await pool.acquire(
+      'app:late-race',
+      async () => {
+        freshStarts += 1;
+        return { stop: async () => undefined };
+      },
+      new AbortController().signal,
+    );
+    await fresh.stop(() => undefined);
+    expect(freshStarts).toBe(1);
+    expect(stopCalls).toBe(1);
+  });
+
+  it('clears settled abandoned starts from draining so ephemeral keys are not retained', async () => {
+    const pool = new SharedProcesses({ waitForAbandonedStart: true });
+    for (let index = 0; index < 3; index += 1) {
+      const cancel = new AbortController();
+      const pending = pool.acquire(
+        `app:ephemeral-${index}`,
+        async (scope) => {
+          await new Promise<void>((resolve) => scope.addEventListener('abort', () => resolve(), { once: true }));
+          return { stop: async () => undefined };
+        },
+        cancel.signal,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      cancel.abort();
+      await pending.catch(() => undefined);
+    }
+    await pool.drained();
+    const draining = Reflect.get(pool, 'draining') as Map<string, Promise<unknown>>;
+    expect(draining.size).toBe(0);
+  });
 });

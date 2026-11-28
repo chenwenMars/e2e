@@ -1,0 +1,1850 @@
+---
+title: test
+description: Testes, testes de preparação, grupos, hooks, opções e fixtures.
+"og:image": "https://e2e.com/docs/images/og/reference/test.png?v=d1ad3b01c3"
+"twitter:image": "https://e2e.com/docs/images/og/reference/test.png?v=d1ad3b01c3"
+---
+
+`test` declara testes, testes de preparação, grupos e hooks. As declarações
+rodam de forma síncrona enquanto o arquivo de teste é importado. Use
+`test.extend` para adicionar fixtures e `test.skip` para pular um teste no
+registro ou durante o corpo do teste.
+
+```ts title="tests/checkout.e2e.ts"
+import { beforeEach, describe, expect, test } from 'e2e';
+
+describe('checkout', { tags: ['billing'] }, () => {
+  beforeEach(async ({ app }) => {
+    await app.open('/checkout');
+  });
+
+  test('pays with a saved card', { retries: 2 }, async ({ screen }) => {
+    await screen.getByRole('button', 'Pay').tap();
+    await expect(screen.getByText('Payment received')).toBeVisible();
+  });
+});
+```
+
+## Referência
+
+### Membros
+
+| Membro | Retorna |
+| --- | --- |
+| [`test`](#test) | `TestCase` |
+| [`test.skip`](#test-skip) | `TestCase \| void` |
+| [`test.todo`](#test-todo) | `TestCase` |
+| [`test.fixme`](#test-fixme) | `TestCase \| void` |
+| [`test.skipIf`](#test-skipif) | `TestRegistrar` |
+| [`test.runIf`](#test-runif) | `TestRegistrar` |
+| [`test.each`](#test-each) | `EachRegistrar` |
+| [`test.for`](#test-for) | `EachRegistrar` |
+| [`test.fail`](#test-fail) | `TestCase \| void` |
+| [`test.setTimeout`](#test-settimeout) | `void` |
+| [`test.slow`](#test-slow) | `void` |
+| [`test.step`](#test-step) | `Promise<T>` |
+| [`test.only`](#test-only) | `TestCase` |
+| [`test.setup`](#test-setup) | `TestCase` |
+| [`test.extend`](#test-extend) | `TestAPI` |
+| [`describe`](#describe) | `void` |
+| [`describe.fail`](#describe-fail) | `void` |
+| [`describe.configure`](#describe-configure) | `void` |
+| [`describe.only`](#describe-only) | `void` |
+| [Hooks](#hooks) | `void` |
+
+`describe` e os quatro hooks também são exportações de nível superior, as
+mesmas funções que `test.describe`, `test.beforeEach` e as demais:
+`import { describe, beforeEach, test } from 'e2e'`.
+
+- Um hook por teste importado de `e2e` é tipado com as
+  [fixtures embutidas](#fixtures) que toda engine tem.
+- `@e2e-dev/web`, `@e2e-dev/mobile` e `@e2e-dev/desktop` exportam `test`,
+  `describe` e os quatro hooks tipados com a fixture `browser`, `device` ou
+  `desktop` de cada um, então um arquivo de teste registra tudo com uma só
+  importação.
+- Um `test` que você estendeu com suas próprias fixtures registra hooks que as
+  enxergam por meio de `test.beforeEach`.
+
+Registrar um teste, um grupo ou um hook fora da avaliação do módulo lança
+`COLLECTION_ERROR`. As declarações completas estão em [Tipos](#types).
+
+#### `test`
+
+Registra um teste, com ou sem [opções](#options).
+
+```ts
+import { describe, test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('app opens', async ({ app, browser }) => {
+  await app.open();
+  await expect(browser).toHaveURL('/');
+});
+
+test('checks out', { tags: ['billing'], retries: 2, timeout: 60_000 }, async ({ app }) => {
+  await app.open('/checkout');
+});
+```
+
+O título de um teste ou de um grupo tem de 1 a 512 bytes UTF-8 depois da
+normalização NFC, sem nenhum caractere NUL.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Dois testes no mesmo arquivo têm o mesmo caminho do título: os títulos dos grupos e depois o do próprio teste. |
+
+#### `test.skip`
+
+Registra um teste pulado ou pula o teste em execução.
+
+```ts
+test.skip('exports a PDF', async ({ app }) => {}); // at registration
+test.skip(organizations.length < 2, 'a single organization'); // inside a body
+test.skip('not on this tenant'); // inside a body, always
+```
+
+- Por padrão, um teste pulado não afeta o código de saída.
+- Para pular na coleta por opção, use a opção [`skip`](#skip).
+- No registro, retorna um `TestCase`; dentro de um corpo, `void`.
+
+Chame `test.skip(condition, reason)` dentro de um teste para uma condição que
+você só conhece em tempo de execução, como uma feature flag desativada:
+
+```ts
+test('switches organizations', { session: 'admin' }, async ({ app, agent }) => {
+  const organizations = await listOrganizations();
+  test.skip(organizations.length < 2, 'the demo tenant has a single organization');
+  await app.open('/backend');
+  await agent.act(`switch to the organization "${organizations[1].name}"`);
+});
+```
+
+- Quando a condição é verdadeira, a chamada lança um erro, como a do
+  Playwright. Nada depois da chamada roda.
+- Sem nenhuma falha antes da chamada, o teste é informado como `skipped` com
+  `reason`, sem nova tentativa.
+- Os passos anteriores à chamada ficam no relatório como rodaram.
+- Um `expect.soft` com falha antes da chamada faz a tentativa falhar mesmo
+  assim, como no Playwright. A tentativa fica `failed`, com as falhas soft como
+  erro e o motivo do pulo no `skip` dela. Ela é tentada novamente como qualquer
+  falha.
+- Hooks e fixtures rodam a desmontagem mesmo assim.
+- Quando a condição é uma pré-condição, faça a chamada primeiro, antes de
+  qualquer passo.
+- Uma tentativa com falha seguida de um pulo na nova tentativa deixa o teste
+  como `skipped`. A CLI o lista em `Skipped After Failure` com o erro original.
+  Defina [`failOnSkippedFailure: true`](/reference/config) para fazer a
+  execução falhar com código de saída 1 nesse caso. O padrão é `false`.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Chamado em um teste de preparação com uma condição verdadeira, ou sem condição. Um teste de preparação não pode ser pulado porque outros testes dependem das sessões dele. |
+| `COLLECTION_ERROR` | A forma condicional, fora do corpo de um teste. |
+| `COLLECTION_ERROR` | A forma de registro, dentro de um grupo serial. Defina [`skip`](#skip) no `describe` serial em vez disso. |
+
+#### `test.todo`
+
+Registra um teste inacabado, sem corpo:
+
+```ts
+test.todo('add checkout coverage');
+```
+
+- O teste nunca roda e não tem tentativas. Ele é informado como `skipped`,
+  com `skip.cause` e `skip.reason` iguais a `todo`.
+- Uma seleção só de testes TODO falha com `NO_TESTS`, como qualquer seleção
+  sem nada para rodar, a menos que `--pass-with-no-tests` esteja definida.
+- Não aceita opções de teste e retorna um `TestCase`.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Chamado com um corpo ou com qualquer argumento depois do título. Use [`test.skip`](#test-skip) ou [`test.fixme`](#test-fixme) para um teste com corpo. |
+| `COLLECTION_ERROR` | Chamado dentro de um grupo serial. Defina [`skip`](#skip) no `describe` serial em vez disso. |
+
+#### `test.fixme`
+
+Registra um teste pulado marcado como fixme, ou pula o teste em execução como
+fixme.
+
+```ts
+test.fixme('exports a PDF', async ({ app }) => {}); // at registration
+test.fixme(platform === 'android', 'crashes on Android'); // inside a body
+test.fixme(); // inside a body, always
+```
+
+- Aceita as mesmas três formas que [`test.skip`](#test-skip), e valem aqui as
+  regras da forma dele usada dentro de um corpo.
+- O teste é informado como `skipped`, com `skip.cause` `fixme` no
+  `report.json`, onde `test.skip` informa `explicit`. O motivo é `fixme`,
+  ou `fixme: <reason>` quando uma chamada dentro de um corpo dá um motivo que
+  não está em branco. O reporter list o mostra como `[fixme: crashes on Android]`.
+- A forma de registro não aceita opções de teste.
+- No registro, retorna um `TestCase`; dentro de um corpo, `void`.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Chamado em um teste de preparação com uma condição verdadeira, ou sem condição. Um teste de preparação não pode ser pulado porque outros testes dependem das sessões dele. |
+| `COLLECTION_ERROR` | A forma condicional, fora do corpo de um teste. Use `test.fixme(title, fn)` na coleta. |
+| `COLLECTION_ERROR` | A forma de registro, dentro de um grupo serial. Defina [`skip`](#skip) no `describe` serial em vez disso. |
+
+#### `test.skipIf`
+
+Retorna uma função que registra um teste, como `test(title, fn)`, pulado
+quando a condição é truthy.
+
+```ts
+test.skipIf(process.platform === 'win32')('watches files', async ({ app }) => {});
+test.skipIf(process.env.CI)('opens the system dialog', async ({ app }) => {});
+```
+
+- A condição é lida uma vez, na chamada, enquanto o arquivo é coletado.
+  Use um valor já conhecido nesse momento, como `process.platform` ou uma
+  variável de ambiente. Para uma condição que você só conhece em tempo de
+  execução, chame [`test.skip(condition, reason)`](#test-skip) dentro do corpo.
+- Qualquer valor truthy pula o teste, como no Vitest.
+- Um teste pulado equivale a `test(title, { skip: true }, fn)`: o corpo dele
+  nunca roda, e as outras opções dele são mantidas.
+- Uma opção [`skip`](#skip) pula o teste qualquer que seja a condição, e a
+  string de motivo dessa opção é o motivo informado.
+- Fora de um grupo serial, uma condição falsy registra o teste como `test`
+  registraria.
+- Aceita as mesmas duas formas que [`test`](#test) e tem as mesmas fixtures,
+  também em um `test` estendido.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Chamado dentro de um grupo serial, qualquer que seja a condição. Defina [`skip`](#skip) no `describe` serial em vez disso. |
+| `COLLECTION_ERROR` | A condição é uma Promise, o que também é um erro de tipo. Aguarde-a antes da chamada. |
+
+#### `test.runIf`
+
+Retorna uma função que registra um teste, como `test(title, fn)`, pulado
+quando a condição é falsy.
+
+```ts
+test.runIf(process.platform === 'linux')('reads inotify events', async ({ app }) => {});
+```
+
+`test.runIf(condition)` é `test.skipIf(!condition)`.
+Tudo o que está em [`test.skipIf`](#test-skipif) vale aqui.
+
+#### `test.each`
+
+Retorna uma função que registra um teste por linha, como `test(title, fn)`,
+na ordem das linhas. Use-a para os mesmos passos com dados diferentes.
+
+```ts
+test.each([{ user: 'Ada' }, { user: 'Grace' }])('signs in as $user', async ({ user }, { app }) => {
+  await app.open();
+  // ...
+});
+
+test.each([
+  ['standard', '5.00'],
+  ['express', '15.00'],
+])('ships %s for %s', async (speed, price, { screen }) => {});
+```
+
+- O corpo recebe a linha primeiro e as fixtures por último. Quando toda linha
+  é um array, cada linha é espalhada, então `[speed, price]` chega como
+  `(speed, price, fixtures)`. Quando alguma linha não é um array, toda linha
+  chega inteira, como `(row, fixtures)`, como no Vitest e no Jest.
+- O corpo nomeia as [fixtures](#fixtures) que usa ao desestruturar o
+  parâmetro depois da linha, e o e2e prepara só essas. Um corpo que não usa
+  nenhuma pode omitir o parâmetro.
+- O título é formatado a partir da linha:
+
+  | No título | Vira |
+  | --- | --- |
+  | `$name`, `$name.path` | Essa chave de uma linha do tipo objeto. Uma string aparece como foi escrita, qualquer outro valor como o `inspect` do Node o mostra. |
+  | `%s` | O próximo item, mostrado do mesmo jeito. |
+  | `%o` | O próximo item como o `inspect` do Node o mostra, então uma string aparece entre aspas. |
+  | `%d` | O próximo item como número (`Number(item)`), exceto que um `BigInt` mantém o sufixo `n` e um `Symbol` aparece como `NaN`. |
+  | `%i`, `%f` | O próximo item lido como inteiro ou float, como `parseInt` / `parseFloat`: `'42px'` vira `42`. Um `BigInt` mantém o sufixo `n` com `%i`. |
+  | `%j` | O próximo item como JSON. Um valor circular aparece como `[Circular]`; uma função, um `Symbol` ou `undefined`, como `undefined`. |
+  | `%#`, `%$` | O índice da linha, a partir de 0, e o número da linha, a partir de 1. |
+  | `%%` | Um sinal de porcentagem. |
+
+  Os itens são os itens de uma linha do tipo array, em ordem; qualquer outra
+  linha é ela mesma o único item. Um placeholder sem item restante, ou `$name`
+  em uma linha que não é um objeto, fica como foi escrito. Um valor que não é
+  string sempre aparece em uma linha só; uma string aparece como foi escrita,
+  quebras de linha incluídas. Um `Error` aparece como o nome e a mensagem
+  dele, sem a stack.
+- O título faz parte do id do teste. `%#` e `%$` mudam quando linhas são
+  adicionadas ou movidas, então prefira `$name` ou um placeholder de valor
+  para ids que permaneçam estáveis.
+- Os títulos diferem do Vitest em alguns pontos: `$0` e `$1` não leem uma linha
+  do tipo array, `$name` não é lido do primeiro item de uma linha do tipo
+  array, `%s` mostra um objeto com `inspect`, não com o `toString` dele (uma
+  `URL` não aparece como o href dela), `%O` e `%c` não são placeholders, e uma
+  tabela escrita como template literal não é lida. O corpo também difere: o
+  corpo de `test.each` no Vitest recebe só a linha, enquanto aqui as fixtures
+  vêm depois dela.
+- Cada linha é um teste separado, com o próprio id, a própria entrada no
+  relatório e as próprias novas tentativas. As opções valem para toda linha,
+  então uma opção [`skip`](#skip) ou [`tags`](#tags) pula ou marca com tags
+  todas elas.
+- Aceita as mesmas duas formas que [`test`](#test) e tem as mesmas fixtures,
+  também em um `test` estendido.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | As linhas não são um array, o array está vazio ou as linhas são uma tabela em template literal. |
+| `COLLECTION_ERROR` | Duas linhas resultam no mesmo título formatado. Coloque no título um placeholder que diferencie as linhas. |
+| `COLLECTION_ERROR` | Um item de `%j` não pode ser convertido em JSON por um motivo que não seja um ciclo, como um `BigInt`. A mensagem nomeia a linha. |
+| `COLLECTION_ERROR` | O corpo recebe as fixtures inteiras (`async (row, fixtures) => {}`) ou em um parâmetro rest (`async (...args) => {}`), ou quebra outra [regra de nomeação de fixtures](#fixtures). |
+
+#### `test.for`
+
+[`test.each`](#test-each), exceto que uma linha do tipo array não é
+espalhada: o corpo sempre recebe `(row, fixtures)`. Os títulos são formatados
+do mesmo jeito.
+
+```ts
+test.for([
+  ['standard', '5.00'],
+  ['express', '15.00'],
+])('ships %s for %s', async ([speed, price], { screen }) => {});
+```
+
+#### `test.fail`
+
+Registra um teste com falha esperada, ou marca o teste em execução.
+
+```ts
+test.fail('shows the cart badge', async ({ app, screen }) => {}); // at registration
+test.fail(platform === 'web', 'tap on a display: contents element'); // inside a body
+test.fail('known gap'); // inside a body, always
+test('exports a PDF', { fail: 'PDF export is broken' }, async ({ app }) => {}); // by option
+```
+
+Para marcar todos os testes de um grupo, use [`describe.fail`](#describe-fail).
+
+- O corpo continua rodando depois da chamada. Um hook `beforeEach` também
+  pode marcar o teste.
+- Uma asserção ou ação com falha, um erro lançado ou um tempo limite esgotado
+  deixam o teste como `passed`. O relatório guarda o motivo e o erro.
+- Se o teste passar, ele fica `failed` com `UNEXPECTED_PASS`. Remova a marca
+  quando a causa for corrigida.
+- Erros de infraestrutura, interrupções, um `beforeAll` ou `afterAll` com falha
+  e o uso incorreto da API, como `INVALID_ARGUMENT`, fazem o teste falhar mesmo
+  assim.
+- Uma falha esperada não é tentada novamente. Um sucesso inesperado é.
+- Um pulo prevalece sobre a marca.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Uma condição verdadeira em um teste de preparação, em um membro de grupo serial, em um hook `afterEach` ou na desmontagem de uma fixture. |
+| `COLLECTION_ERROR` | A forma condicional, fora do corpo de um teste, ou a opção `fail` dentro de um grupo serial. |
+
+#### `test.setTimeout`
+
+Muda o tempo limite do teste em execução a partir do corpo ou de um hook
+`beforeEach`, ou o tempo limite do próprio hook `beforeAll` de dentro dele.
+
+```ts
+test('imports a large file', async ({ app }) => {
+  test.setTimeout(180_000);
+  await app.open('/import');
+});
+```
+
+- O novo tempo limite conta a partir do início da tentativa, como a opção
+  [`timeout`](#timeout), e substitui essa opção nesta tentativa. Uma nova
+  tentativa volta a usar a opção.
+- Um tempo limite menor que o tempo já gasto esgota o tempo do teste na hora.
+- Em um hook `beforeAll`, a chamada substitui o tempo limite desse hook, o
+  `timeout` da configuração, contado a partir do início do hook. Os testes
+  mantêm o deles.
+- Hooks `afterEach` e `afterAll` e desmontagens de fixtures rodam com
+  `cleanupTimeout`, então não podem mudar o tempo limite.
+- Uma sessão de [`host.openSession`](/reference/runner#host-opensession) não
+  roda nenhum teste do e2e, então também não pode. Passe `timeout` para
+  `host.openSession`.
+- Não existe `0` para desligar o tempo limite. Passe um valor grande em vez disso.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um tempo limite que não é um inteiro seguro positivo de milissegundos, um acima de 2147483647, ou uma chamada de um hook `afterEach` ou `afterAll`, da desmontagem de uma fixture ou de uma sessão hospedada; ou de código que um teste ou hook deixou rodando depois de terminar. |
+| `COLLECTION_ERROR` | Uma chamada fora de um teste ou hook em execução. Use a opção `timeout` nesse caso. |
+
+#### `test.slow`
+
+Triplica o tempo limite do teste em execução, como faz o `test.slow()` do
+Playwright. Chame-o no corpo do teste ou em um hook `beforeEach`, ou em um
+hook `beforeAll` para triplicar o tempo limite desse hook.
+
+```ts
+test('imports a large file', async ({ app }) => {
+  test.slow();
+  await app.open('/import');
+});
+test('renders the report', async ({ platform }) => {
+  test.slow(platform === 'ios', 'the simulator renders slowly');
+});
+```
+
+- Triplica o tempo limite em vigor, contado a partir do início da tentativa
+  como em [`test.setTimeout`](#test-settimeout), cujas regras ele segue.
+  Depois de `test.setTimeout(10_000)`, dá 30 segundos, até no máximo 2147483647
+  milissegundos.
+- Como no Playwright, ele marca uma tentativa como lenta uma única vez: uma
+  segunda chamada, no corpo ou em um hook `beforeEach`, não faz nada. Um
+  `test.setTimeout` posterior substitui o tempo limite mesmo assim.
+- Com uma condição falsa, não faz nada. O motivo é para quem lê e não vai
+  para o relatório.
+- Uma nova tentativa volta a usar a opção [`timeout`](#timeout).
+- Não existe `test.slow(title, fn)`. Chame `test.slow()` no início do corpo,
+  ou passe `timeout`.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Uma chamada de um hook `afterEach` ou `afterAll`, da desmontagem de uma fixture ou de uma sessão hospedada; ou de código que um teste ou hook deixou rodando depois de terminar. |
+| `COLLECTION_ERROR` | Uma chamada fora de um teste ou hook em execução, mesmo com uma condição falsa, ou `test.slow(title, fn)`. Use a opção `timeout` nesse caso. |
+
+#### `test.step`
+
+Roda uma função como um passo com um nome escolhido por você. Os relatórios
+mostram o nome, com as chamadas que a função faz aninhadas abaixo dele.
+
+```ts
+test('buys a ticket', async ({ screen }) => {
+  await test.step('Log in as test user', async () => {
+    await screen.getByLabel('Email').fill('ada@example.com');
+    await screen.getByRole('button', 'Log in').tap();
+  });
+  const total = await test.step('Read the total', () => screen.getByTestId('total').textContent());
+});
+```
+
+- Retorna o que a função retorna.
+- Passos se aninham: um `test.step` dentro de outro aparece abaixo dele.
+- Quando a função lança um erro, o passo falha e o erro segue para o
+  teste. Capture o erro para continuar.
+- Chame-o no corpo de um teste, em um hook `beforeEach` ou `afterEach`, ou em
+  uma fixture. Em um hook `beforeAll` ou `afterAll`, a função roda, mas nenhum
+  relatório traz o passo.
+- Em uma fixture, chame-o antes ou depois de `use()`. Um `test.step` em volta
+  de `use()` faz o teste falhar com `STEP_NOT_AWAITED`.
+- Um [`expect.soft`](/reference/expect#soft-assertions) com falha dentro do
+  passo não faz esse passo falhar. Um `test.skip()` ali dentro pula o teste, e o
+  passo passa.
+- [`e2e run --step`](/reference/cli#e2e-run) pausa antes de cada chamada feita
+  dentro do passo, não antes do próprio `test.step`.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um título que não é uma string não vazia, ou nenhuma função. |
+| `COLLECTION_ERROR` | Uma chamada fora de um teste, hook ou fixture em execução. |
+
+#### `test.only`
+
+Registra um teste local focado.
+
+```ts
+test.only('pays', async ({ app }) => {
+  await app.open('/checkout');
+});
+```
+
+Os outros testes são informados como `filtered`. Uma execução na CI com um
+teste focado falha com `ONLY_IN_CI`. Para focar todos os testes de um grupo, use
+[`describe.only`](#describe-only).
+
+#### `test.setup`
+
+Registra um teste de preparação que declara as sessões que salva e precisa
+salvar cada uma exatamente uma vez.
+
+```ts
+import { credentials } from 'e2e';
+
+test.setup('authenticate', { sessions: ['member'] }, async ({ app, screen, session }) => {
+  await app.open('/login');
+  await screen.getByLabel('Email').fill(credentials.user('member').username);
+  await screen.getByLabel('Password').fill(credentials.user('member').password);
+  await screen.getByRole('button', 'Sign in').tap();
+  await session.save('member');
+});
+```
+
+- `test.setup` precisa ficar no nível superior, não dentro de `describe`.
+- A opção [`sessions`](#sessions) declara os nomes.
+- Um teste consome uma sessão salva com a opção [`session`](#session).
+- O corpo do teste de preparação recebe uma fixture extra, `session`:
+
+```ts
+export interface SetupSession {
+  /** Saves state under a setup-declared name. */
+  save(name: string): Promise<void>;
+}
+```
+
+| Lança | Quando |
+| --- | --- |
+| `SESSION_CONTRACT` | Em tempo de execução, uma sessão declarada não foi salva ou foi salva duas vezes. |
+
+#### `test.extend`
+
+Retorna um novo `test` tipado com mais fixtures. Aquele em que ele foi chamado
+não muda.
+
+```ts
+import { test as base } from 'e2e';
+import type { Device } from '@e2e-dev/mobile';
+
+export const test = base.extend<{ device: Device }>(); // types only
+```
+
+- Sem argumento, `extend` refina só os tipos: retorna o mesmo `test` de tempo de
+  execução, tipado com as fixtures embutidas que uma engine fornece. Elas
+  continuam sendo resolvidas pela engine do alvo em tempo de execução. Isso tipa
+  uma superfície de dispositivo, desktop ou web sem uma ampliação global com
+  `declare module`.
+- Com definições, adiciona fixtures próprias. Veja
+  [Suas próprias fixtures](#your-own-fixtures).
+- Os argumentos de tipo, em ordem:
+  1. Fixtures de teste.
+  2. [Fixtures de worker](#worker-fixtures), disponíveis em `beforeAll`
+     e `afterAll`. `device`, `app` e `screen` de `@e2e-dev/mobile` são
+     tipadas aqui.
+  3. O tipo da configuração (`typeof config`), usado para tipar fixtures a
+     partir da configuração.
+     Veja [Fixtures de engine em vários alvos](#engine-fixtures-across-targets).
+
+#### `describe`
+
+Declara um grupo de testes, com ou sem opções.
+
+```ts
+import { describe, test } from 'e2e';
+
+describe('checkout', { tags: ['smoke'], serial: true }, () => {
+  test('adds an item', async ({ screen }) => {});
+  test('pays', async ({ screen }) => {});
+});
+```
+
+- Um grupo aceita as [opções](#options) que um teste aceita, mais
+  [`serial`](#serial) e [`parallel`](#parallel).
+- O corpo é síncrono.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Um corpo `async`. Também é um erro de tipo. |
+| `COLLECTION_ERROR` | `test.setup` dentro do corpo. |
+
+#### `describe.fail`
+
+Declara um grupo em que todos os testes têm falha esperada, o mesmo que
+`fail: true` em `describe`. Para dar um motivo, use a opção [`fail`](#fail).
+
+```ts
+describe.fail('legacy checkout', () => {
+  test('pays by card', async ({ screen }) => {}); // expected to fail
+  test('applies a coupon', async ({ screen }) => {}); // expected to fail
+});
+describe('legacy checkout', { fail: 'old payment form' }, () => {}); // with a reason
+```
+
+- Cada teste é avaliado por si só, como com [`test.fail`](#test-fail): uma
+  falha o faz passar, e um sucesso o faz falhar com `UNEXPECTED_PASS`.
+- Um motivo `fail` em um teste ou em um grupo interno prevalece sobre o de um
+  grupo externo. `fail: false` em um teste ou em um grupo interno não remove a
+  marca.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | O grupo é serial ou está dentro de um grupo serial, ou há um grupo serial dentro dele. |
+| `COLLECTION_ERROR` | Uma opção `fail` em `describe.fail`. Também é um erro de tipo. |
+
+#### `describe.configure`
+
+Define [`parallel`](#parallel) no escopo em que é chamado: o `describe` que o
+envolve, ou o arquivo inteiro no nível superior.
+
+```ts
+import { describe, test } from 'e2e';
+
+describe.configure({ parallel: true }); // every test of this file
+
+test('lists orders', async ({ screen }) => {});
+test('lists invoices', async ({ screen }) => {});
+```
+
+- A chamada pode vir antes ou depois dos testes do escopo dela.
+- `{ parallel: false }` no nível superior mantém o arquivo em ordem mesmo com
+  [`fullyParallel`](/reference/config#fullyparallel).
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | `parallel` já está definido para o escopo, pela opção do `describe` ou por uma chamada anterior. |
+| `COLLECTION_ERROR` | Uma chave que não é `parallel`. |
+| `COLLECTION_ERROR` | Qualquer caso que [`parallel`](#parallel) lista. |
+
+#### `describe.only`
+
+Declara um grupo focado, o mesmo que `only: true` em `describe`. Todo teste
+dentro dele, incluindo os de grupos aninhados, fica focado do jeito que
+[`test.only`](#test-only) foca um teste.
+
+```ts
+describe.only('checkout', () => {
+  test('pays by card', async ({ screen }) => {}); // runs
+  describe('refunds', () => {
+    test('refunds a card', async ({ screen }) => {}); // runs
+  });
+});
+test('signs in', async ({ app }) => {}); // filtered
+describe('checkout', { only: true }, () => {}); // the same, by option
+```
+
+- Grupos focados e `test.only` se combinam: todo teste focado roda, e os
+  demais são informados como `filtered`.
+- Um `test.only` ou `describe.only` dentro de um grupo focado restringe esse
+  grupo, como no Playwright: dos testes do grupo, só os focados internos rodam.
+- Um teste pulado em um grupo focado continua focado e é informado com a
+  própria causa de pulo, `explicit`, `fixme` ou `todo`.
+- Uma execução na CI com um grupo focado falha com `ONLY_IN_CI`.
+- Um grupo serial pode ser focado inteiro. `only` dentro de um grupo serial é
+  recusado, já que o grupo roda como uma unidade.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | O grupo está dentro de um grupo serial. |
+| `COLLECTION_ERROR` | Uma opção `only` em `describe.only`. Também é um erro de tipo. |
+
+### Hooks
+
+| Hook | Roda |
+| --- | --- |
+| [`beforeEach`](#beforeeach) | Antes de cada tentativa de teste |
+| [`afterEach`](#aftereach) | Depois de cada tentativa de teste |
+| [`beforeAll`](#beforeall) | Uma vez por instância da suíte |
+| [`afterAll`](#afterall) | Depois do último teste do escopo |
+
+A ordem dos hooks segue o aninhamento dos escopos, não a posição no arquivo,
+então um hook declarado depois de um teste vale mesmo assim para esse teste.
+
+#### `beforeEach`
+
+Registra um hook de preparação da tentativa de teste.
+
+```ts
+test.beforeEach(async ({ app }) => {
+  await app.open('/');
+});
+```
+
+- Roda a partir do grupo mais externo e, dentro de um grupo, na ordem de
+  declaração.
+- `beforeEach` e o corpo compartilham o tempo limite do teste.
+- Recebe as fixtures de teste. As que ele nomeia são preparadas para todo teste
+  a que ele se aplica. Veja [Suas próprias fixtures](#your-own-fixtures).
+
+#### `afterEach`
+
+Registra um hook de desmontagem da tentativa de teste.
+
+```ts
+test.afterEach(async ({ app }) => {
+  await app.screenshot('after');
+});
+```
+
+- Roda a partir do grupo mais interno, na ordem inversa de declaração, também
+  depois de uma falha ou de um tempo limite esgotado.
+- Cada hook `afterEach` recebe o próprio orçamento de `cleanupTimeout`, com
+  fixtures funcionando, então a desmontagem consegue controlar o app mesmo
+  depois que o corpo excedeu o tempo limite.
+- Recebe as fixtures de teste. As que ele nomeia são preparadas antes do
+  primeiro `beforeEach`, dentro do tempo limite do teste, nunca quando o hook
+  começa.
+- Um hook que nomeia uma fixture cuja preparação falhou é pulado.
+
+#### `beforeAll`
+
+Registra um hook de preparação da instância da suíte. Ele roda uma vez por
+instância da suíte, na primeira entrada no escopo.
+
+```ts
+test.beforeAll(async ({ database, device }) => {
+  await database.seed();
+  await device.setPermission('camera', 'deny'); // a mobile target
+});
+```
+
+O módulo é importado de novo a cada nova tentativa, grupo serial e teste de
+preparação, então `beforeAll` roda de novo em cada um, e em cada lote de um
+escopo [paralelo](#parallel).
+
+O hook recebe só [fixtures de worker](#worker-fixtures):
+
+- As [fixtures embutidas](#fixtures) cujo escopo é worker no alvo:
+  `platform`, `services` e, em um alvo mobile, `device`, `app` e `screen`.
+- As fixtures de worker do `test` pelo qual ele foi registrado. São preparadas
+  as que ele nomeia e as declaradas com `auto: true`.
+
+Em um alvo de navegador, `browser`, `app` e `screen` são fixtures de teste.
+Coloque a preparação da UI em `beforeEach`.
+
+Em um alvo mobile:
+
+- Os hooks `beforeAll` dos escopos em que um teste entra rodam em uma tentativa
+  curta e própria da engine, que não inicia nada. O mesmo vale para os hooks
+  `afterAll` dos escopos de que um teste sai.
+- A tentativa é aberta para o primeiro hook que nomeia `device`, `app` ou
+  `screen`, ou uma fixture de worker que nomeia uma delas. Hooks que não
+  nomeiam nenhuma não abrem tentativa.
+- Em um grupo serial, ou em um teste que uma sessão de `e2e mcp` roda, os
+  hooks rodam na tentativa já aberta.
+- Quando essa tentativa não consegue abrir, ou a execução foi interrompida, os
+  hooks rodam mesmo assim. Ler `device`, `app` ou `screen` então lança um erro
+  com o motivo. Uma abertura com falha gera um único erro da execução, na fase
+  `launch`.
+
+Os passos que um hook de suíte dá não ficam no registro de nenhum teste. Uma
+falha nomeia o escopo do hook.
+
+Cada hook `beforeAll` roda com o `timeout` da configuração.
+[`test.setTimeout`](#test-settimeout) ou [`test.slow`](#test-slow) dentro dele
+muda o tempo limite desse hook, e as chamadas à engine que o hook faz depois
+disso rodam com o novo valor. As fixtures de worker que o hook nomeia são
+preparadas antes de o corpo dele rodar, então mantêm o `timeout` da
+configuração.
+
+| Lança | Quando |
+| --- | --- |
+| `HOOK_FAILED` | O hook lança um erro. Os testes da suíte são pulados com a causa `hook-failed`. Dentro de um grupo serial, isso pula todos os membros restantes e faz o grupo falhar sem nova tentativa. |
+| `COLLECTION_ERROR` | O hook nomeia uma fixture de teste. A mensagem nomeia essa fixture e a linha do hook, e nenhum teste roda. |
+
+#### `afterAll`
+
+Registra um hook de desmontagem da instância da suíte. Ele roda assim que o
+último teste do escopo no realm termina.
+
+```ts
+afterAll(async () => {
+  await resetDatabase();
+});
+```
+
+Um realm que uma falha descarta roda `afterAll` para todo escopo cujo
+`beforeAll` começou. Esse hook recebe as mesmas fixtures que
+[`beforeAll`](#beforeall) e tem `cleanupTimeout` para terminar. Um erro lançado
+é `HOOK_FAILED`, como em `beforeAll`.
+
+#### Event loop bloqueado
+
+Um teste que bloqueia o event loop do worker dele (`while (true) {}` em uma
+fixture, em `beforeEach`, no corpo ou em `afterEach`) congela todos os timers
+desse worker, então o worker não consegue encerrar o teste por tempo limite.
+
+- Quando o worker passa `cleanupTimeout` (pelo menos 5 s) sem responder depois
+  do tempo limite do teste, o runner o encerra à força.
+- Essa tentativa é informada como `timed-out` com `TEST_TIMEOUT` e sem
+  artefatos, depois das tentativas anteriores a ela, e não é tentada novamente.
+- O resto do arquivo do teste roda em um novo worker. Em um grupo serial, os
+  membros seguintes são pulados.
+- Um `beforeAll` ou `afterAll` que bloqueia trava a execução mesmo assim.
+
+<Note>
+Um worker com um debugger conectado quando o teste começa (o auto-attach de um
+editor, ou `NODE_OPTIONS=--inspect=0`) nunca é encerrado à força dessa forma,
+então um breakpoint pode ficar pausado. Uma execução programática com uma
+configuração inline ou com testes em memória roda no próprio processo do runner
+e não tem worker para encerrar: um event loop bloqueado trava essa execução.
+</Note>
+
+### Opções
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| [`timeout`](#timeout) | `number` | `config.timeout` |
+| [`retries`](#retries) | `number` | `config.retries` |
+| [`tags`](#tags) | `readonly string[]` | - |
+| [`skip`](#skip) | `boolean \| string` | - |
+| [`fail`](#fail) | `boolean \| string` | - |
+| [`only`](#only) | `boolean` | - |
+| [`platforms`](#platforms) | `readonly string[]` | - |
+| [`session`](#session) | `string` | - |
+| [`agentContext`](#agentcontext) | `string` | - |
+| [`agent`](#agent) | `string \| readonly string[]` | os agentes da execução |
+| [`trace`](#trace) | `RecordingMode` | o da execução |
+| [`video`](#video) | `RecordingMode` | o da execução |
+| [`serial`](#serial) | `boolean` | - |
+| [`parallel`](#parallel) | `boolean` | - |
+| [`sessions`](#sessions) | `readonly string[]` | obrigatório |
+
+`test` aceita todas as opções, exceto `serial`, `parallel` e `sessions`.
+`describe` aceita todas as opções, exceto `sessions`. `test.setup` exige
+`sessions` e não aceita `session`, `only`, `skip` nem `fail`.
+
+Ordem de resolução: teste, grupo mais próximo, grupos externos, configuração,
+padrão embutido. Dentro de um [grupo serial](#serial), valem `retries`, `trace` e
+`video` do grupo.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Uma chave de opção que a chamada não aceita (`{ timout: 1000 }`). O erro nomeia a chave conhecida mais próxima quando parece um erro de digitação e, nos outros casos, todas as chaves que a chamada aceita. |
+
+#### `timeout`
+
+O prazo da tentativa, em milissegundos. O valor mais interno prevalece.
+
+```ts
+test('imports a large file', { timeout: 300_000 }, async ({ app }) => {}); // default: config.timeout
+```
+
+`timeout` precisa ser um inteiro seguro positivo, no máximo 2147483647 (cerca de
+24 dias).
+
+#### `retries`
+
+Quantas vezes um teste com falha é tentado novamente.
+
+```ts
+test('checks out', { retries: 2 }, async ({ app }) => {}); // default: config.retries
+```
+
+Um inteiro de 0 a 10.
+
+#### `tags`
+
+As tags pelas quais `--tag` seleciona. As tags de todas as camadas são unidas.
+
+```ts
+describe('checkout', { tags: ['billing', 'smoke'] }, () => {});
+```
+
+As tags são nomes distintos, nenhum em branco, sem vírgula e sem espaços em
+branco no início ou no fim.
+
+#### `skip`
+
+Pula o teste na coleta. Uma string é o motivo. Qualquer camada truthy pula o
+teste. Os motivos de pulo, incluindo os de `test.skip` em tempo de execução, têm
+os segredos ocultados, são sanitizados e são limitados a 8.192 bytes UTF-8 antes
+de irem para o relatório.
+
+```ts
+test('exports a PDF', { skip: 'PDF export is off on staging' }, async ({ app }) => {});
+```
+
+#### `fail`
+
+Espera que o teste falhe; veja [`test.fail`](#test-fail). Uma string é o motivo.
+Uma camada com `true` ou com qualquer string marca o teste, e o motivo mais
+interno prevalece. A opção não é permitida em um grupo serial, dentro dele nem
+em volta dele.
+
+```ts
+test('exports a PDF', { fail: 'PDF export is broken' }, async ({ app }) => {});
+describe('legacy checkout', { fail: 'old payment form' }, () => {});
+```
+
+#### `only`
+
+Foca o teste localmente, ou todos os testes de um grupo; veja
+[`describe.only`](#describe-only). A CI rejeita essa opção com `ONLY_IN_CI`.
+
+```ts
+test('pays', { only: true }, async ({ app }) => {});
+describe('checkout', { only: true }, () => {});
+```
+
+#### `platforms`
+
+As plataformas em que o teste roda. Os outros alvos pulam o teste. O valor mais
+interno prevalece.
+
+```ts
+test('uses Face ID', { platforms: ['ios'] }, async ({ app }) => {});
+```
+
+#### `session`
+
+A sessão que um teste de preparação salvou, restaurada antes de o corpo rodar.
+
+```ts
+test('sees the dashboard', { session: 'member' }, async ({ app }) => {});
+```
+
+Veja [`test.setup`](#test-setup).
+
+#### `agentContext`
+
+Contexto extra para os passos do agente. As camadas são concatenadas da mais
+externa para a mais interna.
+
+```ts
+describe('pricing', { agentContext: 'Prices are shown in EUR.' }, () => {});
+```
+
+#### `agent`
+
+O agente configurado (`agents.<name>`) com que este teste ou grupo roda, no
+lugar dos agentes da execução.
+
+```ts
+test('checks out', { agent: ['fast', 'smart'] }, async ({ agent }) => {}); // one result per agent
+```
+
+- Uma lista roda o teste uma vez por agente nomeado, com um resultado para cada.
+- O valor mais interno prevalece. A opção `agent` da própria chamada prevalece
+  sobre ele.
+- `--agent` restringe uma lista aos nomes presentes tanto na lista quanto na
+  flag, e nunca substitui um agente fixado que a flag não nomeia.
+- Um teste de preparação roda uma vez por alvo, então fixa no máximo um agente.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Na seleção, antes de qualquer teste rodar: um nome que `agents` não define. |
+
+#### `trace`
+
+Se o teste mantém uma página de trace, no lugar do valor da execução.
+
+```ts
+test('checkout', { trace: 'retain-on-failure' }, async ({ agent }) => {});
+```
+
+- Aceita um [modo de gravação](/reference/config#recording), o mesmo que o
+  `trace` da configuração: `off`, `on`, `retain-on-failure`, `on-first-retry`
+  ou `on-all-retries`.
+- O valor do próprio teste ou grupo prevalece sobre `--trace`, o do alvo e o da
+  configuração. Um teste pode gravar em uma execução que não grava nada, ou
+  ficar de fora de uma que grava tudo.
+
+#### `video`
+
+Quais tentativas do teste gravam um vídeo, no lugar do valor da execução.
+
+```ts
+test('checkout', { video: 'on' }, async ({ agent }) => {
+  await agent.act('Buy the first product in the catalog');
+});
+```
+
+- Aceita os mesmos [modos de gravação](/reference/config#recording) que `trace`
+  e o `video` da configuração.
+- O valor do próprio teste ou grupo prevalece sobre `--video`, o do alvo e o da
+  configuração.
+
+| Lança | Quando |
+| --- | --- |
+| `UNSUPPORTED_ARTIFACT` | Antes de qualquer teste começar, nomeando o teste: o modo grava em alguma tentativa e a engine do alvo não consegue gravar vídeo. |
+
+#### `serial`
+
+Só em `describe`. Roda o grupo como uma unidade ordenada, tentada novamente
+como um todo, com estado do app compartilhado.
+
+```ts
+describe('checkout', { serial: true }, () => {
+  test('adds an item', async ({ screen }) => {});
+  test('pays', async ({ screen }) => {});
+});
+```
+
+- O grupo também compartilha o estado dos segredos: um valor que um membro
+  resolve continua ocultado pelo resto da tentativa do grupo. Uma nova tentativa
+  começa do zero.
+- Os membros usam o `trace` e o `video` do `describe` serial ou de um grupo em
+  volta dele. O grupo grava um vídeo por tentativa do grupo.
+- Uma tentativa do grupo pode não começar porque o arquivo do grupo falha ao
+  carregar ou a sessão falha ao iniciar. Então o primeiro membro falha com esse
+  erro, e os demais são pulados com a causa `serial-predecessor-failed`. Quando
+  a execução é interrompida durante a inicialização, todos os membros são
+  pulados em vez disso.
+- Se uma nova tentativa é interrompida ou nunca chega aos membros, eles mantêm
+  os vereditos e as durações da última tentativa que os rodou.
+- O código de saída segue a categoria do erro, como em qualquer outro teste.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Um membro define `retries`, `trace`, `video`, `session`, `platforms`, `skip`, `only` ou um `serial` aninhado. |
+| `COLLECTION_ERROR` | Um membro é registrado por `test.skip(title, fn)`, `test.todo(title)`, `test.skipIf`, `test.runIf` ou `test.fixme(title, fn)`. |
+
+#### `parallel`
+
+Só em `describe`. `true` roda os testes do grupo ao mesmo tempo em workers
+separados. Por padrão, os testes de um arquivo rodam em ordem em um único worker.
+
+```ts
+describe('reports', { parallel: true }, () => {
+  test('exports a CSV', async ({ screen }) => {});
+  test('exports a PDF', async ({ screen }) => {});
+});
+```
+
+- Para um arquivo inteiro, chame [`describe.configure`](#describe-configure) no
+  nível superior. Para todos os arquivos, defina
+  [`fullyParallel`](/reference/config#fullyparallel).
+- Testes que rodam separados no mesmo worker compartilham o estado do arquivo de
+  teste: o worker importa o arquivo uma vez para eles. Testes em workers
+  diferentes não compartilham, então não guarde no arquivo um estado que um
+  teste deixa para outro. Um `beforeAll` e o `afterAll` correspondente podem
+  rodar várias vezes sobre esse estado, então crie em `beforeAll` o que
+  `afterAll` fecha.
+- Declare testes e hooks compartilhados em módulos ES do seu projeto. Um módulo
+  CommonJS, um pacote de `node_modules` e todo módulo importado no Bun continuam
+  sendo uma única instância, então os testes e hooks que esse módulo declara
+  faltam em uma nova tentativa, nos testes depois de um que falhou e em um
+  segundo arquivo que o importa.
+- Um grupo [serial](#serial) dentro de um escopo paralelo continua rodando como
+  uma unidade em um único worker.
+- `false` mantém um grupo dentro de um escopo paralelo em ordem em um único
+  worker.
+- Testes com um hook `beforeAll` ou `afterAll` em volta deles rodam em lotes, no
+  máximo tantos quanto o alvo tem workers, para cada agente. Cada lote roda em
+  ordem em um único worker e roda os hooks uma vez, e de novo depois de um teste
+  com falha. Um grupo serial ou um grupo com `parallel: false` roda os hooks em
+  volta dele mais uma vez.
+- As repetições de um teste (`--repeat-each`) rodam uma depois da outra em um
+  único worker, então a primeira grava o cache de replay e as demais o reproduzem.
+- Com um worker, os testes rodam um por vez, e nem sempre na ordem de
+  declaração.
+- O relatório lista os testes na ordem de declaração.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | `true` dentro de um grupo serial, ou dentro de um grupo ou arquivo com `parallel: false`. |
+| `COLLECTION_ERROR` | `parallel` em um grupo com `serial: true`. |
+| `COLLECTION_ERROR` | Um valor que não é booleano. |
+
+#### `sessions`
+
+Só em `test.setup`. Os nomes das sessões que o teste de preparação precisa salvar.
+
+```ts
+test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }) => {});
+```
+
+Um array estático e não vazio de nomes únicos. Cada nome corresponde a
+`/^[A-Za-z0-9_.-]{1,128}$/`. Veja [`test.setup`](#test-setup).
+
+### Fixtures
+
+As fixtures embutidas são as fixtures que um `test` tem sem `test.extend`: seis
+em toda engine e as que a engine do alvo fornece. Cada uma tem um escopo em
+cada engine.
+
+| Fixture embutida | Tipo | Web | Mobile |
+| --- | --- | --- | --- |
+| [`agent`](/reference/agent) | `Agent` | teste | teste |
+| [`app`](/reference/app) | `App` | teste | worker |
+| [`screen`](/reference/screen) | `Screen` | teste | worker |
+| `platform` | `string` | worker | worker |
+| [`request`](/reference/request) | `APIRequest` | teste | teste |
+| [`services`](#services) | `Record<string, unknown>` | worker | worker |
+| [`session`](#test-setup) | `SetupSession` | teste | teste |
+| [`browser`](/reference/web) | `Browser` | teste | - |
+| [`device`](/reference/mobile#device) | `Device` | - | worker |
+
+O escopo decide que código pode usar uma fixture embutida:
+
+- Uma fixture de teste pertence a uma tentativa de teste. Os corpos de teste,
+  `beforeEach` e `afterEach` recebem essa fixture.
+- Uma fixture de worker dura mais que um teste. `beforeAll`, `afterAll` e as
+  [fixtures de worker](#worker-fixtures) também a recebem.
+
+Um teste de navegador recebe um contexto novo, então na web `app`, `screen` e
+`browser` são fixtures de teste. Um dispositivo mantém o estado entre testes,
+então no mobile `app`, `screen` e `device` são fixtures de worker. Uma engine
+própria define isso com [`isolation`](/reference/engine#fixture-isolation).
+
+`session` só chega aos corpos de `test.setup`. [`TestFixtures`](#testfixtures)
+descreve cada uma das fixtures principais. Qualquer outra fixture é uma das
+[suas próprias fixtures](#your-own-fixtures).
+
+Uma fixture de engine é `undefined` em um alvo cuja engine não tem essa
+fixture. Veja
+[Fixtures de engine em vários alvos](#engine-fixtures-across-targets).
+
+Um corpo de teste, um hook e uma função de fixture nomeiam as fixtures que
+usam desestruturando o primeiro parâmetro: `async ({ app, screen }) => {}`.
+O e2e lê os nomes no código-fonte da função. Um corpo de
+[`test.each`](#test-each) ou [`test.for`](#test-for) nomeia as fixtures no
+parâmetro que vem depois da linha.
+
+| Lança | Quando |
+| --- | --- |
+| `COLLECTION_ERROR` | Um teste que roda em um alvo, ou um dos hooks dele, nomeia uma fixture que não está em nenhum alvo da configuração. Nenhum teste roda. |
+| `COLLECTION_ERROR` | Um corpo de teste, um hook ou uma função de fixture recebe o objeto inteiro (`async (fixtures) => {}`), uma propriedade rest (`{ app, ...rest }`) ou uma propriedade computada, ou é uma função vinculada (`fn.bind()`), cujos parâmetros não podem ser lidos. |
+
+<Note>
+As fixtures embutidas são adquiridas sob demanda. A desestruturação na lista de
+parâmetros as adquire antes da primeira instrução do corpo. [Suas próprias
+fixtures](#your-own-fixtures) são preparadas antes do primeiro `beforeEach`.
+</Note>
+
+#### `services`
+
+Os valores produzidos pelos [`services`](/reference/config#services) da
+configuração, indexados por nome. Cada worker, sessão de `e2e mcp` ou host de
+`openHost` recebe uma cópia dos dados. Cada função produzida vira uma função
+assíncrona que chama a original no processo que iniciou os serviços (o runner,
+o servidor `e2e mcp` ou o host de `openHost`) e resolve para uma cópia do
+resultado.
+
+```ts
+import { expect, test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+const test = base.extend<{}, {}, typeof config>();
+
+test('signing up sends one welcome email', async ({ app, screen, services }) => {
+  const inbox = await services.email.createInbox();
+
+  await app.open('/');
+  await screen.getByRole('textbox', { name: 'Email' }).fill(inbox.address);
+  await screen.getByRole('button', { name: 'Sign up' }).click();
+
+  const email = await services.email.waitForEmail(inbox.address, { subject: /welcome/i });
+
+  expect(email.subject).toContain('Welcome');
+  expect(await services.email.received(inbox.address)).toHaveLength(1);
+});
+```
+
+Todos os workers compartilham uma única instância de cada serviço, então um
+teste pode observar estado criado por outros testes. No exemplo acima, o teste
+cria uma caixa de entrada com um endereço único e conta só os e-mails enviados
+a ela.
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Um argumento é uma função, uma instância de uma classe personalizada ou outro valor que não pode ser copiado. |
+| O erro da função | A função lança um erro no processo que iniciou os serviços. |
+| `Error` | O valor de retorno é uma função, uma instância de uma classe personalizada ou outro valor que não pode ser copiado. |
+
+#### Suas próprias fixtures
+
+`test.extend(fixtures)` define recursos preparados antes de cada teste que os
+nomeia e limpos depois, inclusive depois de uma falha. Em cada função de
+fixture, o código antes de `await use(value)` prepara o recurso. O teste
+recebe `value`, e o código depois de `use` desmonta o recurso. Para um guia
+com uma suíte completa, veja [Escrevendo fixtures](/fixtures).
+
+```ts
+import { test as base } from '@e2e-dev/web';
+
+export const test = base.extend<{ workspace: Workspace }>({
+  workspace: async ({ browser }, use) => {
+    const workspace = await createWorkspace();
+    await signIn(browser, workspace);
+    await use(workspace); // the hooks and the body run here
+    await workspace.cleanup(); // teardown, after the body even when it failed
+  },
+});
+
+test('renames the workspace', async ({ workspace, screen }) => {
+  await screen.getByLabel('Name').fill(`${workspace.name} (renamed)`);
+});
+```
+
+Uma fixture é preparada sob demanda: para um teste que a nomeia, ou que nomeia
+uma fixture que a nomeia. As fixtures que uma função nomeia no primeiro
+parâmetro são as dependências da função:
+
+- Uma definição vê as fixtures do `test` que ela estende e as declaradas ao
+  lado dela na mesma chamada, em qualquer ordem. Ela não vê uma fixture que um
+  `extend` posterior declara.
+- Uma definição que não precisa de nenhuma fixture recebe `({}, use)`. O
+  `no-empty-pattern` do ESLint aceita essa forma com
+  `allowObjectPatternsAsParameters: true`.
+- `[fn, { auto: true }]` prepara uma fixture para todo teste desse `test`,
+  nomeada ou não. Use essa forma para uma fixture de que os testes precisam e
+  que eles nunca leem.
+
+Em cada tentativa:
+
+1. As fixtures a preparar são decididas antes de qualquer coisa rodar: as que
+   o corpo e cada hook `beforeEach` e `afterEach` aplicável nomeiam, as que
+   essas fixtures nomeiam e as `auto`. Uma fixture não nomeada em lugar
+   nenhum não roda.
+2. Elas rodam na ordem de declaração, cada uma depois das fixtures que nomeia,
+   até que cada uma chame `use`. A preparação conta para o `timeout` do teste.
+   Uma falha é informada na fase `beforeEach`, antes de qualquer hook
+   `beforeEach` rodar.
+3. Os hooks `beforeEach`, o corpo e depois os hooks `afterEach` rodam com as
+   mesmas fixtures. Cada um recebe as que nomeia. O conjunto de fixtures é a
+   própria cadeia do teste: um hook que nomeia `workspace` em volta de um teste
+   registrado por `base` falha com `COLLECTION_ERROR`.
+4. As desmontagens rodam em ordem inversa depois do último `afterEach`, tenha
+   o corpo passado ou não, cada uma com o próprio orçamento de
+   `cleanupTimeout`. Um erro ali faz falhar, na fase `afterEach`, uma
+   tentativa que estava passando, e entra em `secondaryErrors` depois de uma
+   falha do corpo.
+
+Um engano que falha na coleta é um único erro da execução com o arquivo e a
+linha do código, e nenhum teste roda. Um teste que não roda em um alvo não é
+verificado contra as fixtures desse alvo.
+
+| Engano | Onde falha |
+| --- | --- |
+| Um valor que não é um objeto simples de funções ou de pares `[fn, { scope, auto }]`, um escopo diferente de `'test'` ou `'worker'`, um `auto` que não é booleano, uma opção diferente de `scope` e `auto`, ou um nome vazio | Na importação, `COLLECTION_ERROR` que nomeia a fixture |
+| Uma função que não desestrutura o primeiro parâmetro, recebe ali uma propriedade rest ou computada, ou é uma função vinculada | Na importação, `COLLECTION_ERROR` que nomeia a fixture |
+| Fixtures que nomeiam umas às outras em ciclo | Na importação, `COLLECTION_ERROR` que nomeia o ciclo |
+| Um nome que não é fixture em nenhum alvo da configuração, em um teste que roda, nos hooks dele ou em uma fixture de que eles precisam | Na coleta, `COLLECTION_ERROR` |
+| Um `scope` ou um `auto` diferente do da [fixture que a definição estende](#extending-a-fixture) | Na importação quando é igual em todas as engines, senão na coleta, `COLLECTION_ERROR` que nomeia as duas fixtures |
+| Uma fixture que nomeia outra que um `extend` posterior declara | Na coleta, `COLLECTION_ERROR` |
+| Uma definição que retorna sem chamar `use` | A tentativa, em `beforeEach`, `TEST_SETUP_FAILED` |
+| Uma definição que chama `use` duas vezes | A tentativa, na desmontagem, `TEST_SETUP_FAILED` |
+| Uma definição que lança um erro antes de `use` | A tentativa, em `beforeEach`, com esse erro. Um hook `afterEach` que nomeia a fixture é pulado. |
+| Uma definição que lança um erro depois de `use` | A tentativa, em `afterEach`, com esse erro |
+
+<Note>
+Um corpo ou hook que atinge o `timeout` do teste é abandonado, não
+cancelado, então a desmontagem começa enquanto ele talvez ainda esteja
+rodando. Se uma preparação abandonada dessa forma chegar a `use` mais tarde,
+a chamada resolve na hora. A desmontagem dessa fixture roda desvinculada da
+execução, então o que a fixture alocou é liberado mesmo assim. Fixtures
+posteriores, hooks e o corpo do teste não começam depois que uma preparação
+ou um hook abandonado termina. Uma chamada ao app ou ao dispositivo que a
+preparação ou o hook faz depois do fim da própria fase falha com
+`CANCELLED`. O restante do código deles, como um `fetch` do Node, continua
+rodando.
+</Note>
+
+#### Fixtures de worker
+
+Uma fixture de worker tem uma instância por worker e alvo. Declare-a como
+`[fn, { scope: 'worker' }]` e tipe-a com o segundo argumento de tipo de
+`extend`:
+
+```ts
+export const test = base.extend<{}, { database: Database }>({
+  database: [async ({}, use) => {
+    const database = await startDatabase();
+    await use(database);
+    await database.stop();
+  }, { scope: 'worker' }],
+});
+```
+
+- A preparação roda na primeira vez que um teste ou hook de suíte nomeia a
+  fixture, ou nomeia uma fixture que a nomeia, dentro do tempo limite desse
+  teste ou hook. Uma preparação que falha faz esse teste ou hook falhar, e o
+  próximo prepara a fixture de novo.
+- `[fn, { scope: 'worker', auto: true }]` prepara a fixture para o primeiro
+  teste ou hook de suíte registrado pelo `test` dela, nomeada ou não.
+- A desmontagem roda quando o worker termina, antes de a engine ser
+  descartada, da última preparada para a primeira. Cada desmontagem tem
+  `cleanupTimeout`. Uma desmontagem que lança um erro é um erro da execução
+  na fase `cleanup`.
+- Uma fixture de worker vê só fixtures de worker: as
+  [fixtures embutidas](#fixtures) cujo escopo é worker no alvo, as fixtures de
+  worker do `test` que ela estende e as declaradas ao lado dela. Nomear uma
+  fixture de teste é `COLLECTION_ERROR`.
+- Em um alvo mobile, os `device`, `app` e `screen` da fixture agem no teste ou
+  hook que está rodando quando ela os chama. Mesmo assim, a desmontagem dela
+  consegue controlar o dispositivo: roda em uma tentativa curta da engine quando
+  a fixture nomeia um deles, e sem tentativa quando não nomeia nenhum.
+- Um worker mantém uma única instância de uma fixture de worker, também
+  quando o módulo que declara a fixture é avaliado de novo: um arquivo de
+  teste depois de um teste que falhou, ou um módulo que declara testes ou
+  hooks. Só o valor da fixture é mantido, não as variáveis do módulo, então
+  passe aos testes, pelo valor, aquilo de que eles precisam. No Bun, uma
+  fixture de worker que o arquivo de teste declara ganha uma nova instância
+  cada vez que o arquivo é importado de novo, e a antiga continua preparada
+  até o worker terminar: declare a fixture em um módulo que o arquivo importa.
+- `extend({ ... })` sem argumentos de tipo infere só fixtures de teste.
+
+#### Fixtures de engine em vários alvos
+
+Na web, `device` é `undefined`, então um teste com `device` também pode rodar
+lá. Na web, o escopo de `device` é:
+
+- `worker` se `isolation: 'worker'` estiver definido em toda engine que tem a
+  fixture.
+- `test` nos outros casos.
+
+As fixtures de todos os alvos são tipadas pelo terceiro argumento de tipo de
+[`test.extend`](#test-extend):
+
+```ts
+import { test as base } from 'e2e';
+import type config from '../e2e.config.ts';
+
+export const test = base.extend<{}, {}, typeof config>();
+
+test('signs out', async ({ app, platform, device }) => {
+  if (platform === 'ios') {
+    await device.clearKeychain();
+  }
+
+  await app.clearState();
+});
+```
+
+- As fixtures são tipadas como uma união com um membro por alvo, diferenciados
+  por `platform`. Cada membro tem as fixtures da engine do alvo. Uma fixture
+  que só outros alvos têm é tipada como `undefined`.
+- As fixtures de engine de um alvo, `app` e `screen` são fixtures de worker se
+  `isolation: 'worker'` estiver definido na engine desse alvo, e fixtures de
+  teste nos outros casos.
+- Se o tipo da plataforma de um alvo é `string`, como em um alvo sem engine
+  quando o objeto de configuração não usa `as const`, as fixtures não são
+  estreitadas por uma verificação de `platform`. Verifique a fixture em vez
+  disso (`device !== undefined`).
+- Com `platforms` em um teste, as fixtures dele são tipadas para os alvos que
+  rodam esse teste. Com `platforms: ['ios']`, `device` é tipado como `Device`.
+  Em um `describe`, `platforms` não muda os tipos.
+- Com uma anotação de tipo como `const config: E2EConfig`, `typeof config` é
+  só `E2EConfig`. Chamar `test.extend<{}, {}, typeof config>()` com esse tipo
+  falha com um erro de tipo, porque os tipos dos alvos não são inferidos.
+  Use `as const satisfies E2EConfig` ou `defineConfig` em vez disso para
+  manter o tipo inferido da configuração.
+
+#### Estendendo uma fixture
+
+Uma definição com o nome de uma fixture que o `test` já tem estende essa
+fixture. A fixture estendida pode ser uma [fixture embutida](#fixtures) ou uma
+fixture de um `extend` anterior.
+
+```ts
+export const test = base.extend({
+  app: async ({ app }, use) => {
+    await app.open('/dashboard');
+    await use(app); // tests, hooks, and other fixtures get this value
+  },
+});
+```
+
+- Dentro da função, o nome da própria definição é a fixture estendida: a
+  embutida ou a fixture anterior com esse nome. Uma função que não nomeia a
+  si mesma substitui a fixture.
+- Testes, hooks e outras fixtures que nomeiam a fixture recebem o valor
+  passado para `use`. O que o runner faz com uma fixture embutida não muda.
+- O escopo e o `auto` da definição vêm das opções dela, como em qualquer
+  outra fixture. Sem opções, ela é uma fixture de teste, preparada para o
+  código que a nomeia, mesmo que a fixture estendida seja uma fixture de
+  worker ou `auto`.
+- Para rodar uma substituição de `device` uma vez por worker e usá-la em
+  `beforeAll`, passe `{ scope: 'worker' }`. Como qualquer fixture de worker,
+  ela não pode usar fixtures de teste, então falha em um alvo onde a fixture
+  estendida é uma fixture de teste, como `app` na web.
+- A definição mantém o tipo. Defina-a sem argumento de tipo: os argumentos de
+  tipo de `extend` são para fixtures novas.
+- Se só alguns alvos têm a fixture, a função é chamada mesmo assim nos
+  outros alvos, com `undefined` sob o nome da fixture.
+
+## Tipos
+
+### `TestAPI`
+
+```ts
+/** The two call forms of `describe`. */
+export interface DescribeRegistrar<Options = DescribeOptions> {
+  /** Declares a group synchronously. */
+  <Result>(title: string, body: SynchronousBody<Result>): void;
+  /** Declares a configured group synchronously. */
+  <Result>(title: string, options: Options, body: SynchronousBody<Result>): void;
+}
+
+export interface DescribeAPI extends DescribeRegistrar {
+  /** Declares a group whose tests are expected to fail, as if it had `fail: true`; a reason goes in the `fail` option of `describe`. */
+  fail: DescribeRegistrar<Omit<DescribeOptions, 'fail'>>;
+  /** Configures the scope it is called in: the enclosing `describe`, or the whole file at the top level. */
+  configure(options: DescribeConfigureOptions): void;
+  /** Declares a focused group, as if it had `only: true`: its tests are focused the way `test.only` focuses one. CI rejects it with `ONLY_IN_CI`. */
+  only: DescribeRegistrar<Omit<DescribeOptions, 'only'>>;
+}
+
+/** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
+export interface TestRegistrar<Fixtures = TestFixtures & WorkerFixtures> {
+  /** Registers one test synchronously during module evaluation. */
+  (title: string, fn: TestFn<Fixtures>): TestCase;
+  /**
+   * Registers one configured test synchronously during module evaluation.
+   * Its fixtures are typed for the targets its `platforms` option keeps.
+   */
+  <const Platform extends string = string>(
+    title: string,
+    options: TestOptions & { readonly platforms?: readonly Platform[] },
+    fn: TestFn<SelectedFixtures<Fixtures, Platform>>,
+  ): TestCase;
+}
+
+/**
+ * The two call forms of `test` for `test.each` and `test.for`: one test per
+ * row, each titled from the row. `Args` are the body's arguments.
+ */
+export interface EachRegistrar<Args extends readonly unknown[]> {
+  /** Registers one test per row synchronously during module evaluation. */
+  (title: string, fn: EachFn<Args>): readonly TestCase[];
+  /** Registers one configured test per row synchronously during module evaluation. */
+  (title: string, options: TestOptions, fn: EachFn<Args>): readonly TestCase[];
+}
+
+export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> extends TestRegistrar<Fixtures & Worker> {
+  /** Registers one skipped test. */
+  skip(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
+  /**
+   * Inside a running test: skips it when `condition` is true (or always,
+   * with no condition) by throwing, so nothing after the call runs. The
+   * attempt is reported `skipped` with `reason`; steps that already ran stay
+   * in the report without deciding the status, and teardown still runs. A
+   * setup test cannot skip: its sessions are owed.
+   * Outside a test body this form is `COLLECTION_ERROR`; use the `skip`
+   * option to skip at collection.
+   */
+  skip(condition: boolean, reason?: string): void;
+  skip(reason?: string): void;
+  /** Registers an unfinished test, reported as skipped with cause and reason `todo`. */
+  todo(title: string): TestCase;
+  /** Registers one skipped test marked fixme, reported with the skip cause and reason `fixme`. */
+  fixme(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
+  /**
+   * Inside a running test: skips it as fixme when `condition` is true (or
+   * always, with no condition), as `test.skip` does. The skip cause is
+   * `fixme`, and the reason `fixme`, or `fixme: <reason>` when `reason` is not
+   * blank. A setup test cannot skip. Outside a test body this form is
+   * `COLLECTION_ERROR`; use `test.fixme(title, fn)` to mark a test fixme at
+   * collection.
+   */
+  fixme(condition: boolean, reason?: string): void;
+  fixme(reason?: string): void;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is truthy, as if it had the `skip` option. The
+   * condition is read once, at this call, so it can only depend on what is
+   * known while the file is collected (`process.platform`, `process.env.CI`):
+   *
+   *   test.skipIf(process.platform === 'win32')('file watcher', async () => {});
+   *
+   * A `skip` option skips the test whatever the condition. A serial group
+   * rejects the call: set `skip` on the serial `describe` instead. A Promise
+   * condition also fails the call: await it first.
+   */
+  skipIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures & Worker>;
+  /**
+   * Returns a function that registers one test, like `test(title, fn)`:
+   * skipped when `condition` is falsy, `test.skipIf(!condition)`.
+   */
+  runIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures & Worker>;
+  /**
+   * Returns a function that registers one test per row, like `test(title,
+   * fn)`, in row order. The title is formatted from the row: `$name` and
+   * `$name.path` read an object row, and `%s`, `%d`, `%i`, `%f`, `%j`, `%o`
+   * take an array row's items in order (any other row is the one item). `%#`
+   * is the row index, `%$` the row number, `%%` a percent sign. When every
+   * row is an array, each row is spread into the body's arguments; otherwise
+   * every row is the first one. The fixtures come last:
+   *
+   *   test.each([{ user: 'Ada' }, { user: 'Grace' }])('signs in as $user', async ({ user }, { app }) => {});
+   *   test.each([[1, 2, 3]])('%i + %i = %i', async (a, b, sum, { app }) => {});
+   *
+   * Rows must be a non-empty array. Two rows that format to the same title
+   * fail as duplicate titles. As in a test body, destructure the fixtures
+   * (`{ app }`): e2e sets up only the ones named there.
+   */
+  each<Row extends readonly unknown[] | [unknown]>(rows: readonly Row[]): EachRegistrar<[...Row, Fixtures & Worker]>;
+  each<Row>(rows: readonly Row[]): EachRegistrar<EachArgs<Row, Fixtures & Worker>>;
+  /**
+   * `test.each` that never spreads: the body takes `(row, fixtures)` for
+   * every row, an array row included. Titles format as in `test.each`.
+   */
+  for<Row extends readonly unknown[] | [unknown]>(rows: readonly Row[]): EachRegistrar<[Row, Fixtures & Worker]>;
+  for<Row>(rows: readonly Row[]): EachRegistrar<[Row, Fixtures & Worker]>;
+  /** Registers one test that is expected to fail. */
+  fail(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
+  /**
+   * Inside a running test: marks it expected to fail when `condition` is
+   * true (or always, with no condition). The body keeps running. A test
+   * failure then passes the test, keeping the error and `reason` in the
+   * report; a pass fails it with `UNEXPECTED_PASS`. Infrastructure failures
+   * and interrupts are not covered. A setup test or a serial group member
+   * cannot be marked. Outside a test body this form is `COLLECTION_ERROR`;
+   * use `test.fail(title, fn)` or the `fail` option to mark at collection.
+   */
+  fail(condition: boolean, reason?: string): void;
+  fail(reason?: string): void;
+  /** Registers one focused local test. CI rejects focused tests. */
+  only(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
+  /** Registers one setup test with statically declared session outputs. */
+  setup(title: string, options: SetupOptions, fn: SetupFn<Fixtures & Worker>): TestCase;
+  /**
+   * Returns the same runtime `test`, typed with an engine's contributed
+   * fixtures. A pure type refinement, the fixtures still resolve from the
+   * target's engine at runtime, so a project types its device/desktop/web
+   * surface without a global `declare module` augmentation:
+   *
+   *   export const test = base.extend<{ device: Device }>();
+   */
+  extend<Extra = {}, ExtraWorker = {}, Config extends InferredConfig<Config> = {}>(): TestAPI<
+    ConfigBase<Fixtures, Config> & Extra & ConfigFixtures<Config, 'test'>,
+    ConfigBase<Worker, Config> & ExtraWorker & ConfigFixtures<Config, 'worker'>
+  >;
+  /**
+   * Returns a new `test` whose registrations extend fixtures it already
+   * has, built-in ones included. Inside the function the fixture's own name
+   * is the fixture it extends; the value it hands to `use` is what tests,
+   * hooks, and other fixtures receive under that name. It keeps the type of
+   * the fixture it extends. Its scope is the one it declares, else `test`:
+   *
+   *   export const test = base.extend({
+   *     app: async ({ app }, use) => {
+   *       await app.open('/dashboard');
+   *       await use(app);
+   *     },
+   *   });
+   */
+  extend<const Overrides extends FixtureOverrides<Fixtures & Worker, Worker>>(
+    overrides: Overrides,
+  ): TestAPI<Fixtures & PickEach<Worker, TestOverrides<Overrides>>, OmitEach<Worker, TestOverrides<Overrides>>>;
+  /**
+   * Returns a new `test` whose registrations carry these fixture
+   * definitions on top of the ones it already had. Each attempt sets up the
+   * ones its body and its `beforeEach` and `afterEach` hooks name, and the
+   * ones those fixtures name, in declaration order with each after the
+   * fixtures it names; it runs the hooks and the body with them, and tears
+   * them down in reverse order after `afterEach`. A fixture nothing names is
+   * not set up:
+   *
+   *   export const test = base.extend<{ workspace: Workspace }>({
+   *     workspace: async ({ browser }, use) => {
+   *       const workspace = await createWorkspace();
+   *       await use(workspace);
+   *       await workspace.cleanup();
+   *     },
+   *   });
+   *
+   * A worker fixture (the second type argument, `[fn, { scope: 'worker' }]`)
+   * is set up once per worker and target, the first time a test or suite
+   * hook of the chain names it, and torn down when the worker ends:
+   *
+   *   export const test = base.extend<{}, { database: Database }>({
+   *     database: [async ({}, use) => {
+   *       const database = await startDatabase();
+   *       await use(database);
+   *       await database.stop();
+   *     }, { scope: 'worker' }],
+   *   });
+   *
+   * `auto: true` sets a fixture up whether or not anything names it: for
+   * every test (`[fn, { auto: true }]`), or once per worker
+   * (`[fn, { scope: 'worker', auto: true }]`). A suite hook sets up the auto
+   * worker fixtures of its chain, never a test fixture.
+   */
+  extend<Extra = {}, ExtraWorker = {}, Config extends InferredConfig<Config> = {}>(
+    fixtures: FixtureDefinitions<
+      ConfigBase<Fixtures, Config> & ConfigBase<Worker, Config> & ConfigFixtures<Config, 'test'> & ConfigFixtures<Config, 'worker'>,
+      Extra,
+      ConfigBase<Worker, Config> & ConfigFixtures<Config, 'worker'>,
+      ExtraWorker
+    >,
+  ): TestAPI<
+    ConfigBase<Fixtures, Config> & Extra & ConfigFixtures<Config, 'test'>,
+    ConfigBase<Worker, Config> & ExtraWorker & ConfigFixtures<Config, 'worker'>
+  >;
+  /** Declares a group synchronously; `describe.fail` declares one whose tests are expected to fail, `describe.only` a focused one. */
+  describe: DescribeAPI;
+  /** Registers a test-attempt setup hook: it runs after the test's fixtures are set up. */
+  beforeEach(fn: TestHookFn<Fixtures & Worker>): void;
+  /** Registers a test-attempt teardown hook: it runs before the test's fixtures are torn down. */
+  afterEach(fn: TestHookFn<Fixtures & Worker>): void;
+  /** Registers a suite setup hook, run once per describe between attempts, with the worker fixtures. */
+  beforeAll(fn: TestHookFn<Worker>): void;
+  /** Registers a suite teardown hook, run once per describe between attempts, with the worker fixtures. */
+  afterAll(fn: TestHookFn<Worker>): void;
+}
+
+export const test: TestAPI;
+export const describe: TestAPI['describe'];
+export const beforeEach: TestAPI['beforeEach'];
+export const afterEach: TestAPI['afterEach'];
+export const beforeAll: TestAPI['beforeAll'];
+export const afterAll: TestAPI['afterAll'];
+```
+
+### `TestOptions`
+
+```ts
+export interface TestOptions {
+  /** Attempt deadline in milliseconds; defaults to `config.timeout`. Innermost wins. */
+  timeout?: number;
+  /** Retries, 0 through 10; defaults to `config.retries`. Inside a serial group the group's value applies. */
+  retries?: number;
+  /** Tags for `--tag`: distinct names, none blank, with no comma and no leading or trailing whitespace; every layer's tags are unioned. */
+  tags?: readonly string[];
+  /** Skips the test; a string is the reason. Any truthy layer skips. */
+  skip?: boolean | string;
+  /**
+   * Expects the test to fail; a string is the reason. A test failure then
+   * passes it, and a pass fails it with `UNEXPECTED_PASS`. A layer with `true`
+   * or any string marks; the innermost reason wins. Not allowed on, inside, or
+   * around a serial group.
+   */
+  fail?: boolean | string;
+  /**
+   * Focuses the test locally; on a group, focuses every test in it, skipped
+   * ones included, unless a test or group inside it is focused too, which
+   * narrows the focus to that one. CI rejects it with `ONLY_IN_CI`. Not
+   * allowed inside a serial group; a serial group itself can be focused.
+   */
+  only?: boolean;
+  /** Platforms the test runs on; other targets skip it. Innermost wins. */
+  platforms?: readonly string[];
+  /** Session a setup test saved, restored before the body runs. */
+  session?: string;
+  /** Extra context for agent steps; layers are concatenated outermost first. */
+  agentContext?: string;
+  /**
+   * The configured agent (`agents.<name>`) this test or group runs with, in
+   * place of the run's agents. A list runs the test once per agent named, as
+   * one result each. Innermost wins; a call's own `agent` option wins over
+   * it. `--agent` narrows a list to the names both name and never overrides
+   * a pin the flag does not name.
+   */
+  agent?: string | readonly string[];
+  /**
+   * Which of the test's attempts keep a trace, in place of the run's: the
+   * same modes as the config's `trace`. Innermost wins, over `--trace` too;
+   * inside a serial group the group's value applies, since the group runs as
+   * one unit.
+   */
+  trace?: RecordingMode;
+  /**
+   * Which of the test's attempts record a video, in place of the run's:
+   * the same modes as the config's `video`. Innermost wins, over `--video`
+   * too; inside a serial group the group's value applies, since the group
+   * records as one unit. A mode set here is required of the target's engine.
+   */
+  video?: RecordingMode;
+}
+
+export interface DescribeOptions extends TestOptions {
+  /** Runs the group as one ordered retry unit with shared app state. Nesting one serial group in another is a `COLLECTION_ERROR`. */
+  serial?: boolean;
+  /** `true` runs the group's tests at the same time on separate workers; `false` keeps a group inside a parallel scope in order on one worker. */
+  parallel?: boolean;
+}
+
+/** What `test.describe.configure()` sets on the scope it is called in. */
+export interface DescribeConfigureOptions {
+  /** The scope's `parallel`; at the top of a file it applies to the whole file. */
+  parallel?: boolean;
+}
+
+export interface SetupOptions extends Omit<TestOptions, 'session' | 'only' | 'skip' | 'fail' | 'agent'> {
+  /** Session names this setup test MUST save. */
+  sessions: readonly string[];
+  /** A setup test runs once per target, so it pins at most one agent. */
+  agent?: string;
+}
+```
+
+### `TestFixtures`
+
+```ts
+export interface TestFixtures {
+  /** Agent steps. Acquiring the built-in agent without a configured model is `MODEL_UNAVAILABLE`. */
+  readonly agent: Agent;
+  /** App lifecycle: open, restart, clear state, back, screenshot, recording. */
+  readonly app: App;
+  /** Semantic queries and the actions on their matches. */
+  readonly screen: Screen;
+  /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
+  readonly platform: string;
+  /** HTTP calls, each one a step; a path resolves against the app URL. */
+  readonly request: APIRequest;
+  /**
+   * Values yielded by the config's `services`, keyed by name. Each worker, each
+   * `e2e mcp` session, and each `openHost` host receives a copy of the data
+   * (sessions on one host share the same copy). Each function becomes an async
+   * function called in the process that started the services.
+   */
+  readonly services: Readonly<Record<string, unknown>>;
+}
+
+export interface SetupFixtures extends TestFixtures {
+  /** Saves the sessions the setup test declared. */
+  readonly session: SetupSession;
+}
+
+/**
+ * How long one fixture instance lives. `test`, the default, is one instance
+ * per test attempt that names it, shared by its `beforeEach` hooks, its
+ * body, and its `afterEach` hooks. `worker` is one instance per worker and
+ * target, set up the first time a test or suite hook names it and torn down
+ * when the worker ends.
+ */
+export type FixtureScope = 'test' | 'worker';
+
+/**
+ * The fixtures that outlive a test: what `beforeAll`, `afterAll`, and a
+ * worker-scoped `test.extend()` fixture receive. An engine whose state
+ * outlives an attempt (a device keeps permissions and installed apps) adds
+ * its own fixtures, `app`, and `screen` here; on an engine that gives each
+ * attempt a fresh surface (a browser context) they are test fixtures.
+ */
+export interface WorkerFixtures {
+  /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
+  readonly platform: string;
+  /**
+   * Values yielded by the config's `services`, keyed by name. Each worker, each
+   * `e2e mcp` session, and each `openHost` host receives a copy of the data
+   * (sessions on one host share the same copy). Each function becomes an async
+   * function called in the process that started the services.
+   */
+  readonly services: Readonly<Record<string, unknown>>;
+}
+
+/** @deprecated `beforeAll` and `afterAll` receive the worker fixtures: use `WorkerFixtures`. */
+export type SuiteFixtures = WorkerFixtures;
+```
+
+### `FixtureDefinitions`
+
+```ts
+/**
+ * Defines one fixture: everything before `await use(value)` is its setup,
+ * everything after is its teardown. The fixtures it destructures in its
+ * first parameter are the ones it depends on, set up before it; one that
+ * needs none writes `async ({}, use) => {}`. The body, its hooks, and the
+ * fixtures that name it run while `use` is pending; it resolves once they
+ * are done, whether or not the body failed.
+ */
+export type FixtureFn<Fixtures, Value> = (
+  fixtures: Fixtures,
+  use: (value: Value) => Promise<void>,
+) => Promise<void>;
+
+/**
+ * A test fixture: its function, or the function and its options. With
+ * `auto: true` it is set up for every test of its chain, whether or not
+ * anything names it.
+ */
+export type TestFixtureDefinition<Fixtures, Value> =
+  | FixtureFn<Fixtures, Value>
+  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test'; readonly auto?: boolean }];
+/**
+ * A worker fixture: its function and `{ scope: 'worker' }`. It sees worker
+ * fixtures only. With `auto: true` it is set up once per worker, before the
+ * first test or suite hook of its chain, whether or not anything names it.
+ */
+export type WorkerFixtureDefinition<Worker, Value> = readonly [
+  FixtureFn<Worker, Value>,
+  { readonly scope: 'worker'; readonly auto?: boolean },
+];
+/**
+ * One definition per fixture `test.extend()` adds: `Extra` holds the test
+ * fixtures, `ExtraWorker` the worker fixtures. A definition sees the fixtures
+ * of the `test` it extends and the ones declared beside it, in any order: it
+ * is set up after the ones it names. A test fixture sees every fixture a
+ * test sees; a worker fixture sees worker fixtures only, since it outlives
+ * every test fixture.
+ *
+ * A name the base already has is not a new fixture, so declaring it in
+ * `Extra` or `ExtraWorker` is a type error. Defined beside them, it extends
+ * that fixture, a built-in one included: inside its function its own name is
+ * the fixture it extends, and it keeps that fixture's type. The override of
+ * a worker fixture is declared with `scope: 'worker'` here, since the
+ * fixtures this call returns keep it a worker fixture:
+ *
+ *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
+ */
+export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
+  readonly [K in keyof Extra]: K extends keyof Base
+    ? never
+    : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
+} & {
+  // Not inferred: an `extend({ ... })` without type arguments infers its test
+  // fixtures from the definitions, as before worker fixtures; a worker
+  // fixture is declared through the second type argument.
+  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
+    ? never
+    : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
+} & {
+  readonly [K in Extract<keyof Base, PropertyKey>]?: K extends keyof Worker
+    ? WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, Base[K]>
+    : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Base[K]>;
+};
+/**
+ * Fixtures that extend ones the base already has, each optional. `Sees` and
+ * `WorkerSees` are what an override's function receives: the base's
+ * fixtures, and the ones declared beside it.
+ */
+export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
+  readonly [K in Extract<keyof Base, PropertyKey>]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
+};
+/**
+ * A fixture that extends `K`, one the base already has: it hands over the
+ * same type. Its scope is the one it declares, else `test`, and only the
+ * override of a worker fixture can be a worker fixture.
+ *
+ * The override of a worker fixture with options receives worker fixtures
+ * (`WorkerSees`) only, whatever its scope: TypeScript can't type the
+ * function of a tuple by the `scope` beside it. A function without options
+ * is a test fixture, so it receives every fixture (`Sees`).
+ */
+export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
+  ? FixtureFn<Sees, Base[K]> | readonly [FixtureFn<WorkerSees, Base[K]>, { readonly scope?: FixtureScope; readonly auto?: boolean }]
+  : TestFixtureDefinition<Sees, Base[K]>;
+/** The names in `Overrides` that are test fixtures: every override not declared with `scope: 'worker'`. */
+export type TestOverrides<Overrides> = {
+  [K in keyof Overrides]-?: Overrides[K] extends readonly [unknown, { readonly scope: 'worker' }] ? never : K;
+}[keyof Overrides];
+/** `Worker` without the fixtures in `Names`, one target at a time. */
+export type OmitEach<Worker, Names extends PropertyKey> = Worker extends unknown ? Omit<Worker, Names> : never;
+/** The fixtures in `Names` that `Worker` has, and `platform`, one target at a time. */
+export type PickEach<Worker, Names extends PropertyKey> = Worker extends unknown ? Pick<Worker, Extract<Names | 'platform', keyof Worker>> : never;
+```
+
+### Tipos de função
+
+```ts
+/**
+ * A test body. It names the fixtures it uses by destructuring its first
+ * parameter (`async ({ app, screen }) => {}`), and the runner sets up only
+ * those; a body that takes the whole object (`async (fixtures) => {}`) or a
+ * rest property is a `COLLECTION_ERROR`. The same holds for a hook and for
+ * the first parameter of a `test.extend()` fixture.
+ */
+export type TestFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Promise<void>;
+
+/** A setup test body; `session.save` is the extra fixture. */
+export type SetupFn<Fixtures = TestFixtures> = (
+  fixtures: Fixtures & SetupFixtures,
+) => void | Promise<void>;
+
+/** A hook body: `beforeEach` and `afterEach` get the test's fixtures, `beforeAll` and `afterAll` its worker fixtures. */
+export type TestHookFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Promise<void>;
+
+/** @deprecated use `TestHookFn<WorkerFixtures>`. */
+export type SuiteHookFn = TestHookFn<WorkerFixtures>;
+
+/** A `describe` body. An async body is a type error. */
+export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
+  ? () => Result
+  : never;
+
+/**
+ * The `test.each` body arguments for the rows' type: array rows spread, then
+ * the fixtures. Rows that are not all arrays are passed whole. Not
+ * distributive, so a mixed table is decided once, as at run time. An
+ * `unknown` row may be either at run time, so only the fixtures, last, are known.
+ */
+export type EachArgs<Row, Fixtures> = [Row] extends [readonly unknown[]]
+  ? [...Row, Fixtures]
+  : unknown extends Row
+    ? [...unknown[], Fixtures]
+    : [Row, Fixtures];
+
+/** A `test.each` or `test.for` body: the row's arguments, then the fixtures. */
+export type EachFn<Args extends readonly unknown[]> = (...args: Args) => void | Promise<void>;
+
+/** A `test.skipIf` or `test.runIf` condition. A Promise is a type error. */
+export type SynchronousCondition<Condition> = Extract<Condition, PromiseLike<unknown>> extends never
+  ? Condition
+  : never;
+
+/** Opaque handle of a registered test. */
+export interface TestCase {
+  readonly [testCaseBrand]: true;
+}
+```

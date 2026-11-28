@@ -140,18 +140,6 @@ export function sanitizeFilename(name: string): string {
   return name.replaceAll(/[^A-Za-z0-9._-]/g, '_').slice(0, 64) || 'artifact';
 }
 
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
-
-/** Reads the dimensions out of a PNG's IHDR chunk; undefined for anything else. */
-export function readPngSize(data: Uint8Array): { width: number; height: number } | undefined {
-  if (data.byteLength < 24) return undefined;
-  for (const [offset, byte] of PNG_SIGNATURE.entries()) {
-    if (data[offset] !== byte) return undefined;
-  }
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
-}
-
 /**
  * The finger gesture that scrolls one rect's content in `direction`. Scrolling
  * down reveals what is below, so the finger travels up; the travel is a share

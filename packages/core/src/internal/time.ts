@@ -198,9 +198,6 @@ export function isOperationTimeout(cause: unknown): boolean {
   return engineError?.code === 'OPERATION_TIMEOUT';
 }
 
-/** How long a negated assertion must hold before it passes. */
-export const NEGATION_GRACE_MS = 1000;
-
 export interface PollConditionOptions {
   readonly deadline: Deadline;
   readonly signal: AbortSignal;
@@ -208,8 +205,8 @@ export interface PollConditionOptions {
   /**
    * Evaluates the positive condition once, every read bounded by
    * `deadline`: a read on a longer budget outlasts the poll. Returns
-   * undefined when the condition cannot be evaluated yet: the positive poll
-   * keeps waiting and the negation grace window resets.
+   * undefined when the condition cannot be evaluated yet: the poll keeps
+   * waiting, negated or not.
    */
   evaluate(): Promise<boolean | undefined>;
   /** Builds the poll's failure; `cause` is the read the deadline cut off, when one did. */
@@ -224,21 +221,14 @@ export interface PollReadsOptions extends Omit<PollConditionOptions, 'evaluate'>
 }
 
 /**
- * Polls a condition until it holds (or, when negated, until its negation has
- * held continuously for the negation grace window), throwing the caller's
- * error at the deadline. No sleep runs past the deadline, so the last read
- * starts at it and never sees a state that arrived later.
+ * Polls a condition until a read sees it hold (or, when negated, until a read
+ * sees it not hold), throwing the caller's error at the deadline. No sleep
+ * runs past the deadline, so the last read starts at it and never sees a
+ * state that arrived later.
  *
- * A negation holds from the moment the read that first saw it was issued, so
- * a slow read counts toward the window. A budget shorter than the window
- * still has to be satisfiable: the negation then only needs to hold for the
- * whole budget, and passes at the deadline on what it has seen, since a read
- * past the deadline has no budget left. A read the deadline cut off (an
- * `OPERATION_TIMEOUT` on a read that started with under one poll tick left)
- * after an earlier one completed saw nothing: the poll ends there. A negation
- * then passes if it has held long enough by the time the read is cut off: the
- * read left less than one poll tick unseen, no more than the gap between any
- * two reads, so a short budget still passes at its deadline on what it saw.
+ * A read the deadline cut off (an `OPERATION_TIMEOUT` on a read that started
+ * with under one poll tick left) after an earlier one completed saw nothing:
+ * the poll ends there with the caller's error.
  */
 export function pollCondition(options: PollConditionOptions): Promise<void> {
   return pollReads({ ...options, reads: new ReadWindow(options.deadline) });
@@ -253,36 +243,21 @@ export function pollCondition(options: PollConditionOptions): Promise<void> {
 export async function pollReads(options: PollReadsOptions): Promise<void> {
   const { deadline, negated, reads } = options;
   const startedAt = Date.now();
-  const grace = Math.min(NEGATION_GRACE_MS, deadline.remaining(startedAt));
-  let readAt = startedAt;
-  let holdingSince: number | undefined;
-  const holds = (now: number): boolean => holdingSince !== undefined && now - holdingSince >= grace;
   let sampled = false;
   for (;;) {
     let value: boolean | undefined;
-    reads.starting(readAt);
+    reads.starting();
     try {
       value = await options.evaluate(reads);
       sampled = true;
     } catch (cause) {
       if (!sampled || !reads.cutOff(cause)) throw cause;
-      if (negated && holds(Math.min(Date.now(), deadline.endsAt))) return;
       throw await options.onTimeout(cause);
     }
-    if (!negated) {
-      if (value === true) return;
-    } else {
-      holdingSince = value === false ? (holdingSince ?? readAt) : undefined;
-    }
+    if (value === !negated) return;
     const now = Date.now();
-    if (holds(Math.min(now, deadline.endsAt))) return;
     if (deadline.expired(now)) throw await options.onTimeout();
     await sleep(Math.min(pollDelay(now - startedAt), deadline.remaining(now)), options.signal);
-    readAt = Date.now();
-    if (negated && deadline.expired(readAt)) {
-      if (holds(Math.min(readAt, deadline.endsAt))) return;
-      throw await options.onTimeout();
-    }
   }
 }
 

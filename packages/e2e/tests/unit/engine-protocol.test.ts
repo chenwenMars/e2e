@@ -145,6 +145,17 @@ describe('engine protocol', () => {
     await remote.dispose!(cleanup);
   });
 
+  it('advertises scrollTo and carries its edge over JSON-RPC unchanged', async () => {
+    const perform = vi.fn<NonNullable<Engine['perform']>>(async () => undefined);
+    const { remote } = overLoopback(toy({ actions: ['swipe', 'scrollTo'], perform }));
+    expect(remote.actions).toContain('scrollTo');
+    await remote.init!(initInfo());
+    const action = { kind: 'scrollTo', edge: 'bottom' } as const;
+    await remote.perform!({ id: 'root', revision: '1' }, action, operation());
+    expect(perform).toHaveBeenCalledWith(expect.anything(), action, expect.anything());
+    await remote.dispose!(cleanup);
+  });
+
   it('carries a snapshot with its pixels byte for byte', async () => {
     const data = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255, 7]);
     const { remote } = overLoopback(

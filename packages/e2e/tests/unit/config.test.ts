@@ -536,6 +536,14 @@ describe('resolveConfig', () => {
     expect(() => resolve({ credentials })).toThrow(/credential "admin" has no username; set username or E2E_USER_ADMIN_USERNAME/);
   });
 
+  it('takes a credential set to undefined from E2E_USER_<NAME>_USERNAME and _PASSWORD, and rejects one missing from both', () => {
+    const credentials = { admin: undefined };
+    const resolved = resolve({ credentials }, { E2E_USER_ADMIN_USERNAME: 'from-env', E2E_USER_ADMIN_PASSWORD: 'from-env-pass' }).credentials.get('admin');
+    expect(resolved?.username).toBe('from-env');
+    expect(resolved?.password.value).toBe('from-env-pass');
+    expect(() => resolve({ credentials })).toThrow(/credential "admin" has no username; set username or E2E_USER_ADMIN_USERNAME/);
+  });
+
   it('rejects an empty credential password at config time, including an empty env override', () => {
     expect(() =>
       resolve({
@@ -594,6 +602,9 @@ describe('resolveConfig', () => {
       launchArguments: ['-e2e'],
       permissions: { camera: 'grant' },
     });
+    expect(resolveApp({ bundleId: 'dev.shop.app', permissions: { camera: 'grant', microphone: undefined } }).permissions).toStrictEqual({ camera: 'grant' });
+    // A name that is the prototype's accessor still reaches the engine, which rejects a name it doesn't know.
+    expect(Object.keys(resolveApp({ bundleId: 'dev.shop.app', permissions: { ['__proto__']: 'grant' } }).permissions ?? {})).toEqual(['__proto__']);
   });
 
   it("takes 'all' only on an engine that declares grantsAllPermissions, which receives it as allPermissions", () => {
@@ -639,13 +650,23 @@ describe('resolveConfig', () => {
     expect(() => resolveApp({ launchArguments: null } as never)).toThrow(`${shape}, got null`);
     expect(() => resolveApp({ launchArguments: new Map([['AppleLocale', 'fr_FR']]) } as never)).toThrow(`${shape}, got a Map`);
     expect(() => resolveApp({ launchArguments: { '': 'x' } })).toThrow('target "web" app.launchArguments has an empty argument name');
-    expect(() => resolveApp({ launchArguments: { 'Apple Locale': 'fr_FR' } })).toThrow(
-      'target "web" app.launchArguments argument name "Apple Locale" must have no whitespace or control characters',
-    );
+    expect(resolveApp({ bundleId: 'dev.shop.app', launchArguments: { 'NSSplitView Subview Frames Main': ['0, 0, 200, 600'] } }).launchArguments).toEqual({
+      'NSSplitView Subview Frames Main': ['0, 0, 200, 600'],
+    });
+    for (const name of [' AppleLocale', 'AppleLocale ']) {
+      expect(() => resolveApp({ launchArguments: { [name]: 'fr_FR' } })).toThrow(
+        `target "web" app.launchArguments argument name ${JSON.stringify(name)} must not start or end with a space`,
+      );
+    }
+    for (const name of ['Apple\tLocale', 'Apple\u00a0Locale', 'Apple\u2028Locale']) {
+      expect(() => resolveApp({ launchArguments: { [name]: 'fr_FR' } })).toThrow(
+        `target "web" app.launchArguments argument name ${JSON.stringify(name)} must have no control characters and no whitespace other than a space`,
+      );
+    }
     expect(() => resolveApp({ launchArguments: { '-AppleLocale': 'fr_FR' } })).toThrow(
       'target "web" app.launchArguments argument name "-AppleLocale" starts with a dash; remove the dash, the engine adds it',
     );
-    expect(() => resolveApp({ launchArguments: { 'a\u0000b': 'x' } })).toThrow('argument name "a\\u0000b" must have no whitespace or control characters');
+    expect(() => resolveApp({ launchArguments: { 'a\u0000b': 'x' } })).toThrow('argument name "a\\u0000b" must have no control characters and no whitespace other than a space');
     expect(() => resolveApp({ launchArguments: { env: 'a\u0000' } })).toThrow('target "web" app.launchArguments.env holds a NUL character');
     expect(() => resolveApp({ launchArguments: { tags: ['a', 'b\u0000'] } })).toThrow('target "web" app.launchArguments.tags holds a NUL character');
     expect(() => resolveApp({ launchArguments: ['-a', 'b\u0000'] })).toThrow('target "web" app.launchArguments item 1 holds a NUL character');
@@ -1599,5 +1620,15 @@ describe('services', () => {
       ['beta', service],
       ['alpha', service],
     ]);
+  });
+
+  it('starts nothing for a service set to undefined', () => {
+    const service = {
+      async *start() {
+        yield {};
+      },
+    };
+
+    expect(resolve({ services: { email: undefined, alpha: service } }).services).toEqual([['alpha', service]]);
   });
 });

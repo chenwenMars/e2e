@@ -1418,6 +1418,40 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    */
   fail(condition: boolean, reason?: string): void;
   fail(reason?: string): void;
+  /**
+   * Triples the running test's timeout in force when `condition` is true (or
+   * always), as Playwright's `test.slow()` does: once per attempt, so a
+   * second call does nothing. In a `beforeAll` hook it triples that hook's
+   * timeout. Otherwise it follows `setTimeout`'s rules; `reason` is not
+   * reported.
+   */
+  slow(condition: boolean, reason?: string): void;
+  slow(reason?: string): void;
+  /**
+   * Inside a running test or a `beforeEach` hook: gives the test a timeout
+   * of `timeout` ms, counted from the start of the attempt like the
+   * `timeout` option, which it replaces for this attempt. A timeout shorter
+   * than the time already spent times the test out at once. Inside a
+   * `beforeAll` hook: gives that hook a timeout of `timeout` ms, counted from
+   * its start. `afterEach` and `afterAll` hooks run on `cleanupTimeout` and
+   * cannot change it. A timeout that is not a positive integer is
+   * `INVALID_ARGUMENT`; outside a running test or hook the call is
+   * `COLLECTION_ERROR`, so use the `timeout` option there.
+   */
+  setTimeout(timeout: number): void;
+  /**
+   * Inside a running test, hook, or fixture: runs `body` as one step named
+   * `title` and returns what it returns. Reports show the title, with the
+   * calls `body` makes nested under it; steps nest. The step fails when
+   * `body` throws, and the error goes on to the test:
+   *
+   *   await test.step('Log in as test user', async () => {
+   *     await screen.getByTestId('login_button').tap();
+   *   });
+   *
+   * Outside a test the call is `COLLECTION_ERROR`.
+   */
+  step<T>(title: string, body: () => T | Promise<T>): Promise<T>;
   /** Registers one focused local test. CI rejects focused tests. */
   only(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
   /** Registers one setup test with statically declared session outputs. */

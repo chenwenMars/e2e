@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Controls</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 0; }
+      main { padding: 0 24px 24px; display: grid; gap: 10px; max-width: 420px; }
+      header { position: sticky; top: 0; height: 60px; background: #fff; border-bottom: 1px solid #ccc; z-index: 1; display: flex; align-items: center; padding: 0 24px; }
+      #cover { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.2); }
+      .spacer { height: 900px; }
+    </style>
+  </head>
+  <body>
+    <header>Sticky header</header>
+    <main>
+      <h1>Controls</h1>
+      <label>Budget <input type="range" min="0" max="1000" step="50" value="100" data-testid="budget" /></label>
+      <label>Nickname <input type="unknownkind" data-testid="nickname" /></label>
+      <label>Birthday <input type="date" data-testid="birthday" /></label>
+      <label>Tint <input type="color" data-testid="tint" /></label>
+      <div contenteditable="true" data-testid="bare-editor">Bare editor text</div>
+      <div role="checkbox" aria-checked="mixed" tabindex="0" id="some-files">Some files</div>
+      <fieldset>
+        <legend>Tier</legend>
+        <label><input type="radio" name="tier" value="free" checked /> Free</label>
+        <label><input type="radio" name="tier" value="paid" /> Paid</label>
+      </fieldset>
+      <label>Attachment <input type="file" data-testid="attachment" /></label>
+      <output data-testid="attachment-count">0 files</output>
+      <output data-testid="attachment-text"></output>
+      <details><summary>More options</summary><select data-testid="folded-select"><option>A</option><option>B</option></select></details>
+      <label>Size
+        <select data-testid="size">
+          <option value="xl" label="Extra large">XL</option>
+          <option value="s">Small</option>
+        </select>
+      </label>
+      <table>
+        <tbody><tr data-testid="ada-row"><td>Ada</td><td>36</td></tr></tbody>
+      </table>
+      <p style="text-transform: uppercase">shouty text</p>
+      <p data-testid="invisible" style="visibility: hidden">Invisible text</p>
+      <p data-testid="not-rendered" style="display: none">Not rendered</p>
+      <div role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="10" aria-valuenow="3" aria-valuetext="Low" aria-readonly="true" tabindex="0" style="width: 120px; height: 12px; background: #ddd"></div>
+      <div role="progressbar" aria-label="Upload" aria-valuenow="40" style="width: 120px; height: 8px; background: #8c8"></div>
+      <ul role="tree" aria-label="Files"><li role="treeitem" aria-level="1" aria-expanded="false">src</li></ul>
+      <ul role="listbox" aria-label="Planet" tabindex="0" id="planets">
+        <li role="option" aria-selected="true">Earth</li>
+        <li role="option" aria-selected="false">Mars</li>
+        <li role="option" aria-selected="false">Venus</li>
+      </ul>
+      <button type="button" aria-pressed="false">Italic</button>
+      <section aria-label="Tips"><span tabindex="0" id="tip-anchor">Hover for tip</span> <output data-testid="tip">No tip</output></section>
+      <a download="note.txt" href="data:text/plain,downloaded%20note">Download note</a>
+      <h2 aria-level="4">Levels</h2>
+      <label data-testid="drawn-label"><input type="checkbox" style="position: absolute; width: 0; height: 0; margin: 0; border: 0; padding: 0" /> Drawn by its label</label>
+      <div data-testid="toast">Saved draft</div>
+      <progress aria-label="Sync" value="70" max="100"></progress>
+      <label>Tracked <input data-testid="tracked" value="abc" /></label>
+      <output data-testid="tracked-event">none</output>
+      <output data-testid="scheme">unknown</output>
+      <button type="button" id="hold">Hold</button>
+      <output data-testid="hold-state">up</output>
+      <button type="button" id="guard">Guard unload</button>
+      <button type="button" id="rerender-start">Start re-render</button>
+      <div id="rerender-host"><button type="button" id="draft">Save draft</button></div>
+      <output data-testid="draft-status">Not saved</output>
+      <div draggable="true" id="card" role="button" tabindex="0">Card to move</div>
+      <div id="tray" role="region" aria-label="Tray" style="width: 160px; height: 48px; border: 1px dashed gray"></div>
+      <output data-testid="tray-status">Tray empty</output>
+      <div>Order <strong>ABC123</strong></div>
+      <span>Ref <em>R77</em></span>
+      <div aria-hidden="true">Unlisted directions</div>
+      <label id="replace-label"><input type="checkbox" data-testid="replace-box" /> Replace me</label>
+      <input type="date" data-testid="hidden-date" style="display: none" />
+      <input type="file" id="picked" style="display: none" />
+      <button type="button" data-testid="upload-button">Upload</button>
+      <output data-testid="picked-name">No file</output>
+      <div role="radio" tabindex="0" aria-checked="true" data-testid="aria-radio">Custom radio</div>
+      <button type="button" id="scroll-under">Scroll the target under the header</button>
+      <div class="spacer"></div>
+      <button type="button" id="under-header">Behind the header</button>
+      <output data-testid="under-header-status">Not tapped</output>
+      <div class="spacer"></div>
+    </main>
+    <section aria-label="State parity">
+      <input type="checkbox" hidden disabled checked data-testid="hidden-check" />
+      <div role="textbox" aria-label="Locked editor" contenteditable="true" aria-readonly="true" data-testid="locked-editor">Original</div>
+      <div inert><select aria-label="Inert choice" data-testid="inert-select"><option>First</option><option>Second</option></select></div>
+      <select aria-label="Place" data-testid="place"><option><span>City</span> Center</option><option>New&nbsp;York</option></select>
+      <label for="chosen" style="position: relative; display: inline-block">Chosen <a href="#more" data-testid="more-info">More info</a><span data-testid="label-cover" style="position: absolute; inset: 0"></span></label>
+      <input type="checkbox" id="chosen" data-testid="chosen" />
+      <output data-testid="more-clicks">0</output>
+      <div data-testid="disabled-host" aria-disabled="true"></div>
+      <output data-testid="host-clicks">0</output>
+    </section>
+    <p data-testid="far-below" style="margin-top: 3000px">Far below</p>
+    <script src="controls.js"></script>
+  </body>
+</html>

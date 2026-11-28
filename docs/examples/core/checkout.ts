@@ -24,7 +24,8 @@ if (order.total <= 39_000) {
   try {
     await session.screen.getByRole('button', /pay now/i).tap();
   } catch (error) {
-    // A failed tap may still have reached the server: check the order list, never retry the payment.
+    // A failed tap may still have reached the server:
+    // check the order list, never retry the payment.
     console.error('check /my/orders');
     throw error;
   }

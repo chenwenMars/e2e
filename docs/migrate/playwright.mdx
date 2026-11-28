@@ -137,6 +137,7 @@ run only in a browser, so a test that uses it declares
 | --- | --- |
 | `toBeVisible()`, `toBeHidden()`, `toBeEnabled()`, `toBeDisabled()`, `toBeChecked()`, `toBeFocused()`, `toBeAttached()`, `toBeInViewport()`, `toHaveText()`, `toContainText()`, `toHaveValue()`, `toHaveAttribute()`, `toHaveCount()`, `toHaveAccessibleName()`, `toHaveRole()`, `toBeEditable()` | the same, with `{ visible }`, `{ enabled }`, `{ editable }`, `{ checked }`, `{ attached }`, `{ ratio }`, and `{ ignoreCase }`; `toBeInViewport` reads a zero-size element as outside and [differs on a device](/reference/expect#tobeinviewport) |
 | `toBeEmpty()` | the same, with `{ timeout }` |
+| `.not` on a locator or `expect(page)` matcher | the same on a locator or `expect(browser)` matcher: it passes on the first read that satisfies the negation |
 | `toHaveId(id)`, `toContainClass(name)` | `toHaveAttribute('id', id)`, `toHaveAttribute('class', RegExp)` |
 | `expect(page).toHaveURL()`, `toHaveTitle()` | `expect(browser).toHaveURL()`, `toHaveTitle()` |
 | `expect(page).toHaveScreenshot()`, `expect(locator).toHaveScreenshot()` | `expect(screen).toHaveScreenshot()` and the locator form, see [Visual comparison](/visual-testing) |
@@ -285,7 +286,6 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `expect.configure()` | `{ timeout }` on each call |
 | `@axe-core/playwright` | axe-core through `browser.addInitScript({ path: 'node_modules/axe-core/axe.min.js' })`, then `axe.run()` in `browser.evaluate` |
 | `.resolves`, `.rejects`, `toThrow()`, `toStrictEqual()`, `toContainEqual()`, `toBeInstanceOf()`, `expect.closeTo()` | `await` first, or catch the error and assert on it; `toEqual`; `toContain`, which compares by deep equality; `toBeCloseTo` |
-| A `.not` locator matcher that passes on the first read | It passes after the condition holds for 1 s. The positive inverse passes on the first read: `toBeHidden()`, `toBeDisabled()`, `toBeChecked({ checked: false })` |
 | `expect.extend()` | An async helper that calls `expect` |
 
 </Accordion>
@@ -409,6 +409,27 @@ purpose. Use the workaround, or keep the test in Playwright.
 | Retries | 0 | 1 in CI, 0 locally |
 | Workers | half the CPU cores | 1 in CI, half the CPU cores locally |
 | Trace | `off` (`on-first-retry` in the scaffolded config) | `retain-on-failure` |
+
+## Electron apps
+
+A suite that drives an Electron app with Playwright's `_electron` moves to the
+[Electron engine](/electron), not the web one: a target with
+`engine: electron()` and `app: { appPath: '.' }`, and `test` from
+`@e2e-dev/electron`. `e2e init` has no Electron preset yet, so write the
+config by hand.
+
+| Playwright | e2e |
+| --- | --- |
+| `_electron.launch({ args })` in a fixture, `electronApp.firstWindow()` | `await app.open()` in `beforeEach`. Arguments the app reads, and Chromium switches, go in the target's `app.launchArguments`, the same for every test |
+| `electronApp.evaluate(fn, arg)` | `electron.evaluate(fn, arg)` |
+| `page.evaluate(fn)` in the renderer | `electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('…'))`. Pick the window by title: `getAllWindows()` is not in the order `electron.windows()` lists |
+| `electronApp.waitForEvent('window')` | `await electron.waitForWindow(() => screen.getByRole('button', 'Open').tap())`, which makes the new window active. For a window the app opens on its own, `await electron.window({ title: 'Settings' })` |
+| `page.on('dialog')` | `await electron.onDialog('accept')`, `'dismiss'`, or a handler |
+| `page.waitForEvent('close')` | `await expect.poll(() => window.isClosed()).toBe(true)` |
+| `expect(page).toHaveTitle(title)` | `await expect.poll(() => window.title()).toBe(title)` |
+| `page.getByRole`, `getByLabel`, `getByTestId`, `locator(css)` | `screen.getByRole`, `getByLabel`, `getByTestId`, and `electron.locator(css)`, which takes CSS only |
+| `page.on('console')`, `electronApp.on('console')` | Recorded in the test's trace under App log, main-process lines prefixed `[main]`. A test cannot read them |
+| `electronApp.close()` | Nothing: every test ends with the app quit |
 
 ## Next
 

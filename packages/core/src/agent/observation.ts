@@ -448,6 +448,7 @@ export function projectTree(node: RedactedNode, appOrigin?: string): ExecutorNod
     ...(node.inputPurpose === undefined ? {} : { inputPurpose: node.inputPurpose }),
     ...(node.states === undefined ? {} : { states: node.states }),
     ...(attributes === undefined ? {} : { attributes }),
+    ...(node.testId === undefined ? {} : { testId: node.testId }),
     ...(node.rect === undefined ? {} : { rect: node.rect }),
     ...(node.framePath === undefined ? {} : { framePath: node.framePath }),
     ...(node.children === undefined ? {} : { children: node.children.map((child) => projectTree(child, appOrigin)) }),

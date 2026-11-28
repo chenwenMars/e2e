@@ -55,7 +55,7 @@ the executor brings its own prompt and tools.
 | Answers | How should the acting agent work? | What does this app call things? |
 | Who reads it | The act loop only | Every model call: act turns and the judges behind `assert`, `waitFor`, and `extract` |
 | Belongs here | Persona, caution, what to verify before finishing, how to treat unexpected dialogs | Names of screens and menus, where a feature lives, which button submits a form, domain terms |
-| Set on | `agents.<name>.system` | `agents.<name>.context`, at most 16 KiB |
+| Set on | `agents.<name>.system` | `agents.<name>.context`, at most 16 KiB unless `maxContextBytes` raises it |
 
 A judge never sees `system`, so "a step is done once the form closes"
 can't lower the bar for a verdict. Rule of thumb: true for any tester on

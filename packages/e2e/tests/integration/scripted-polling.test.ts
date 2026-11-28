@@ -1,6 +1,7 @@
 /**
  * Polling through the real runner against the scripted engine: matchers poll
- * until the tree catches up, and a negated matcher holds for its grace window.
+ * until the tree catches up, and a negated matcher passes on the first read
+ * that sees the negation.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -32,16 +33,17 @@ test('a changing value, text, and state pass their matchers', async ({ app, scre
   await expect(screen.getByRole('menuitem', { name: 'Save' })).toBeEnabled({ timeout: 1500 });
 });
 
-test('a negated matcher waits out the grace window', async ({ app, screen }) => {
-  await app.open('/');
-  await expect(screen.getByText('Hidden content')).not.toBeVisible({ timeout: 1500 });
-});
-
-test('a negated matcher waits for the flip, then the grace window', async ({ app, screen }) => {
+test('a negated matcher waits for the flip', async ({ app, screen }) => {
   await app.open('/');
   await screen.getByRole('button', { name: 'Reveal' }).tap();
   await expect(screen.getByRole('status', { name: 'Loading' })).not.toBeVisible({ timeout: 2500 });
   await screen.getByRole('status', { name: 'Loading' }).waitFor({ state: 'hidden' });
+});
+
+test('a negated matcher passes on a state that does not last', async ({ app, screen }) => {
+  await app.open('/');
+  await screen.getByRole('button', { name: 'Blink' }).tap();
+  await expect(screen.getByRole('status', { name: 'Banner' })).not.toBeVisible({ timeout: 2500 });
 });
 `;
 
@@ -58,10 +60,10 @@ describe('scripted engine: polling', () => {
     expect(step(changing, 'expect.toHaveValue').durationMs).toBeGreaterThanOrEqual(150);
   });
 
-  it('holds a negated matcher for the grace window', () => {
-    const held = passed(run.outcome, 'a negated matcher waits out the grace window');
-    expect(step(held, 'expect.not.toBeVisible').durationMs).toBeGreaterThanOrEqual(900);
-    const flipped = passed(run.outcome, 'a negated matcher waits for the flip, then the grace window');
-    expect(step(flipped, 'expect.not.toBeVisible').durationMs).toBeGreaterThanOrEqual(1_150);
+  it('passes a negated matcher on the first read that sees the negation', () => {
+    const flipped = passed(run.outcome, 'a negated matcher waits for the flip');
+    expect(step(flipped, 'expect.not.toBeVisible').durationMs).toBeGreaterThanOrEqual(200);
+    // The banner is back 900 ms after it went: a negation that had to hold for a second would never pass.
+    passed(run.outcome, 'a negated matcher passes on a state that does not last');
   });
 });

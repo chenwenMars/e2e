@@ -1,4 +1,4 @@
-import { assert, describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import {
   defineEngine,
   isEngineHandle,
@@ -417,6 +417,24 @@ describe('createEngineSession', () => {
     await session.swipe('left', 'fast', OP);
     expect(observes).toBe(2);
     expect(performed[1]).toEqual({ id: 'screen', revision: 'b2', kind: 'swipe', direction: 'left', momentum: 'fast' });
+  });
+
+  it('gives a swipe on a root it already knows the whole budget, however the clock moves', async () => {
+    const budgets: number[] = [];
+    const session = createEngineSession({
+      engine: defineEngine(observingEngine({ actions: ['swipe'], perform: async (_ref, _action, operation) => void budgets.push(operation.timeoutMs) })),
+      targetName: 'toy-target',
+    });
+    await session.observe(OP);
+    // No observation runs, so no time comes out of the budget: each clock read is a second later.
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 1_000));
+    try {
+      await session.swipe('down', undefined, OP);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(budgets).toEqual([OP.timeoutMs]);
   });
 
   it('carries the engine location and viewport onto the observation', async () => {

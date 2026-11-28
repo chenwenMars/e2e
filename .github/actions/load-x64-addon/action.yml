@@ -1,0 +1,53 @@
+name: Load the x64 desktop addon
+description: >-
+  Loads the desktop driver's x64 build in an x86_64 Node under Rosetta on an
+  arm64 Mac, and fails unless it loads and answers status().
+
+# No Intel Mac runner is in use, so Rosetta stands in for one: it runs the
+# official darwin-x64 Node of the version setup-node installed, checked
+# against that release's SHASUMS256.txt, and that Node loads the addon the way
+# an Intel user's would.
+inputs:
+  addon:
+    description: Path of the x64 addon, relative to the workspace.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # `arch -x86_64` runs an x86_64 slice only with Rosetta installed; /usr/bin/true is universal.
+    - name: Install Rosetta
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+          sudo softwareupdate --install-rosetta --agree-to-license
+        fi
+        arch -x86_64 /usr/bin/true
+    - name: Download an x86_64 Node
+      id: node
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(node -p process.version)"
+        name="node-$version-darwin-x64"
+        dir="$RUNNER_TEMP/node-x64"
+        mkdir -p "$dir"
+        curl --proto '=https' --tlsv1.2 -sSf --retry 3 -o "$dir/SHASUMS256.txt" "https://nodejs.org/dist/$version/SHASUMS256.txt"
+        curl --proto '=https' --tlsv1.2 -sSf --retry 3 -o "$dir/$name.tar.gz" "https://nodejs.org/dist/$version/$name.tar.gz"
+        # shasum fails on no line at all, so a release without this file fails here too.
+        (cd "$dir" && awk -v file="$name.tar.gz" '$2 == file' SHASUMS256.txt | shasum -a 256 -c -)
+        tar -xzf "$dir/$name.tar.gz" -C "$dir"
+        echo "path=$dir/$name/bin/node" >> "$GITHUB_OUTPUT"
+    - name: Load the addon
+      shell: bash
+      env:
+        NODE_X64: ${{ steps.node.outputs.path }}
+        ADDON: ${{ inputs.addon }}
+      run: |
+        set -euo pipefail
+        arch -x86_64 "$NODE_X64" -e "
+          if (process.arch !== 'x64') throw new Error('Node runs as ' + process.arch + ', not x64');
+          const status = require(require('node:path').resolve(process.argv[1])).status();
+          if (typeof status.accessibility !== 'boolean') throw new Error('status() returned ' + JSON.stringify(status));
+        " "$GITHUB_WORKSPACE/$ADDON"

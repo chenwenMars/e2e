@@ -69,7 +69,11 @@ function resolveServices(raw: E2EConfig['services']): readonly (readonly [string
     throw new ConfigurationError('INVALID_CONFIG', 'services must be a plain object keyed by name, like services: { email: defineService({ ... }) }');
   }
 
-  return Object.entries(raw).map(([name, service]) => {
+  return Object.entries(raw).flatMap(([name, service]): (readonly [string, Service])[] => {
+    if (service === undefined) {
+      return [];
+    }
+
     if (!isPlainObject(service) || typeof service['start'] !== 'function') {
       throw new ConfigurationError('INVALID_CONFIG', `services.${name} must be a service from defineService({ async *start() { ... } })`);
     }
@@ -78,7 +82,7 @@ function resolveServices(raw: E2EConfig['services']): readonly (readonly [string
     timerMs(service.startupTimeout, `services.${name}.startupTimeout`);
     timerMs(service.shutdownTimeout, `services.${name}.shutdownTimeout`);
 
-    return [name, service];
+    return [[name, service]];
   });
 }
 

@@ -7,6 +7,7 @@
 import type { StepPrompt } from '../run/step-hold.ts';
 import type { PausedStep, RunEventOf } from '../run/events.ts';
 import type { StepRecord } from '@e2e-dev/core/lib/run/steps';
+import { missesEveryRun } from '@e2e-dev/core/lib/cache/decide';
 import { modelLabel } from '@e2e-dev/core/lib/config/agent';
 import { sanitizeText, truncateUtf8 } from '@e2e-dev/core/lib/internal/errors';
 import { collapseText } from '@e2e-dev/core/lib/internal/text';
@@ -22,7 +23,7 @@ import {
   withActor,
   type Colors,
 } from './format.ts';
-import type { ConfiguredModel, ListedStep, ReplayNotice, ShownEvent } from './list-model.ts';
+import type { ConfiguredModel, ListedStep, ReplayNotice, ShownEvent, StepOutcome } from './list-model.ts';
 
 /** Step labels stay one glanceable line; the report holds the full text. */
 const MAX_STEP_LABEL_COLUMNS = 72;
@@ -68,9 +69,18 @@ const F_RUNNING = '◌';
 const DEPTH_INDENT = '  ';
 
 /**
+ * ` · not replayed: truncated` for a step whose miss no later run ends. Any
+ * other miss or hand-off is told by the summary row and the trace page.
+ */
+function missNotice(pc: Colors, outcome: StepOutcome): string {
+  const { cache } = outcome;
+  return missesEveryRun(cache) ? `${pc.dim(' · ')}${pc.yellow(`not replayed: ${cache.reason}`)}` : '';
+}
+
+/**
  * One listed step: outcome glyph, api, quoted label, then duration, model
- * calls, and a non-passed status. A `test.step` is its title alone, with
- * nothing after it while it runs.
+ * calls, a truncated recording, and a non-passed status. A `test.step` is
+ * its title alone, with nothing after it while it runs.
  */
 export function stepLine(pc: Colors, step: Pick<ListedStep, 'api' | 'label' | 'kind' | 'actor' | 'outcome'>, options: StepLineOptions = {}): string {
   const { outcome } = step;
@@ -78,14 +88,21 @@ export function stepLine(pc: Colors, step: Pick<ListedStep, 'api' | 'label' | 'k
   const titled = step.kind === 'step';
   const call = titled ? '' : `${pc.dim(withActor(step.actor, step.api))} `;
   const head = `${DEPTH_INDENT.repeat(options.depth ?? 0)}${glyph} ${options.context ?? ''}${call}`;
+  // A title takes no quotes.
+  const chrome = titled ? LABEL_CHROME - 2 : LABEL_CHROME;
+  const roomBeside = (tail: string): number | undefined =>
+    options.maxWidth === undefined ? undefined : options.maxWidth - visibleWidth(head) - visibleWidth(tail) - chrome;
   let tail = '';
   if (outcome !== undefined) {
     const calls = outcome.modelCalls > 0 ? ` · ${outcome.modelCalls} model call${outcome.modelCalls === 1 ? '' : 's'}` : '';
-    tail = pc.dim(`${formatTime(outcome.durationMs)}${calls}${outcome.status === 'passed' ? '' : ` ${outcome.status}`}`);
+    const notice = missNotice(pc, outcome);
+    const status = outcome.status === 'passed' ? '' : pc.dim(` ${outcome.status}`);
+    const tailOf = (shownCalls: string): string => `${pc.dim(`${formatTime(outcome.durationMs)}${shownCalls}`)}${notice}${status}`;
+    tail = tailOf(calls);
+    // On a narrow row the notice outranks the model calls, which the summary counts.
+    if (notice !== '' && (roomBeside(tail) ?? MIN_STEP_LABEL_COLUMNS) < MIN_STEP_LABEL_COLUMNS) tail = tailOf('');
   }
-  // A title takes no quotes.
-  const chrome = titled ? LABEL_CHROME - 2 : LABEL_CHROME;
-  const room = options.maxWidth === undefined ? undefined : options.maxWidth - visibleWidth(head) - visibleWidth(tail) - chrome;
+  const room = roomBeside(tail);
   return `${head}${titled ? fitLabel(step.label, room) : quotedLabel(step.label, room)}${tail === '' ? '' : ` ${tail}`}`;
 }
 

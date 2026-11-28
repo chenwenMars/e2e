@@ -1,0 +1,1361 @@
+---
+title: expect
+description: "Asserções de localizador, asserções de fixture e matchers de valor comuns."
+"og:image": "https://e2e.com/docs/images/og/reference/expect.png?v=118436cc41"
+"twitter:image": "https://e2e.com/docs/images/og/reference/expect.png?v=118436cc41"
+---
+
+`expect(locator)` espera por uma condição do app, `expect(screen)` compara a
+tela com uma captura de tela armazenada e `expect(value)` verifica um valor
+na hora. `expect.poll` relê um valor até que o matcher passe,
+`expect.soft` guarda uma falha para o fim do corpo do teste em vez de
+lançá-la, e `expect.any` e os outros
+[matchers assimétricos](#asymmetric-matchers) ocupam o lugar de valores dentro
+de uma comparação estrutural.
+
+```ts title="tests/checkout.e2e.ts"
+import { expect, test } from 'e2e';
+
+test('checkout summary', async ({ screen }) => {
+  await expect(screen.getByRole('heading', 'Checkout')).toBeVisible();
+  await expect(screen.getByTestId('line-item')).toHaveCount(2);
+  const total = await screen.getByTestId('total').textContent();
+  expect(total).toContain('$');
+});
+```
+
+## Referência
+
+| Chamada | Retorna |
+| --- | --- |
+| [`expect(locator, message?)`](#locator-matchers) | `AsyncExpectation` |
+| [`expect(screen, message?)`](#screenshot-matchers) | `ScreenExpectation` |
+| [`expect(fixture)`](#browser-matchers) | O conjunto de matchers da engine |
+| [`expect(value, message?)`](#value-matchers) | `ValueExpectation<T>` |
+| [`expect.poll(read, options?)`](#polling-a-value) | `PollExpectation<T>` |
+| [`expect(fn).toPass(options?)`](#retrying-a-block) | `Promise<void>` |
+| [`expect.soft(actual, message?)`](#soft-assertions) | Os mesmos matchers, com as falhas guardadas |
+| [`expect.any(Class)` e outros](#asymmetric-matchers) | `AsymmetricMatcher` |
+
+`expect` distingue o argumento pelo que ele é:
+
+- Uma fixture embutida com que uma engine contribui pode oferecer matchers,
+  como `expect(browser).toHaveURL()`.
+  Essa fixture é um `Expectable<E>`: a engine da fixture anexou o conjunto de
+  matchers `E` por meio de [`expectable`](/reference/engine#contributed-fixtures),
+  e `expect(fixture)` retorna esse conjunto.
+- Qualquer outro argumento recebe os matchers de valor, inclusive uma promise.
+  Aguarde a promise antes de passar o resultado dela para `expect`.
+
+As declarações estão em [Tipos](#types).
+
+### Matchers de localizador
+
+`expect(locator)` retorna um `AsyncExpectation`. Cada matcher faz polling até
+ser satisfeito ou até o próprio tempo limite acabar, sob as regras de
+[Comportamento](#behavior): [Rigor](#strictness),
+[Correspondência de texto](#text-matching) e
+[Campos seguros](#secure-fields) entre elas. As opções estão em
+[`AsyncExpectation`](#asyncexpectation-and-textmatcheroptions).
+
+Um segundo argumento descreve a verificação, em `expect(locator, message)` e
+`expect.soft(locator, message)`. Ele abre cada falha de asserção dos matchers
+abaixo, `.not` incluído, antes do matcher e do localizador, e também o erro
+`LOCATOR_AMBIGUOUS` de um localizador que corresponde a mais de um nó. Uma
+opção inválida ou uma leitura negada falha sem essa mensagem.
+`expect(screen, message)` aceita uma mensagem da mesma forma.
+
+```ts
+await expect(screen.getByTestId('cart-empty'), 'the cart is empty').toBeVisible();
+// ASSERTION_FAILED: the cart is empty: expect.toBeVisible failed
+// locator: getByTestId("cart-empty")
+```
+
+| Matcher | Descrição |
+| --- | --- |
+| [`toBeVisible`](#tobevisible-and-tobehidden) | Espera a visibilidade |
+| [`toBeHidden`](#tobevisible-and-tobehidden) | Espera o estado oculto ou ausente |
+| [`toBeInViewport`](#tobeinviewport) | Espera a correspondência ficar à vista |
+| [`toBeAttached`](#tobeattached) | Espera até existir uma correspondência |
+| [`toBeEnabled`](#tobeenabled-and-tobedisabled) | Espera o estado habilitado |
+| [`toBeDisabled`](#tobeenabled-and-tobedisabled) | Espera o estado desabilitado |
+| [`toBeEditable`](#tobeeditable) | Espera um controle habilitado que não seja somente leitura |
+| [`toBeChecked`](#tobechecked-tobeselected-and-tobeexpanded) | Espera o estado marcado |
+| [`toBeSelected`](#tobechecked-tobeselected-and-tobeexpanded) | Espera o estado selecionado |
+| [`toBeExpanded`](#tobechecked-tobeselected-and-tobeexpanded) | Espera o estado expandido |
+| [`toBeFocused`](#tobefocused) | Espera o estado de foco |
+| [`toBeEmpty`](#tobeempty) | Espera um campo vazio ou um nó sem texto |
+| [`toHaveText`](#tohavetext-and-tocontaintext) | Espera o texto normalizado exato |
+| [`toContainText`](#tohavetext-and-tocontaintext) | Espera até conter o texto normalizado |
+| [`toHaveValue`](#tohavevalue) | Espera o valor de um controle |
+| [`toHaveAttribute`](#tohaveattribute) | Espera um atributo |
+| [`toHaveCount`](#tohavecount) | Espera uma contagem exata de correspondências |
+| [`toHaveAccessibleName`](#tohaveaccessiblename) | Espera um nome acessível |
+| [`toHaveRole`](#tohaverole) | Espera um papel |
+| [`toHaveScreenshot`](#screenshot-matchers) | Compara com uma captura de tela armazenada |
+
+#### `toBeVisible` e `toBeHidden`
+
+`toBeVisible` espera que a única correspondência seja exibida. `toBeHidden`
+espera um estado oculto ou ausente. Em um dispositivo, um nó cujo centro o
+teclado virtual cobre está oculto, exceto as teclas, a barra de sugestões e o
+dock do próprio teclado, o campo com foco e um contêiner com um filho ainda
+visível ([Visibilidade](/reference/mobile#visibility)).
+
+```ts
+await expect(screen.getByRole('dialog')).toBeVisible();
+await expect(screen.getByRole('dialog')).not.toBeVisible({ timeout: 10_000 });
+await expect(screen.getByRole('dialog')).toBeVisible({ visible: false }); // as toBeHidden()
+```
+
+#### `toBeInViewport`
+
+Espera que parte da única correspondência esteja dentro do viewport. O matcher
+nunca rola a tela e não diz nada sobre outro elemento cobrindo a
+correspondência. A falta de correspondência conta como fora do viewport, então
+`.not` aceita zero correspondências. Uma caixa de tamanho zero, ou um elemento
+web sem caixa, como `display: none`, também conta como fora.
+
+```ts
+await expect(screen.getByRole('toolbar', 'Selection')).toBeInViewport();
+await expect(screen.getByRole('toolbar', 'Selection')).toBeInViewport({ ratio: 0.5 });
+await expect(screen.getByRole('alert')).not.toBeInViewport();
+```
+
+`ratio` é um número de `0` a `1` que define a fração da caixa que precisa
+estar dentro. `0` significa qualquer área positiva, o mesmo que omitir `ratio`.
+Qualquer valor fora de `0` a `1` falha com `INVALID_ARGUMENT`. O que conta como
+dentro depende da engine:
+
+| Engine | Medição | `ratio` |
+| --- | --- | --- |
+| `@e2e-dev/web` | Usa o `IntersectionObserver` da página, como o Playwright. O viewport, os ancestrais com rolagem ou `overflow` e os frames recortam a caixa. Substituir o `IntersectionObserver` muda o resultado | Suportado |
+| `@e2e-dev/mobile` | Compara os limites informados pelo dispositivo com a tela confirmada. Contêineres de rolagem recortam os limites, e nós fora da tela saem da árvore | `ratio > 0` falha com `UNSUPPORTED_CAPABILITY` assim que o nó está na tela, porque o dispositivo informa só a parte visível |
+
+O matcher falha na hora com `UNSUPPORTED_CAPABILITY`, `.not` incluído, se a
+engine do alvo não implementa
+[`viewportIntersection`](/reference/engine#viewport-intersection), ou se a
+engine não consegue informar os limites ou a posição na tela de um nó.
+
+#### `toBeAttached`
+
+Espera que exista uma correspondência, oculta ou exibida, enquanto
+`toBeVisible` exige uma exibida.
+
+```ts
+await expect(screen.getByText('Loaded')).toBeAttached();
+await expect(screen.getByText('Loading')).toBeAttached({ attached: false });
+```
+
+Negado, ou com `attached: false`, o matcher espera que não haja
+correspondência e passa assim que nada corresponde.
+
+#### `toBeEnabled` e `toBeDisabled`
+
+`toBeEnabled` espera por um nó habilitado; `toBeDisabled` espera por um nó
+desabilitado.
+
+```ts
+await expect(screen.getByRole('button', 'Pay')).toBeEnabled();
+await expect(screen.getByRole('button', 'Pay')).toBeEnabled({ enabled: false }); // as toBeDisabled()
+```
+
+Um nó está habilitado a menos que informe `disabled`. Na web, `disabled` é o
+estado que o navegador aplica, não apenas o atributo. É a mesma leitura do
+`toBeDisabled` do Playwright:
+
+- Um controle dentro de um `<fieldset disabled>` está desabilitado, a menos
+  que esteja no primeiro `<legend>` desse fieldset.
+- `aria-disabled="true"` em um ancestral desabilita os widgets abaixo desse
+  ancestral até que um `aria-disabled="false"` interrompa a cadeia.
+
+#### `toBeEditable`
+
+Espera por um controle habilitado que não seja somente leitura.
+
+```ts
+await expect(screen.getByLabel('Email')).toBeEditable();
+await expect(screen.getByLabel('Order id')).toBeEditable({ editable: false }); // read-only or disabled
+```
+
+- Somente leitura é o estado que a engine informa. A engine web segue as
+  regras do Playwright para controles nativos e `aria-readonly`, usando os
+  papéis do e2e e o estado desabilitado que `toBeEnabled()` informa. Um
+  `input`, `textarea` ou `select` lê apenas o atributo `readonly`, com
+  qualquer valor. Um elemento de um papel que aceita `aria-readonly`
+  (`textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `switch`,
+  `slider`, `spinbutton`, `gridcell` e o resto) lê `aria-readonly="true"`,
+  sem diferenciar maiúsculas de minúsculas. Um host de edição só lê esse
+  atributo pelo papel ARIA dele, explícito ou vindo da tag (um `td` em uma
+  grade é um `gridcell`); um `<div contenteditable>` simples não tem papel.
+  Qualquer outro host de edição, e qualquer elemento dentro de um, nunca é
+  somente leitura.
+- Um nó desabilitado também não é editável, segundo a leitura de
+  [`toBeEnabled`](#tobeenabled-and-tobedisabled).
+- Qualquer outro nó, como um botão, não tem estado de somente leitura. Esse nó
+  faz o matcher falhar, inclusive negado, e a mensagem de falha informa isso.
+- Em um dispositivo, um campo de texto só tem estado de somente leitura onde a
+  plataforma informa se o campo aceita texto, como faz o Android. O iOS não
+  informa, então um campo do iOS faz o matcher falhar em vez de passar por
+  palpite.
+- Em um Mac, um campo de texto é somente leitura quando o macOS informa que o
+  valor do campo não pode ser definido. Uma combo box é editável quando aceita
+  texto; um menu pop-up, que não aceita nenhum, não tem estado de somente
+  leitura.
+- As engines informam esse estado a partir das versões de `@e2e-dev/web`,
+  `@e2e-dev/mobile` e `@e2e-dev/desktop` que exigem o `e2e`
+  0.25.0. Com uma engine mais antiga, todo nó falha com
+  `no read-only state`: atualize a engine junto com o `e2e`.
+
+#### `toBeChecked`, `toBeSelected` e `toBeExpanded`
+
+Cada um espera pelo seu estado: marcado, selecionado ou expandido.
+
+```ts
+await expect(screen.getByLabel('Subscribe')).toBeChecked({ checked: false });
+await expect(screen.getByRole('tab', 'Billing')).toBeSelected();
+```
+
+Um estado `checked`, `selected` ou `expanded` ausente conta como `false`, então
+`.not.toBeChecked()` passa em um botão ou em um título.
+
+#### `toBeFocused`
+
+Espera pelo estado de foco.
+
+```ts
+await expect(screen.getByLabel('Email')).toBeFocused();
+```
+
+#### `toBeEmpty`
+
+Espera que a única correspondência esteja vazia.
+
+```ts
+await expect(screen.getByLabel('Search')).toBeEmpty();
+await expect(screen.getByTestId('cart')).not.toBeEmpty();
+```
+
+- Vazio é o estado que a engine informa. A engine web segue o Playwright:
+  um `input` ou `textarea` está vazio quando o valor é `''`, lido como
+  está, então um espaço não é vazio. Qualquer outro elemento está vazio quando
+  o conteúdo de texto, sem espaços nas pontas, é `''`. Texto oculto conta, ao
+  contrário de [`toHaveText`](#tohavetext-and-tocontaintext), então um `select`
+  com opções nunca está vazio, e um `<div>` cujo único texto está oculto
+  também não.
+- A engine mobile lê um campo de texto pelo valor, então um rótulo ou uma dica
+  não é conteúdo, e qualquer outro nó pelos textos e valores da subárvore. O
+  iOS informa um campo que o Flutter ou o Compose Multiplatform desenha como
+  uma view simples, então o placeholder desse campo conta e um campo vazio não
+  é lido como vazio.
+- A engine desktop ainda não informa estado vazio. Nela, e em uma versão de
+  engine anterior a este matcher, o matcher falha, negado ou não, e a mensagem
+  de falha informa isso.
+
+#### `toHaveText` e `toContainText`
+
+`toHaveText` espera pelo texto normalizado exato; `toContainText` espera
+até conter o texto normalizado. Os dois aceitam um único `TextMatch` ou uma lista.
+
+```ts
+await expect(screen.getByRole('status')).toHaveText('Saved');
+await expect(screen.getByRole('alert')).not.toContainText('error', { ignoreCase: true });
+await expect(screen.getByTestId('todo')).toHaveText(['Write spec', /^Ship/, 'Release']);
+await expect(screen.getByTestId('todo')).toContainText(['spec', 'runner', 'Release']);
+await expect(screen.getByTestId('todo')).toContainText(['spec', 'Release']);
+```
+
+Na forma de lista, a mensagem de falha mostra cada texto observado.
+
+| Forma | Vale quando |
+| --- | --- |
+| `toHaveText([...])` | O número de correspondências é igual ao tamanho da lista, e a correspondência em cada posição satisfaz a entrada dessa posição: uma string exatamente depois da normalização, uma `RegExp` pelo teste da expressão. Uma lista vazia vale quando nada corresponde |
+| `toContainText([...])` | Cada entrada está contida em uma correspondência distinta, na ordem da lista, como no Playwright. Correspondências extras antes, entre ou depois não atrapalham, uma entrada repetida precisa de uma correspondência própria, e uma lista vazia sempre vale |
+
+<Note>
+Negado, `toContainText([...])` falha assim que essa subsequência ordenada
+existe, então `not.toContainText(['Deleted'])` falha enquanto alguma
+correspondência contiver `Deleted`.
+</Note>
+
+#### `toHaveValue`
+
+Espera pelo valor de um controle, comparado como está.
+
+```ts
+await expect(screen.getByLabel('Email')).toHaveValue('ada@example.test');
+await expect(screen.getByLabel('Search')).toHaveValue('');
+```
+
+- Sem normalização: quebras de linha e espaços no fim contam, e a mensagem de
+  falha imprime o valor desse jeito.
+- O valor de um editor `contenteditable` é o texto renderizado dele, mantido
+  da mesma forma. Um editor vazio é lido como `''`.
+- Um controle que a plataforma informa sem valor, como um campo limpo em um
+  dispositivo, é lido como `''`.
+- Na web, um `slider`, `spinbutton`, `progressbar`, `meter` ou `scrollbar`
+  que não é um controle de formulário nativo nem um editor lê o
+  `aria-valuetext`, senão o `aria-valuenow`, ignorando um em branco. Sem
+  nenhum dos dois, um `<progress>` ou `<meter>` nativo com um atributo `value`
+  lê o `.value` embutido do navegador, limitado ao intervalo do elemento,
+  mesmo quando um elemento embutido customizado (`<progress is="...">`)
+  sobrescreve esse getter. Um `slider` ou `spinbutton` sem nenhum dos dois é
+  lido como `''`, e qualquer outro widget sem nenhum dos dois, como um
+  `<progress>` indeterminado, não tem valor e é recusado.
+- Em um dispositivo, um nó lê o valor de acessibilidade que a plataforma
+  informa. O Android descarta o valor de um nó não editável quando esse valor
+  repete o rótulo do nó.
+- Qualquer outro nó sem valor, como um título ou um link, nunca satisfaz
+  `toHaveValue`, negado ou não. A mensagem diz
+  `no value (not a form control)`.
+
+#### `toHaveAttribute`
+
+Espera que o atributo esteja presente; com `value`, que ele corresponda.
+
+```ts
+await expect(screen.getByRole('link', 'Help')).toHaveAttribute('target');
+await expect(screen.getByRole('link', 'Help')).toHaveAttribute('href', '/help');
+```
+
+#### `toHaveCount`
+
+Espera por uma contagem exata de correspondências.
+
+```ts
+await expect(screen.getByTestId('todo')).toHaveCount(3);
+```
+
+#### `toHaveAccessibleName`
+
+Espera por um nome acessível.
+
+```ts
+await expect(screen.getByRole('button', { name: /close/i })).toHaveAccessibleName('Close');
+```
+
+#### `toHaveRole`
+
+Espera que a única correspondência tenha o papel, comparado como string.
+
+```ts
+await expect(screen.getByTestId('save')).toHaveRole('button');
+await expect(screen.getByTestId('wifi')).not.toHaveRole('checkbox');
+```
+
+- `role` aceita o vocabulário que [`getByRole`](/reference/screen#getbyrole)
+  aceita. O alias `img` é lido como `image`. Em JavaScript, qualquer outra
+  string é comparada como foi escrita, e uma vazia é `INVALID_ARGUMENT`.
+- O matcher compara o papel que [`screen.tree()`](/reference/screen#screen-tree)
+  mostra, então a hierarquia de papéis não conta: um `switch` não é um
+  `checkbox`.
+- Na web, um host de edição (`contenteditable`) é lido como `textbox`
+  qualquer que seja a tag, embora `getByRole` o encontre pelo papel da tag.
+- Um nó que a árvore mostra sem papel, como um `<div>` de texto, faz o matcher
+  falhar, e a mensagem de falha diz `no role`.
+
+### Matchers de captura de tela
+
+`expect(screen)` e `expect(locator)` comparam com um PNG armazenado ao lado do
+arquivo de teste, em toda engine que captura pixels. O guia
+[Comparação visual](/visual-testing) mostra o fluxo de trabalho.
+
+| Matcher | Descrição |
+| --- | --- |
+| [`expect(screen).toHaveScreenshot`](#tohavescreenshot) | Compara a tela inteira |
+| [`expect(locator).toHaveScreenshot`](#tohavescreenshot) | Compara a única correspondência de um localizador |
+
+#### `toHaveScreenshot`
+
+Espera que a tela, ou a única correspondência de um localizador, fique igual
+à sua captura de tela armazenada: `name`, ou uma nomeada a partir do teste.
+
+```ts
+await expect(screen).toHaveScreenshot('home.png');
+await expect(screen.getByRole('navigation')).toHaveScreenshot();
+await expect(screen).toHaveScreenshot('feed.png', { mask: [screen.getByTestId('timestamp')], maxDiffPixels: 50 });
+```
+
+As duas formas aceitam as [Opções de captura de tela](#screenshot-options).
+
+| Propriedade | Valor |
+| --- | --- |
+| Armazenada em | `<test file>-snapshots/<name>-<target>-<os>.png`; `.png` é adicionado a um nome sem ele |
+| Sem nome | O caminho do título do teste, em minúsculas, e um contador: `checkout-pays-by-card-1` |
+| Ausente | Tirada de duas capturas de tela seguidas que são iguais dentro da tolerância, e então `ASSERTION_FAILED`. Escrita ao lado do teste; na CI sem `--update-snapshots`, apenas anexada aos resultados, em `snapshots/<path in the project>` |
+| Escrita antes na mesma execução | Sem `--update-snapshots`, e sempre para `.not`, nenhuma comparação passa contra uma captura de tela que a mesma execução escreveu (uma nova tentativa, uma repetição, outro teste que a nomeia): `ASSERTION_FAILED` até a próxima execução. Com `--update-snapshots`, um matcher positivo compara e pode escrevê-la de novo |
+| Diferente | Tentada novamente até uma corresponder ou até o tempo limite acabar; então `ASSERTION_FAILED` com as imagens `-expected`, `-actual` e `-diff` no passo |
+| `--update-snapshots`, `-u` | Uma captura de tela armazenada ausente ou diferente é escrita a partir de uma tela que fica parada, e o matcher passa |
+| `.not` | Passa assim que a tela difere; sem nada armazenado, é `ASSERTION_FAILED` |
+| Tolerância | Com `maxDiffPixels` e `maxDiffPixelRatio` definidos, o menor prevalece |
+
+| Lança | Quando |
+| --- | --- |
+| `INVALID_ARGUMENT` | Antes de a tela ser lida: um nome com separador de caminho, uma opção que o matcher não aceita (`fullPage`, `animations`, `clip` do Playwright), um valor fora da faixa, ou `expect` em uma tela restrita a um frame. Nesse caso, compare um localizador dentro do frame |
+| `ASSERTION_FAILED` | Uma captura de tela armazenada ausente, diferente ou da mesma execução, como na tabela acima |
+| `POLICY_DENIED` | A engine não consegue provar que todo campo seguro na tela está mascarado |
+
+#### Opções de captura de tela
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `threshold` | `number` | `0.2` |
+| `maxDiffPixels` | `number` | `0` |
+| `maxDiffPixelRatio` | `number` | `0` |
+| `mask` | `readonly Locator[]` | - |
+| `maskColor` | `string` | `#ff00ff` |
+| `timeout` | `number` | `config.assertionTimeout` |
+
+[`ScreenshotOptions`](#screenexpectation-and-screenshotoptions) descreve
+cada opção.
+
+### Matchers de browser
+
+Fornecidos por `@e2e-dev/web`; o tipo `BrowserExpectation` é exportado por
+esse pacote. Toda chamada de matcher é um passo de asserção `expect.<matcher>`
+registrado.
+
+| Matcher | Descrição |
+| --- | --- |
+| [`toHaveURL`](#tohaveurl) | Espera pela URL atual |
+| [`toHaveTitle`](#tohavetitle) | Espera pelo título atual |
+| [`toHaveClass`](#tohaveclass) | Espera pelo `class` de um alvo |
+
+Qualquer outra chave de opção é `INVALID_ARGUMENT`, como `ignoreCase` em
+`toHaveTitle`, que o Playwright também não aceita.
+
+#### `toHaveURL`
+
+Espera que a URL atual corresponda.
+
+```ts
+await expect(browser).toHaveURL('/dashboard');
+await expect(browser).toHaveURL(/\/orders\/\d+$/);
+```
+
+- Uma string relativa é resolvida em relação à URL base e corresponde
+  exatamente depois da normalização. Como no Playwright, `*` e `{` são
+  literais aqui; para usar um glob, use
+  [`browser.waitForURL`](/reference/web#waitforurl).
+- Uma `RegExp` testa a URL completa.
+- Qualquer outra coisa, como uma função predicado, é `INVALID_ARGUMENT`.
+- O matcher aceita o `ignoreCase` do Playwright, como os matchers de
+  localizador ([Correspondência de texto](#text-matching)).
+
+#### `toHaveTitle`
+
+Espera que o título atual corresponda.
+
+```ts
+await expect(browser).toHaveTitle(/Dashboard/);
+```
+
+#### `toHaveClass`
+
+Espera que o atributo `class` do alvo corresponda: uma string é a lista de
+classes normalizada inteira, e uma `RegExp` é testada contra essa lista.
+
+```ts
+await expect(browser).toHaveClass(browser.locator('.card'), 'card active');
+```
+
+- O matcher também faz polling pelo nó: um alvo que ainda não corresponde a
+  nada é mais um ciclo de polling, não uma falha, até o tempo limite da
+  asserção acabar.
+- Um alvo ambíguo mesmo assim falha na hora com `LOCATOR_AMBIGUOUS`.
+- O matcher lê o atributo `class`, então `''` corresponde a `class=""` e não a
+  um elemento sem nenhum atributo `class`. O `toHaveClass('')` do Playwright
+  aceita os dois.
+
+### Matchers de valor
+
+`expect(value)` roda de forma síncrona, sem tentar novamente. Para um valor que
+ainda pode mudar, use [Fazer polling de um valor](#polling-a-value).
+
+| Matcher | Descrição |
+| --- | --- |
+| [`toBe`](#tobe) | Compara com `Object.is` |
+| [`toEqual`](#toequal) | Igualdade estrutural recursiva |
+| [`toMatchObject`](#tomatchobject) | Correspondência recursiva de subconjunto |
+| [`toBeTruthy`, `toBeFalsy`](#tobetruthy-and-tobefalsy) | Valor truthy ou falsy |
+| [`toBeNull`, `toBeUndefined`, `toBeDefined`](#tobenull-tobeundefined-and-tobedefined) | `null`, `undefined` ou definido |
+| [`toHaveLength`](#tohavelength) | `length` igual a `expected` |
+| [`toHaveProperty`](#tohaveproperty) | Propriedade em um caminho |
+| [`toContain`](#tocontain) | Contenção em string ou coleção |
+| [`toMatch`](#tomatch) | Correspondência com string ou `RegExp` |
+| [`toBeGreaterThan` e outros](#numeric-comparisons) | Limite numérico respeitado |
+| [`toBeCloseTo`](#tobecloseto) | Dentro de `10 ** -digits / 2` |
+| [`toMatchSchema`](#matching-a-schema) | Validação com Standard Schema |
+| [`toBeOK`](#tobeok) | Status da resposta é 2xx |
+
+Um matcher que não consegue avaliar o valor falha com `ASSERTION_FAILED`, como
+uma divergência. Exemplos são `toContain` em um número, ou `toHaveLength` em um
+valor sem `length` numérico. Assim, sob `expect.poll`, um valor que ainda não
+tomou a forma final é mais uma amostra que falha.
+
+#### `toBe`
+
+Compara com `Object.is`.
+
+```ts
+expect(status).toBe('paid');
+```
+
+#### `toEqual`
+
+Faz uma comparação de igualdade estrutural recursiva, como a do Jest.
+
+```ts
+expect(payload).toEqual({ ok: true, items: [{ sku: 'a' }] });
+```
+
+- Primitivos são comparados com `Object.is`, então `NaN` é igual a `NaN` e `0`
+  não é igual a `-0`.
+- Arrays e objetos simples são comparados pelo conteúdo, `Date` pelo instante,
+  `RegExp` pelo padrão e pelas flags, `Map` e `Set` pelas entradas.
+- Uma propriedade cujo valor é `undefined` é tratada como ausente, e um array
+  esparso é igual a um array que contém `undefined`.
+- Tipos de classe não são comparados: uma instância de classe é igual a um
+  objeto simples com as mesmas propriedades. Não existe `toStrictEqual`; veja
+  [Não incluídos](#not-included).
+
+#### `toMatchObject`
+
+Exige que toda propriedade de `expected` corresponda recursivamente.
+O matcher retorna `void`. Guarde o valor original se você precisar ler
+propriedades depois da verificação.
+
+```ts
+expect(order).toMatchObject({ customer: { name: 'Ada' }, lines: [{ sku: 'a' }, { sku: 'b' }] });
+```
+
+- Propriedades que `expected` não nomeia são ignoradas.
+- Um array em `expected` corresponde a um array do mesmo tamanho, elemento por
+  elemento, cada elemento de novo como subconjunto.
+- Os dois lados precisam ser objetos; um primitivo em qualquer lado é recusado.
+
+#### `toBeTruthy` e `toBeFalsy`
+
+Exigem um valor truthy ou falsy.
+
+```ts
+expect(created).toBeTruthy();
+```
+
+#### `toBeNull`, `toBeUndefined` e `toBeDefined`
+
+`toBeNull` exige `null` e `toBeUndefined` exige `undefined`.
+`toBeDefined` exige qualquer valor exceto `undefined`; `null` passa.
+
+```ts
+expect(row).toBeDefined();
+```
+
+#### `toHaveLength`
+
+Exige uma propriedade `length` igual a `expected`: uma string, um array ou
+qualquer coisa semelhante a um array.
+
+```ts
+expect(items).toHaveLength(3);
+```
+
+#### `toHaveProperty`
+
+Exige que a propriedade em `path` exista; com `expected`, que ela seja igual a
+esse valor pelas regras de `toEqual`.
+
+```ts
+expect(order).toHaveProperty('customer.email', 'ada@example.test');
+expect(order).toHaveProperty(['lines', 0, 'sku'], 'a');
+```
+
+- `path` é um caminho com pontos (`'user.address.city'`) ou um array de chaves
+  (`['user', 'address', 'city']`). Use a forma de array quando uma chave
+  contém um ponto, ou para indexar um array por número.
+- Propriedades herdadas contam, e uma propriedade que contém `undefined` existe.
+- Uma string, um número ou um booleano no caminho é lido pelo objeto wrapper
+  correspondente, como no Jest, então `toHaveProperty('label.length', 3)` e
+  `toHaveProperty(['label', 0], 'a')` alcançam o conteúdo de uma string.
+- `null` e `undefined` não têm propriedades.
+
+#### `toContain`
+
+Exige contenção em string ou coleção.
+
+```ts
+expect(total).toContain('$');
+expect(rows).toContain(expect.objectContaining({ status: 'paid' }));
+```
+
+- Em uma string, `expected` precisa ser uma string, e a verificação é de
+  substring. Um matcher assimétrico é recusado nesse caso:
+  `expect('abc').toContain(expect.stringContaining('a'))` falha.
+- Em uma coleção, um elemento precisa ser igual a `expected`. Essa forma aceita
+  [matchers assimétricos](#asymmetric-matchers).
+
+#### `toMatch`
+
+Exige correspondência com uma string ou `RegExp`.
+
+```ts
+expect(id).toMatch(/^usr_/);
+```
+
+Um padrão que não é string nem `RegExp` é `INVALID_ARGUMENT`.
+
+#### Comparações numéricas
+
+`toBeGreaterThan` e `toBeLessThan` exigem um limite numérico;
+`toBeGreaterThanOrEqual` e `toBeLessThanOrEqual` exigem esse limite inclusivo.
+
+```ts
+expect(count).toBeGreaterThan(1);
+expect(count).toBeLessThanOrEqual(10);
+```
+
+#### `toBeCloseTo`
+
+Exige um número dentro de `10 ** -digits / 2` de `expected`.
+
+```ts
+expect(totals.lineTotal).toBeCloseTo(60); // digits default: 2
+```
+
+`toBeCloseTo(60)` aceita 59,996 e rejeita 59,99. Valores infinitos só passam
+quando são o mesmo infinito.
+
+#### Correspondência com um schema
+
+`toMatchSchema` valida um valor contra um
+[Standard Schema](https://standardschema.dev): um schema Zod, Valibot ou
+ArkType, ou de qualquer biblioteca que implemente a especificação. Passe o
+schema que o seu app já usa para fazer o parse da API, e o teste falha quando
+a API diverge desse schema. O matcher retorna a saída do schema, tipada, então
+o resto do teste lê propriedades sem cast.
+
+```ts
+import { z } from 'zod';
+
+const User = z.object({ id: z.number(), name: z.string(), email: z.email() });
+
+const users = expect(await response.json()).toMatchSchema(z.array(User));
+expect(users.map((user) => user.name)).toContain('Ada');
+```
+
+- Uma falha lista cada problema pelo caminho (`1.email: Invalid email address`).
+- A saída é a do schema, então valores padrão e transformações se aplicam.
+- Um matcher retorna antes que algo possa aguardá-lo, então um schema que
+  valida de forma assíncrona (um refinamento assíncrono) é `INVALID_ARGUMENT`.
+- Negado, o matcher passa quando o valor não corresponde e não retorna nada.
+
+#### `toBeOK`
+
+Exige uma [`WebResponse`](/reference/request#webresponse) cujo status seja
+2xx, de 200 a 299. O matcher aceita o que `request`,
+`browser.waitForResponse` e `route.fetch()` retornam.
+
+```ts
+const created = await request.post('/api/orders', { json: { sku: 'A1' } });
+expect(created).toBeOK();
+// ASSERTION_FAILED: expected a 2xx status, got 404 from https://shop.test/api/orders
+```
+
+- A falha informa o status, além da origem e do caminho de `response.url`, a
+  URL da resposta verificada. Para `request`, essa é a URL depois dos
+  redirecionamentos. Os segmentos do caminho aparecem; as credenciais, a query
+  e o fragmento não. Uma URL relativa, uma URL que não pode ser interpretada ou
+  uma que não é `http` nem `https` fica de fora. O corpo nunca é lido.
+- Um número de status e outros tipos que não são `WebResponse` não compilam, e
+  `WebResponse | undefined` sob `strictNullChecks` também não. Um valor tipado
+  como `any` compila. Em um helper genérico, tipe o parâmetro como
+  `WebResponse`: `R extends WebResponse` não compila.
+- Em tempo de execução, um objeto com um `status` numérico e uma `url` do tipo string
+  é verificado como resposta. Um valor com um desses campos ausente ou de outro
+  tipo falha como `ASSERTION_FAILED`, inclusive negado. Um getter de `status`
+  ou `url` que lança um erro propaga esse erro.
+- Para esperar por um status 2xx, faça polling da chamada:
+  `await expect.poll(() => request.get('/api/jobs/7')).toBeOK()`.
+
+#### Mensagens de falha
+
+Passe um segundo argumento para descrever a verificação na mensagem de falha:
+
+```ts
+expect(created, 'the company exists through the API').toBeTruthy();
+// ASSERTION_FAILED: the company exists through the API: expected undefined to be truthy
+```
+
+Uma expectativa de [localizador](#locator-matchers) ou de `screen` aceita uma
+mensagem da mesma forma. Uma expectativa de `browser` não aceita nenhuma; a
+falha dessa expectativa informa o matcher.
+
+#### Não incluídos
+
+Os matchers de runners de teste unitário (`toThrow`, `toBeInstanceOf`,
+`toBeNaN`, `toStrictEqual`, `resolves`, `rejects`, `expect.extend`) não fazem
+parte de `expect`. Um teste end-to-end verifica o que o app mostra e o que a
+API do app retorna; os matchers de valor cobrem isso, veja [API](/api-testing).
+Verificações no nível do código pertencem ao runner de testes unitários.
+
+### Matchers assimétricos
+
+Um matcher assimétrico ocupa o lugar de um valor dentro de `toEqual`, de
+`toMatchObject`, da forma de coleção de `toContain` e do valor de
+`toHaveProperty`. Onde a comparação testaria a igualdade, ela consulta o
+matcher em vez disso. São os matchers do Jest, com as regras do Jest.
+
+| Matcher | Corresponde a |
+| --- | --- |
+| `expect.any(Class)` | Uma instância da classe. Para `String`, `Number`, `Boolean`, `BigInt`, `Symbol` e `Function`, também o primitivo; para `Object`, qualquer coisa que `typeof` chama de objeto, incluindo `null` |
+| `expect.anything()` | Qualquer coisa, menos `null` e `undefined` |
+| `expect.objectContaining(sample)` | Um objeto cujas propriedades incluem todas as propriedades de `sample`, cada uma comparada pelas regras de `toEqual` |
+| `expect.arrayContaining(sample)` | Um array que contém todos os elementos de `sample`, em qualquer ordem, cada um comparado pelas regras de `toEqual` |
+| `expect.stringContaining(text)` | Uma string que contém `text` como substring |
+| `expect.stringMatching(text \| RegExp)` | Uma string que passa no teste da RegExp; uma amostra de texto é compilada em uma RegExp, então `'a.b'` corresponde a `'axb'` |
+
+```ts
+expect(created).toEqual({
+  id: expect.stringMatching(/^usr_/),
+  createdAt: expect.any(String),
+  roles: expect.arrayContaining(['member']),
+  profile: expect.objectContaining({ name: 'Ada' }),
+});
+expect(rows).toContain(expect.objectContaining({ status: 'paid' }));
+expect(response).toHaveProperty('body.total', expect.any(Number));
+```
+
+- Em uma mensagem de falha, um matcher aparece como a descrição dele:
+  `Any<Number>`, `ObjectContaining {"name":"Ada"}`.
+- Os matchers se aninham: uma amostra de `objectContaining` pode conter um
+  `expect.any`.
+- A forma de string de `toContain` recusa esses matchers; veja
+  [`toContain`](#tocontain).
+
+### Asserções suaves
+
+`expect.soft(actual, message?)` aceita o que `expect(actual, message?)` aceita
+e retorna os mesmos matchers. Um matcher suave que falha não lança erro: a
+falha fica guardada na tentativa em andamento e o corpo continua.
+
+```ts
+test('checkout summary', async ({ agent, screen }) => {
+  await agent.act('add the "Pro" plan to the cart and open the summary');
+  expect.soft(await screen.getByTestId('subtotal').textContent()).toBe('$40.00');
+  expect.soft(await screen.getByTestId('tax').textContent()).toBe('$8.00');
+  await expect.soft(screen.getByRole('button', 'Pay')).toBeEnabled();
+  await expect(screen.getByTestId('total')).toHaveText('$48.00');
+});
+```
+
+```text
+ASSERTION_FAILED: 2 soft assertions failed
+1. expected "$41.00" to be "$40.00"
+2. expect.toBeEnabled failed
+   locator: getByRole('button', 'Pay')
+   expected: enabled
+   observed: states: disabled (match count 1)
+```
+
+- Depois que o corpo termina, e antes de `afterEach`, a tentativa falha com
+  um único `ASSERTION_FAILED` que lista todas as falhas guardadas, em ordem. A
+  linha de origem do erro é a do primeiro matcher suave que falhou.
+- Um matcher suave de localizador ou de `browser` continua sendo um passo
+  `expect.<matcher>` registrado, marcado como falho, então o relatório mostra
+  em que ponto do fluxo ele aconteceu.
+- Assim como um matcher de valor comum, um matcher de valor suave não é um
+  passo; a falha do matcher suave aparece nos registros de erro da tentativa.
+- Quando o corpo lança um erro por conta própria, ou excede o tempo limite,
+  esse erro continua sendo o veredito da tentativa, e as falhas suaves são
+  registradas ao lado dele em `secondaryErrors`.
+- Um corpo que pula o próprio teste com `test.skip(...)` depois de uma falha
+  suave falha mesmo assim: as falhas suaves são o erro da tentativa, e o
+  motivo do pulo fica guardado no `skip` da tentativa.
+- Um `toMatchSchema` suave retorna a saída do schema quando o valor
+  corresponde e `undefined` depois de uma falha guardada, e o tipo dele diz
+  isso.
+
+<Note>
+Fora do corpo de um teste não há onde guardar uma falha, então `expect.soft`
+lança o erro na hora, como `expect`: em um script independente e em um hook
+`afterEach`, que roda depois que as falhas suaves já foram consolidadas. Não
+existe `expect.soft.poll`; `expect.poll` tem o próprio tempo limite para falhar.
+</Note>
+
+### Fazer polling de um valor
+
+`expect.poll(read)` lê um valor de novo até um matcher passar. Use-o para
+esperar por uma resposta de API ou por dados salvos depois de uma ação no app.
+
+```ts
+await agent.act('create a test named "AI checkout regression" described as {description}', {
+  params: { description },
+});
+await expect
+  .poll(() => getTest(workspace).then((row) => row?.title), { timeout: 15_000 })
+  .toBe('AI checkout regression');
+await expect.poll(async () => (await listTests(workspace)).length).toBeGreaterThan(1);
+await expect.poll(() => readStatus(), { message: 'the batch never finished' }).not.toBe('running');
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `timeout` | `number` | `config.assertionTimeout` durante uma tentativa ou um hook, 5000 ms fora dos dois |
+| `interval` (obsoleto) | `number` | - |
+| `intervals` | `readonly number[]` | `[100, 250, 500, 1000]` |
+| `message` | `string` | - |
+
+- `timeout` é o prazo em milissegundos, um número finito igual a 0 ou maior.
+  Ele é limitado pelo prazo do teste no corpo, ou pelo `cleanupTimeout` do hook
+  durante `afterEach`. Em `beforeAll`, `afterAll` e na desmontagem de fixtures
+  de worker, ele é limitado pelo prazo do hook. `0` faz polling até esse
+  limite, então, fora de um teste, hook ou sessão hospedada, é
+  `INVALID_CONFIG`. O tempo limite máximo é 2147483647 ms.
+- `interval` é a pausa entre leituras em milissegundos, um número finito
+  maior que 0. Ele está obsoleto: passe `intervals: [<ms>]`. Ele não será
+  removido antes de 1º de abril de 2027.
+- `intervals` é uma lista não vazia de pausas em milissegundos. Cada entrada
+  precisa ser um inteiro seguro positivo. As pausas são usadas em ordem. A
+  última pausa se repete.
+- `message` é uma linha extra no erro de tempo limite, depois da linha do
+  matcher.
+
+Todos os matchers de valor estão disponíveis e retornam uma promise.
+
+- Cada amostra chama `read` e roda o matcher. Uma falha do matcher ou um
+  `read` que lança um erro conta como uma amostra com falha, a menos que
+  `read` chame `test.skip()` ou `test.fixme()`; um `read` que trava é cortado
+  no prazo. Qualquer uma dessas duas chamadas encerra o polling e marca o
+  teste como pulado.
+- `toMatchSchema` resolve para a saída do schema na leitura que passou.
+- Quando a tentativa é cancelada, o loop é encerrado com `CANCELLED`. No
+  prazo da tentativa, o teste ou a sessão hospedada falha com `TEST_TIMEOUT`.
+  Se uma amostra falhou, a última falha é registrada em `secondaryErrors`
+  para o corpo de um teste ou uma sessão hospedada. Para um hook de suíte ou
+  a desmontagem de uma fixture de worker, a última falha entra na mensagem
+  de tempo limite.
+  Um `read` em andamento é abandonado, não interrompido: o trabalho que ele
+  iniciou pode continuar, exceto que os passos que ainda rodam são cancelados e
+  as chamadas de passo posteriores são recusadas.
+- `expect.poll` não é registrado como passo no relatório; um tempo limite
+  aparece só como a falha do teste.
+
+No prazo, ele lança `ASSERTION_FAILED` com o nome do matcher, depois
+`message`, quando houver, depois a última amostra: a última falha do matcher,
+o último erro de `read` ou `no read completed`.
+
+```text
+expect.poll(...).not.toBe(...) timed out after 5000 ms
+the batch never finished
+last: expected "running" not to be "running"
+```
+
+| Lança | Quando |
+| --- | --- |
+| `ASSERTION_FAILED` | O prazo terminou sem nenhuma amostra que passasse |
+| `INVALID_CONFIG` | Opções que não são um objeto simples, uma opção desconhecida, `timeout`, `interval` ou `intervals` fora da faixa válida, ou `interval` e `intervals` definidos juntos, antes da primeira leitura |
+| `CANCELLED` | A tentativa foi cancelada ou excedeu o tempo limite |
+| `STEP_NOT_AWAITED` | A fase que iniciou o polling retornou enquanto ele ainda rodava |
+| `HOOK_FAILED` | Um hook `beforeAll` ou `afterAll` retornou enquanto o polling dele ainda rodava |
+
+<Note>
+Aguarde todo polling. Um polling pertence à fase que o iniciou: o corpo do
+teste (com as fixtures e os hooks `beforeEach` dele), um hook `afterEach` ou
+uma desmontagem de fixture, ou um hook `beforeAll` ou `afterAll`. Quando essa
+fase retorna enquanto o polling ainda roda, o polling é cancelado e a fase
+falha com `STEP_NOT_AWAITED` na linha da chamada, quer o polling fosse passar
+ou não. Um corpo que lançou um erro mantém o próprio erro e registra este em
+`secondaryErrors`, e um hook de suíte informa esse erro como `HOOK_FAILED`.
+</Note>
+
+Um polling nunca faz um teste posterior falhar: um polling iniciado por
+trabalho que a fase dele deixou rodando, como um corpo que passou do tempo
+limite, é cancelado antes da primeira leitura.
+
+### Tentar um bloco novamente
+
+`expect(fn).toPass()` tenta um bloco novamente até ele deixar de lançar
+erros. Use-o quando várias asserções precisam passar na mesma rodada. Para um
+único valor que muda, use [`expect.poll`](#polling-a-value).
+
+```ts
+await expect(async () => {
+  const response = await fetch(`${app.baseUrl}/api/orders/42`);
+  expect(response.status).toBe(200);
+  await expect(screen.getByRole('status')).toHaveText('Ready', { timeout: 200 });
+}, 'the order is ready').toPass({ timeout: 5_000 });
+```
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `timeout` | `number` | [`config.toPass.timeout`](/reference/config#topass), ou `0` |
+| `intervals` | `readonly number[]` | [`config.toPass.intervals`](/reference/config#topass), ou `[100, 250, 500, 1000]` |
+
+- `timeout` é o prazo em milissegundos, de 0 a 2147483647. Com `0` não há
+  tempo limite, e o bloco é tentado novamente até o prazo do teste ou do hook.
+  Fora de um teste ou hook, um `timeout` positivo é obrigatório.
+- `intervals` é a lista de pausas entre as rodadas, em milissegundos. Cada
+  entrada precisa ser um inteiro seguro positivo. A última entrada se repete.
+
+Cada rodada chama o bloco e o aguarda.
+
+- Uma rodada falha quando o bloco lança um erro ou a promise dele rejeita,
+  exceto quando o bloco chama `test.skip()` ou `test.fixme()`. Qualquer uma
+  dessas duas chamadas encerra as novas tentativas e marca o teste como
+  pulado. Se a rodada falha, o bloco é chamado de novo depois da próxima
+  pausa.
+- `.not.toPass()` passa na primeira rodada que falha. Ele falha no prazo
+  quando todas as rodadas passaram.
+- `expect.soft(fn).toPass()` guarda um tempo limite esgotado como falha
+  suave, e o corpo do teste continua.
+- `expect(fn, message)` acrescenta `message` ao erro de tempo limite.
+- Aguarde toda chamada de `toPass`. As regras são as mesmas de
+  [um polling](#polling-a-value).
+
+Dentro do bloco:
+
+- Um matcher de localizador espera todo o tempo limite de asserção dele em
+  cada rodada. Dê a ele um `timeout` curto para que caibam mais rodadas antes
+  do prazo.
+- `expect.soft` nunca faz uma rodada falhar, porque as falhas dele ficam
+  guardadas para o fim do corpo do teste. Use `expect`.
+- Os passos de todas as rodadas aparecem no relatório, então um teste que
+  passou pode mostrar passos com falha das primeiras rodadas.
+- Quando uma rodada falha ou é cortada no prazo, os passos que ainda rodam
+  nela são cancelados. As chamadas de passo posteriores dessa rodada são
+  recusadas.
+
+No prazo, ele lança `ASSERTION_FAILED` com o nome da chamada, depois
+`message`, quando houver, depois o último erro.
+
+```text
+expect(...).toPass() timed out after 5000 ms
+the order is ready
+last: expected 202 to be 200
+```
+
+A última linha é `last: no try completed` quando nenhuma rodada terminou, e
+`last: the block passed` para `.not.toPass()`.
+
+Sem `timeout`, um bloco que nunca passa roda até o teste exceder o tempo
+limite. O erro passa a ser `TEST_TIMEOUT` ou, em um hook, o erro de tempo
+limite do hook. Se uma rodada falhou, o último erro do bloco é registrado em
+`secondaryErrors` para o corpo de um teste ou uma sessão hospedada. Para um
+hook de suíte ou a desmontagem de uma fixture de worker, o último erro entra
+na mensagem de tempo limite.
+
+| Lança | Quando |
+| --- | --- |
+| `ASSERTION_FAILED` | O prazo terminou sem nenhuma rodada que passasse |
+| `INVALID_ARGUMENT` | O valor passado para `expect` não é uma função |
+| `INVALID_CONFIG` | Opções que não são um objeto simples, uma opção desconhecida, `timeout` ou `intervals` fora da faixa válida, ou nenhum `timeout` positivo fora de um teste ou hook, antes da primeira rodada |
+| `CANCELLED` | A tentativa foi cancelada ou excedeu o tempo limite |
+| `STEP_NOT_AWAITED` | A fase que iniciou a chamada retornou enquanto a chamada ainda rodava |
+| `HOOK_FAILED` | Um hook `beforeAll` ou `afterAll` retornou enquanto a chamada dele ainda rodava |
+
+## Comportamento
+
+Regras que valem para todos os grupos de matchers.
+
+### Tempos limite e falhas
+
+| Propriedade | Valor |
+| --- | --- |
+| Tempo limite padrão | [`config.assertionTimeout`](/reference/config#assertiontimeout) |
+| Substituição | `{ timeout }` em milissegundos, em todo matcher de localizador e de `browser` |
+| Leituras | Em 0, 20 e 50 ms, depois a cada 100 ms desde o início |
+| Opção desconhecida | `INVALID_ARGUMENT`; veja [Validação de opções](#option-validation) |
+| Código de falha | `ASSERTION_FAILED`, código de saída 1 |
+
+### Negação
+
+`.not` inverte um matcher. Um matcher negado só passa depois que a negação
+se manteve:
+
+- Ele passa depois de 1000 ms seguidos em que a negação é verdadeira.
+- Quando `{ timeout }` é menor que 1000 ms, ele passa no prazo se a
+  negação se manteve durante todo o orçamento.
+- A janela conta a partir do momento em que começou a primeira leitura que
+  viu a negação, então uma leitura lenta conta para ela.
+
+### Rigor
+
+- Um matcher de localizador positivo exige exatamente uma correspondência.
+  As exceções são `toHaveCount` e a forma de lista de `toHaveText` e
+  `toContainText`.
+- Com zero correspondências, o polling continua até o tempo limite, exceto nos
+  matchers abaixo que as aceitam.
+- Várias correspondências falham na hora com `LOCATOR_AMBIGUOUS`.
+- `toBeHidden`, `toBeVisible({ visible: false })`,
+  `toBeAttached({ attached: false })`, a visibilidade negada,
+  `toBeAttached` negado e `toBeInViewport` negado aceitam zero correspondências.
+- Para esses, para `toHaveCount` e as formas de lista, e para
+  `waitFor({ state: 'detached' })` e `'hidden'`, um localizador sob um frame
+  que não está no documento conta como zero correspondências, em vez de uma
+  espera pelo frame. `toHaveCount(0)` passa depois que um iframe fecha.
+
+### Correspondência de texto
+
+- A comparação de texto é normalizada: os espaços em branco no início e no
+  fim são removidos, e cada sequência de espaços em branco vira um só espaço.
+- `toHaveText` e `toContainText` leem o mesmo texto renderizado que
+  [`textContent()`](/reference/screen#locator-reads), `innerText` na web.
+- Uma string `TextMatch` corresponde exatamente. Uma `RegExp` usa o próprio
+  padrão e as próprias flags. Qualquer outra coisa, como uma função predicado,
+  é `INVALID_ARGUMENT`.
+- `ignoreCase: true` em `toHaveText`, `toContainText`, `toHaveAccessibleName`
+  e na forma com valor de `toHaveAttribute` compara uma string sem
+  diferenciar maiúsculas de minúsculas e acrescenta a flag `i` a uma `RegExp`;
+  `ignoreCase: false` remove essa flag.
+- `toHaveAttribute(name, value)` compara como `toHaveText`, depois da
+  normalização.
+- [`toHaveValue`](#tohavevalue) é a exceção: ele compara um valor tal como
+  está.
+
+### Campos seguros
+
+Um campo seguro, como um campo de senha, nunca é julgado: a engine retém o
+valor e o texto dele.
+
+| Matcher | Em um campo seguro |
+| --- | --- |
+| `toHaveValue`, `toHaveText`, `toContainText`, `toBeEmpty` | `POLICY_DENIED`, como `inputValue()` e `textContent()`, também quando negado ou na forma de lista |
+| `toHaveAttribute` | `POLICY_DENIED`, como `getAttribute()`, para qualquer nome de atributo e também quando negado |
+| `toHaveAccessibleName`, `toHaveRole` e os matchers de estado | Respondem normalmente |
+
+Ler o valor retido como `''` faria um campo de senha preenchido passar como
+vazio, e ler o atributo `value` retido como ausente faria
+`not.toHaveAttribute('value')` passar em um campo de senha que tem esse
+atributo. Verifique o resultado do preenchimento, não o campo.
+
+### Validação de opções
+
+- Um matcher recusa, com `INVALID_ARGUMENT` e antes de ler a tela, qualquer
+  chave de opção que não aceita e uma flag que não é booleana.
+- Os tipos pegam esses casos em TypeScript, mas `e2e run` não verifica tipos,
+  então a verificação roda também para um teste em JavaScript ou um objeto de
+  opções calculado.
+- Opções do Playwright que o e2e não implementa, como `indeterminate` em
+  `toBeChecked` ou `useInnerText` em `toHaveText`, falham dessa forma em vez
+  de passar com o padrão.
+- As opções booleanas que o Playwright dá a esses matchers (`checked`,
+  `enabled`, `visible`, `attached`) funcionam da mesma forma aqui.
+
+## Tipos
+
+### `ExpectCall`, `SoftExpectCall` e `Expect`
+
+```ts
+/** `T`, or `never` when `T` is `any`, so an `any` argument skips an overload. */
+type NotAny<T> = 0 extends 1 & T ? never : T;
+
+/** The `expect(actual)` call: a locator, `screen`, an engine fixture, or a value, told apart by the argument. */
+export interface ExpectCall {
+  <L extends Locator>(actual: NotAny<L>, message?: string): AsyncExpectation;
+  <S extends Screen>(actual: NotAny<S>, message?: string): ScreenExpectation;
+  <E extends object>(actual: Expectable<E>): E;
+  <F extends () => unknown>(actual: NotAny<F>, message?: string): PassExpectation<F>;
+  <T>(actual: T, message?: string): ValueExpectation<T>;
+}
+
+/** The `expect.soft(actual)` call: `expect(actual)` whose failures are kept instead of thrown. */
+export interface SoftExpectCall {
+  <L extends Locator>(actual: NotAny<L>, message?: string): AsyncExpectation;
+  <S extends Screen>(actual: NotAny<S>, message?: string): ScreenExpectation;
+  <E extends object>(actual: Expectable<E>): E;
+  <F extends () => unknown>(actual: NotAny<F>, message?: string): PassExpectation<F, SoftValueExpectation<F>>;
+  <T>(actual: T, message?: string): SoftValueExpectation<T>;
+}
+
+/** The `expect` entry: the call, `expect.poll`, `expect.soft`, and the asymmetric matchers. */
+export interface Expect extends ExpectCall {
+  /** Re-reads a value until the chosen matcher holds or `timeout` passes. */
+  poll<T>(read: () => T | Promise<T>, options?: PollOptions): PollExpectation<T>;
+  /** The same matchers, a failure kept on the attempt instead of thrown; the attempt fails once the body has settled. */
+  readonly soft: SoftExpectCall;
+  any(sample: Class | typeof BigInt | typeof Symbol): AsymmetricMatcher;
+  anything(): AsymmetricMatcher;
+  objectContaining(sample: object): AsymmetricMatcher;
+  arrayContaining(sample: readonly unknown[]): AsymmetricMatcher;
+  stringContaining(sample: string): AsymmetricMatcher;
+  stringMatching(sample: string | RegExp): AsymmetricMatcher;
+}
+```
+
+### `AsyncExpectation` e `TextMatcherOptions`
+
+```ts
+/**
+ * The locator matchers. An option a matcher does not take, or a flag that is
+ * not a boolean, is `INVALID_ARGUMENT` before the first read.
+ */
+export interface AsyncExpectation {
+  /** Inverts the matcher. A negated matcher passes after 1000 ms of continuous truth. */
+  readonly not: AsyncExpectation;
+  /** Waits for visibility; `visible: false` waits for hidden or absent state, as `toBeHidden`. */
+  toBeVisible(options?: { visible?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for hidden or absent state. */
+  toBeHidden(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Waits for part of the match to be inside the viewport, after clipping by
+   * scrolling and overflow ancestors; `ratio` (0 to 1) sets the share of its
+   * box that must be. No match is outside the viewport. It never scrolls.
+   */
+  toBeInViewport(options?: { ratio?: number; timeout?: number }): Promise<void>;
+  /** Waits for one match to exist, visible or not; `attached: false` waits for none. */
+  toBeAttached(options?: { attached?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for enabled state; `enabled: false` waits for disabled state. */
+  toBeEnabled(options?: { enabled?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for disabled state. */
+  toBeDisabled(options?: { timeout?: number }): Promise<void>;
+  /** Waits for an enabled control that is not read-only; `editable: false` waits for a disabled or read-only one. A node with no read-only state, a button included, fails either way. */
+  toBeEditable(options?: { editable?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for checked state; `checked: false` waits for unchecked state. */
+  toBeChecked(options?: { checked?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for selected state. */
+  toBeSelected(options?: { timeout?: number }): Promise<void>;
+  /** Waits for expanded state. */
+  toBeExpanded(options?: { timeout?: number }): Promise<void>;
+  /** Waits for focused state. */
+  toBeFocused(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Waits for a node the engine reports empty: on the web an input or
+   * textarea with no value, or any other element whose text content trims to
+   * nothing; on a device a text field with no value, or a node with no text
+   * or value in its subtree. Denied on a secure field.
+   */
+  toBeEmpty(options?: { timeout?: number }): Promise<void>;
+  /** Waits for exact normalized text; a list waits for exactly that many matches, each with its entry's text, in order. */
+  toHaveText(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
+  toHaveText(expected: readonly TextMatch[], options?: TextMatcherOptions): Promise<void>;
+  /** Waits for contained normalized text; a list waits for each entry to be contained by a distinct match, in order, extra matches allowed. */
+  toContainText(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
+  toContainText(expected: readonly TextMatch[], options?: TextMatcherOptions): Promise<void>;
+  /** Waits for a control's value, compared as it is. */
+  toHaveValue(expected: TextMatch, options?: { timeout?: number }): Promise<void>;
+  /** Waits for the attribute to be present; with `value`, for it to match. */
+  toHaveAttribute(name: string, options?: { timeout?: number }): Promise<void>;
+  toHaveAttribute(name: string, value: TextMatch, options?: TextMatcherOptions): Promise<void>;
+  /** Waits for an exact match count. */
+  toHaveCount(expected: number, options?: { timeout?: number }): Promise<void>;
+  /** Waits for an accessible name. */
+  toHaveAccessibleName(expected: TextMatch, options?: TextMatcherOptions): Promise<void>;
+  /** Waits for the role; `img` is read as `image`, as `getByRole` reads it. */
+  toHaveRole(role: Role | RoleAlias, options?: { timeout?: number }): Promise<void>;
+  /** Waits for the one match to look like its stored screenshot; see [Screenshot matchers](#screenshot-matchers). */
+  toHaveScreenshot(name: string, options?: ScreenshotOptions): Promise<void>;
+  toHaveScreenshot(options?: ScreenshotOptions): Promise<void>;
+}
+
+/** Options of a locator matcher that compares text. */
+export interface TextMatcherOptions {
+  /** Compares a string case-insensitively; on a RegExp, `true` adds the `i` flag and `false` removes it. */
+  ignoreCase?: boolean;
+  /** Assertion budget in milliseconds. */
+  timeout?: number;
+}
+```
+
+### `ScreenExpectation` e `ScreenshotOptions`
+
+```ts
+export interface ScreenExpectation {
+  /** Inverts the matcher: waits for the screen to differ from its stored screenshot. */
+  readonly not: ScreenExpectation;
+  /** Waits for the screen to look like its stored screenshot, `name` or one named after the test. */
+  toHaveScreenshot(name: string, options?: ScreenshotOptions): Promise<void>;
+  toHaveScreenshot(options?: ScreenshotOptions): Promise<void>;
+}
+
+export interface ScreenshotOptions {
+  /** How far one pixel's color may drift and still count as the same, from 0 (exact) to 1. Default `0.2`. */
+  threshold?: number;
+  /** How many pixels may differ. Default `0`. */
+  maxDiffPixels?: number;
+  /** What share of the pixels may differ, from 0 to 1. Default `0`. */
+  maxDiffPixelRatio?: number;
+  /** Locators painted over before comparing, for content that changes from run to run. */
+  mask?: readonly Locator[];
+  /** Color of the `mask` boxes, `#rrggbb`. Default `#ff00ff`. */
+  maskColor?: string;
+  /** Assertion budget in milliseconds. */
+  timeout?: number;
+}
+```
+
+### `BrowserExpectation`
+
+```ts
+export interface BrowserExpectation {
+  /** Inverts the matcher. */
+  readonly not: BrowserExpectation;
+  /** Waits for the current URL to match; `ignoreCase` compares a string case-insensitively and adds the `i` flag to a RegExp, `false` removes it. */
+  toHaveURL(expected: string | RegExp, options?: { ignoreCase?: boolean; timeout?: number }): Promise<void>;
+  /** Waits for the current title to match. */
+  toHaveTitle(expected: TextMatch, options?: { timeout?: number }): Promise<void>;
+  /** Waits for the target's `class` attribute to match: a string is the whole normalized class list, a RegExp is tested against it. */
+  toHaveClass(target: Locator, expected: TextMatch, options?: { timeout?: number }): Promise<void>;
+}
+```
+
+### `ValueExpectation`
+
+```ts
+export interface ValueExpectation<T> {
+  /** Inverts the matcher. */
+  readonly not: NegatedValueExpectation<T>;
+  /** Compares with Object.is. */
+  toBe(expected: T): void;
+  /** Performs recursive structural equality; `undefined` properties are ignored and class types are not compared. */
+  toEqual(expected: unknown): void;
+  /** Requires every property of `expected` to match recursively; extra properties on the value are fine, arrays must match element-wise with equal length. */
+  toMatchObject(expected: object): void;
+  /** Requires a truthy value. */
+  toBeTruthy(): void;
+  /** Requires a falsy value. */
+  toBeFalsy(): void;
+  /** Requires null. */
+  toBeNull(): void;
+  /** Requires undefined. */
+  toBeUndefined(): void;
+  /** Requires any value but undefined; null passes. */
+  toBeDefined(): void;
+  /** Requires a `length` property equal to `expected`: a string, an array, or anything array-like. */
+  toHaveLength(expected: number): void;
+  /** Requires the property at `path` to exist; with `expected`, to equal it by `toEqual` rules. */
+  toHaveProperty(path: PropertyPath, ...expected: [] | [expected: unknown]): void;
+  /** Requires string or collection containment. */
+  toContain(expected: unknown): void;
+  /** Requires a string or regexp match. */
+  toMatch(expected: string | RegExp): void;
+  /** Requires a numeric lower bound. */
+  toBeGreaterThan(expected: number): void;
+  /** Requires a numeric lower bound, inclusive. */
+  toBeGreaterThanOrEqual(expected: number): void;
+  /** Requires a numeric upper bound. */
+  toBeLessThan(expected: number): void;
+  /** Requires a numeric upper bound, inclusive. */
+  toBeLessThanOrEqual(expected: number): void;
+  /** Requires a number within `10 ** -digits / 2` of `expected`; `digits` defaults to 2. */
+  toBeCloseTo(expected: number, digits?: number): void;
+  /**
+   * Requires the value to pass a synchronous Standard Schema (Zod, Valibot,
+   * ArkType, ...) and returns the schema's output, typed:
+   * `const users = expect(await response.json()).toMatchSchema(Users)`.
+   * A schema that validates asynchronously is `INVALID_ARGUMENT`.
+   */
+  toMatchSchema<Schema extends StandardSchemaV1>(schema: Schema): StandardSchemaV1.InferOutput<Schema>;
+  /**
+   * Requires a `WebResponse` whose status is 2xx (200 to 299), as `request`,
+   * `waitForResponse`, and `route.fetch()` return it. The failure names the
+   * status and the URL's origin and path; the body is never read.
+   */
+  toBeOK(...valueIsNotAResponse: [T] extends [WebResponse] ? [] : [never]): void;
+}
+
+/** `expect(value).not`: every value matcher inverted, none returning a value; `Back` is what `.not` returns to. */
+export type NegatedValueExpectation<T, Back = ValueExpectation<T>> = {
+  readonly not: Back;
+} & {
+  readonly [K in Exclude<keyof ValueExpectation<T>, 'not'>]: (...args: Parameters<ValueExpectation<T>[K]>) => void;
+};
+
+/** `expect.soft(value)`: the value matchers, with `toMatchSchema` returning `undefined` after a kept failure. */
+export type SoftValueExpectation<T> = Omit<ValueExpectation<T>, 'toMatchSchema' | 'not'> & {
+  readonly not: NegatedValueExpectation<T, SoftValueExpectation<T>>;
+  toMatchSchema<Schema extends StandardSchemaV1>(schema: Schema): StandardSchemaV1.InferOutput<Schema> | undefined;
+};
+
+/** A class, abstract or not: what `expect.any` takes. */
+export type Class = abstract new (...args: never[]) => unknown;
+
+/** A property path for `toHaveProperty`: dotted (`'user.address.city'`) or one key per element (`['user', 'address', 'city']`). */
+export type PropertyPath = string | readonly (string | number)[];
+```
+
+### `AsymmetricMatcher`
+
+```ts
+/**
+ * A stand-in for a value inside `toEqual`, `toMatchObject`, `toContain`, and
+ * `toHaveProperty`: `expect.any(Number)` in place of a number,
+ * `expect.objectContaining({ id: 1 })` in place of a record. The structural
+ * matchers ask it whether a value matches instead of comparing.
+ */
+export interface AsymmetricMatcher {
+  /** Whether `other` satisfies the matcher. */
+  asymmetricMatch(other: unknown): boolean;
+  /** The matcher's name, `ObjectContaining`; a failure message adds the sample. */
+  toString(): string;
+}
+```
+
+### `PollOptions` e `PollExpectation`
+
+```ts
+export interface PollOptions {
+  /** Deadline in milliseconds. Default `config.assertionTimeout` in an e2e test, suite hook, or `openHost()` session, else 5000. */
+  timeout?: number;
+  /**
+   * Pause between reads in milliseconds.
+   * @deprecated Pass `intervals: [<ms>]`.
+   */
+  interval?: number;
+  /** Pauses between reads in milliseconds. Default [100, 250, 500, 1000]. The last pause is repeated. */
+  intervals?: readonly number[];
+  /** Extra line in the timeout error, after the matcher line. */
+  message?: string;
+}
+
+/**
+ * The asynchronous form of every `ValueExpectation<T>` matcher: the same
+ * names and parameters, each resolving once the re-read value passes;
+ * `toMatchSchema` resolves to the schema's output for the passing read.
+ * Derived from `ValueExpectation<T>` so the two cannot drift.
+ */
+export type PollExpectation<T> = {
+  readonly not: NegatedPollExpectation<T>;
+} & {
+  readonly [K in Exclude<keyof ValueExpectation<T>, 'not' | 'toMatchSchema'>]: (
+    ...args: Parameters<ValueExpectation<T>[K]>
+  ) => Promise<void>;
+} & {
+  toMatchSchema<Schema extends StandardSchemaV1>(schema: Schema): Promise<StandardSchemaV1.InferOutput<Schema>>;
+};
+
+/** `expect.poll(read).not`: every poll matcher inverted, none resolving to a value. */
+export type NegatedPollExpectation<T> = {
+  readonly not: PollExpectation<T>;
+} & {
+  readonly [K in Exclude<keyof ValueExpectation<T>, 'not'>]: (...args: Parameters<ValueExpectation<T>[K]>) => Promise<void>;
+};
+```
+
+### `PassOptions` e `PassExpectation`
+
+```ts
+export type PassOptions = {
+  /**
+   * Timeout in milliseconds. In `config.toPass` it defaults to 0: only the test, hook, or session deadline applies.
+   * On a call it defaults to the configured value when an e2e test, suite hook, or `openHost()` session
+   * supplies it, else 0. With none of them active, 0 is `INVALID_CONFIG`.
+   */
+  timeout?: number;
+  /**
+   * Pauses between tries in milliseconds. The last pause is repeated. In `config.toPass` they default to
+   * [100, 250, 500, 1000]. On a call they default to the configured value when an e2e test, suite hook,
+   * or `openHost()` session supplies it, else [100, 250, 500, 1000].
+   */
+  intervals?: readonly number[];
+};
+
+type PassMatcher = {
+  /** Retries the block until the assertion passes or the deadline is reached. */
+  toPass(options?: PassOptions): Promise<void>;
+};
+
+/** Value matchers for a function, with retries for positive and negated assertions. */
+export type PassExpectation<T, Value = ValueExpectation<T>> = Omit<Value, 'not'> & PassMatcher & {
+  readonly not: NegatedValueExpectation<T, PassExpectation<T, Value>> & PassMatcher;
+};
+```

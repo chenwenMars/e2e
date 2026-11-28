@@ -5,13 +5,20 @@ import type { LaunchArgumentValue, LaunchArgumentValues, ResolvedLaunchArguments
 /** What an old-style plist string may hold unquoted. `NSUserDefaults` reads a bare value that starts with `-` as the next argument's name. */
 const PLIST_UNQUOTED = /^[A-Za-z0-9_$/:.][A-Za-z0-9_$/:.-]*$/;
 
+/** What an argument name may not hold: a control character, or whitespace other than a plain space. */
+const CONTROL_OR_NON_SPACE_WHITESPACE = /[^\S ]|\p{Cc}/u;
+
 const LAUNCH_ARGUMENTS_SHAPE = 'an array of strings or an object of argument name to string, number, boolean, or array of strings';
 
 /**
  * Launch arguments as declared: a list of strings, or a plain object of
- * argument name (non-empty, no leading dash, no whitespace or control
- * characters) to string, finite number below 2^53 in magnitude, boolean,
- * or list of strings, none holding a NUL character. An `undefined` value, read from the
+ * argument name (non-empty, no leading dash, no control characters, no
+ * whitespace but spaces inside it) to string, finite number below 2^53 in
+ * magnitude, boolean, or list of strings, none holding a NUL character. A
+ * name may hold spaces, as a user-defaults key such as
+ * `NSSplitView Subview Frames Main` does: every engine sends it as one
+ * process argument. A space at either end, or any other whitespace, is a
+ * typo the app would never read. An `undefined` value, read from the
  * environment, is the entry left out. `code` picks the error: a target's
  * config fails with `INVALID_CONFIG`, a test's own launch with
  * `INVALID_ARGUMENT`.
@@ -35,8 +42,11 @@ export function checkLaunchArguments(label: string, declared: unknown, code: 'IN
   for (const [name, value] of Object.entries(declared)) {
     if (value === undefined) continue;
     if (name === '') fail(code, `${label} has an empty argument name`);
-    if (/[\s\p{Cc}]/u.test(name)) {
-      fail(code, `${label} argument name ${JSON.stringify(name)} must have no whitespace or control characters`);
+    if (CONTROL_OR_NON_SPACE_WHITESPACE.test(name)) {
+      fail(code, `${label} argument name ${JSON.stringify(name)} must have no control characters and no whitespace other than a space`);
+    }
+    if (name !== name.trim()) {
+      fail(code, `${label} argument name ${JSON.stringify(name)} must not start or end with a space`);
     }
     if (name.startsWith('-')) {
       fail(code, `${label} argument name ${JSON.stringify(name)} starts with a dash; remove the dash, the engine adds it`);

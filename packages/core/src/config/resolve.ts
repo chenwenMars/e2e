@@ -183,7 +183,7 @@ const REMOVED_TOP_LEVEL_KEYS: ReadonlyMap<string, string> = new Map([
   ['specVersion', 'delete it; the runner version is the format version'],
   [
     'limits',
-    'set maxInputTokens on each agent (it was limits.maxModelTokensPerCall); the runner fixes maxAgentContextBytes, maxLedgerBytes, and maxEventsPerStep',
+    'set maxInputTokens (it was limits.maxModelTokensPerCall) and maxContextBytes (it was limits.maxAgentContextBytes) on each agent; the runner fixes maxLedgerBytes and maxEventsPerStep',
   ],
 ]);
 
@@ -827,11 +827,14 @@ function collectSecrets(raw: SecretConfig, env: NodeJS.ProcessEnv) {
     checkEnvNameCollisions('E2E_USER', 'credentials', Object.keys(raw.credentials ?? {}));
     checkEnvNameCollisions('E2E_SECRET', 'secrets', Object.keys(raw.secrets ?? {}));
     for (const [name, credential] of Object.entries(raw.credentials ?? {})) {
-      checkCredentialShape(name, credential);
+      if (credential !== undefined) {
+        checkCredentialShape(name, credential);
+      }
+
       const passwordName = credentialSecretName(name);
       credentialOwners.set(passwordName, name);
       const prefix = envName('E2E_USER', name);
-      const username = env[`${prefix}_USERNAME`] ?? credential.username;
+      const username = env[`${prefix}_USERNAME`] ?? credential?.username;
       if (typeof username !== 'string') {
         missing.push({
           name,
@@ -839,7 +842,7 @@ function collectSecrets(raw: SecretConfig, env: NodeJS.ProcessEnv) {
         });
       }
       // An environment override wins, including over a provider.
-      const password = env[`${prefix}_PASSWORD`] ?? credential.password;
+      const password = env[`${prefix}_PASSWORD`] ?? credential?.password;
       if (isSecretValue(password)) {
         const secret: ResolvedSecret = { name: passwordName, purpose: 'password', value: password };
         allSecrets.set(secret.name, secret);
@@ -998,6 +1001,10 @@ function resolveAgents(
   }
   const agents = new Map<string, ResolvedAgentConfig>();
   for (const [name, value] of Object.entries(raw ?? {})) {
+    if (value === undefined) {
+      continue;
+    }
+
     if (!AGENT_NAME_PATTERN.test(name)) {
       throw new ConfigurationError(
         'INVALID_CONFIG',
@@ -1081,7 +1088,7 @@ function computeConfigDigest(
     sanitized['credentials'] = Object.fromEntries(
       Object.entries(raw.credentials).map(([name, credential]) => [
         name,
-        { username: credential.username, password: { secretName: name } },
+        { username: credential?.username, password: { secretName: name } },
       ]),
     );
   }
@@ -1097,31 +1104,34 @@ function computeConfigDigest(
 
 /**
  * The agents as the digest records them. Each entry passed `resolveAgents`,
- * so it is a plain options object: its plain options are cloned, its tools
- * named, and its executor reduced to what identifies it.
+ * so it is a plain options object, or `undefined`, which is left out like an
+ * `undefined` tool. Its plain options are cloned, its tools named, and its
+ * executor reduced to what identifies it.
  */
 function digestAgents(agents: NonNullable<ProjectConfig['agents']>): unknown {
   return Object.fromEntries(
-    Object.entries(agents).map(([name, entry]) => {
-      const { tools, executor, ...options } = entry ?? {};
-      return [
-        name,
-        {
-          ...(structuredCloneJsonSafe(options) as Record<string, unknown>),
-          ...(tools === undefined ? {} : { tools: Object.keys(tools).toSorted() }),
-          ...(executor === undefined
-            ? {}
-            : {
-                executor: {
-                  name: executor.name,
-                  ...(executor.version === undefined ? {} : { version: executor.version }),
-                  ...(executor.cache === undefined ? {} : { cache: executor.cache }),
-                  ...(executor.model === undefined ? {} : { model: modelIdentity(executor.model) }),
-                  ...(executor.judge === undefined ? {} : { judge: modelIdentity(executor.judge) }),
-                },
-              }),
-        },
-      ];
+    Object.entries(agents).flatMap(([name, entry]) => {
+      if (entry === undefined) {
+        return [];
+      }
+
+      const { tools, executor, ...options } = entry;
+      const digest = {
+        ...(structuredCloneJsonSafe(options) as Record<string, unknown>),
+        ...(tools === undefined ? {} : { tools: Object.keys(tools).filter((tool) => tools[tool] !== undefined).toSorted() }),
+        ...(executor === undefined
+          ? {}
+          : {
+              executor: {
+                name: executor.name,
+                ...(executor.version === undefined ? {} : { version: executor.version }),
+                ...(executor.cache === undefined ? {} : { cache: executor.cache }),
+                ...(executor.model === undefined ? {} : { model: modelIdentity(executor.model) }),
+                ...(executor.judge === undefined ? {} : { judge: modelIdentity(executor.judge) }),
+              },
+            }),
+      };
+      return [[name, digest]];
     }),
   );
 }

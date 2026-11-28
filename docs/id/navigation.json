@@ -1,0 +1,24 @@
+{
+  "tabs": {
+    "Documentation": "Dokumentasi",
+    "Reference": "Referensi",
+    "Examples": "Contoh"
+  },
+  "groups": {
+    "Get started": "Mulai",
+    "Platforms": "Platform",
+    "Frameworks": "Kerangka kerja",
+    "Features": "Fitur",
+    "Models and agents": "Model dan agent",
+    "Run in CI": "Jalankan di CI",
+    "Hosted browsers and devices": "Browser dan perangkat cloud",
+    "Extend": "Perluas",
+    "Engines": "Engine",
+    "Deep dive": "Pembahasan mendalam",
+    "Migrate": "Migrasi",
+    "Test API": "API tes",
+    "Project": "Proyek",
+    "Web": "Web",
+    "Mobile": "Mobile"
+  }
+}

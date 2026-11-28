@@ -94,7 +94,7 @@ describe('update check', () => {
         writeFileSync(path.join(root, 'package.json'), JSON.stringify({ packageManager: 'yarn@4.5.0', workspaces: ['apps/*'] }));
         return workspacePackage(root);
       },
-      'yarn e2e upgrade',
+      'yarn exec -- e2e upgrade',
     ],
     [
       'the root of a pnpm workspace',

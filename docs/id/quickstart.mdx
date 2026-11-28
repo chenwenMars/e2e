@@ -1,0 +1,328 @@
+---
+title: Panduan cepat
+description: Siapkan e2e dengan satu prompt untuk coding agent atau ikuti langkah-langkahnya.
+"og:image": "https://e2e.com/docs/images/og/quickstart.png?v=4a3569d569"
+"twitter:image": "https://e2e.com/docs/images/og/quickstart.png?v=4a3569d569"
+---
+
+import { ModelProvider } from '../snippets/model-provider.jsx';
+import { SetupPrompt } from '../snippets/setup-prompt-card.jsx';
+import { Video } from '../snippets/video.jsx';
+import { VideoCard } from '../snippets/video-card.jsx';
+
+export const setupPrompt = `Siapkan tes end-to-end e2e di proyek ini. Dokumentasi: \`https://e2e.com/docs/quickstart.md\`
+
+1. Jalankan \`npx e2e init --yes\` (atau perintah pnpm atau bun yang setara untuk proyek ini). Perintah ini menulis konfigurasi web yang menggunakan Vercel AI Gateway, tes contoh, skill e2e, baris pengarah ke skill di \`AGENTS.md\` dan \`CLAUDE.md\`, serta konfigurasi MCP. Belum ada yang diinstal.
+2. Baca skill e2e (\`npx e2e guide\` menampilkannya, sedangkan \`npx e2e guide <topic>\` menampilkan topik tertentu) lalu ikuti panduannya untuk setiap langkah di bawah.
+3. Arahkan target ke aplikasi ini. Untuk aplikasi web, tetapkan URL dan perintah untuk menjalankan server development. Untuk aplikasi iOS atau Android, ganti @e2e-dev/web dengan @e2e-dev/mobile dan sesuaikan tes contoh untuk engine mobile.
+4. Tanyakan model yang ingin saya gunakan untuk langkah agent: langganan ChatGPT, GitHub Copilot, OpenCode Console, atau SuperGrok, API key, atau model lokal. Konfigurasikan model tersebut dengan paket providernya. Jika perlu masuk, berikan perintah \`npx e2e login\` dan tunggu sampai saya mengonfirmasi.
+5. Instal dependensi, jalankan tes contoh, lalu perbaiki masalah konfigurasi sampai tes berhasil.
+6. Tulis satu tes untuk alur pengguna terpenting di aplikasi ini, jalankan, lalu perbaiki sampai berhasil.`;
+
+<VideoCard
+  id="4_9z6QWShLc"
+  title="Memulai dengan e2e agentic dalam 4 menit"
+  subtitle="Dalam video ini, Kacper mengubah aplikasi Next.js sederhana menjadi rangkaian tes agentic yang berfungsi."
+/>
+
+## Siapkan dengan coding agent
+
+Tempel prompt ini ke Claude Code, Codex, Cursor, atau coding agent lain
+di direktori aplikasi Anda:
+
+<SetupPrompt>
+
+<Prompt description={setupPrompt} children={setupPrompt} actions={["copy", "cursor"]} />
+
+</SetupPrompt>
+
+Agent akan memasang [skill e2e](/coding-agents), sehingga prompt berikutnya
+seperti "tambahkan tes untuk checkout" tidak memerlukan penyiapan lagi.
+
+<Note>
+Gunakan Node.js 24.8 atau yang lebih baru (22.22.3 atau lebih baru untuk Node.js 22), atau [Bun](/reference/cli#bun) 1.4.3 atau yang lebih baru untuk tes web. Di Windows, jalankan dari WSL. Tes mobile juga
+memerlukan Xcode dengan runtime simulator iOS, atau Android SDK dengan emulator.
+</Note>
+
+## Siapkan secara manual
+
+### Jalankan tes pertama
+
+<Steps>
+  <Step title="Buat proyek tes">
+  Di direktori aplikasi Anda:
+
+  <CodeGroup>
+  ```bash npm
+  npx e2e init
+  ```
+
+  ```bash pnpm
+  pnpm dlx e2e init
+  ```
+
+  ```bash bun
+  bunx e2e init
+  ```
+  </CodeGroup>
+
+  Pilih **Web (Playwright)** atau **Mobile (iOS/Android)**, lalu pilih
+  langganan, provider model, atau **Skip for now** untuk tes tanpa AI. Wizard akan
+  menulis konfigurasi dan tes contoh, menambahkan dependensi, serta menawarkan
+  penyiapan coding agent. File yang sudah ada tetap dipertahankan.
+
+  <Tabs>
+    <Tab title="Web">
+    Jalankan server development aplikasi di `http://localhost:3000`, atau tetapkan alamatnya
+    di `e2e.config.ts`. Anda juga dapat [meminta e2e menjalankannya](/web#starting-your-app).
+
+    <Accordion title="Contoh konfigurasi dan tes web">
+    Konfigurasi ini menggunakan Vercel AI Gateway. Wizard akan mengatur provider yang Anda pilih.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { gateway } from 'ai';
+
+export default {
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast') } },
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+} satisfies E2EConfig;
+```
+
+```ts title="tests/example.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('app opens', async ({ app, browser }) => {
+  await app.open('/');
+  await expect(browser.locator('body')).toBeVisible();
+});
+```
+    </Accordion>
+    </Tab>
+    <Tab title="Mobile">
+    Jalankan `npx e2e doctor` untuk memeriksa konfigurasi. Wizard memilih iOS di macOS
+    dan Android di sistem operasi lain. Contoh ini membuka aplikasi Settings.
+
+    <Accordion title="Contoh konfigurasi dan tes iOS">
+    Konfigurasi ini menggunakan Vercel AI Gateway. Untuk Android, wizard akan menetapkan
+    `platform: 'android'` dan `app: { bundleId: 'com.android.settings' }`.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { mobile } from '@e2e-dev/mobile';
+import { gateway } from 'ai';
+
+export default {
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast') } },
+  targets: [{ name: 'ios', engine: mobile({ platform: 'ios' }), app: { bundleId: 'Settings' } }],
+  workers: 1,
+} satisfies E2EConfig;
+```
+
+```ts title="tests/example.e2e.ts"
+import { test } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+test('Settings opens', async ({ app, screen }) => {
+  await app.open();
+  await expect(screen.getByRole('button', 'General')).toBeVisible();
+});
+```
+    </Accordion>
+
+    Lihat [Mobile](/mobile) untuk menggunakan aplikasi Anda sendiri.
+    </Tab>
+  </Tabs>
+  </Step>
+  <Step title="Jalankan contoh">
+  <CodeGroup>
+  ```bash npm
+  npx e2e run
+  ```
+
+  ```bash pnpm
+  pnpm exec e2e run
+  ```
+
+  ```bash bun
+  bunx e2e run
+  ```
+  </CodeGroup>
+
+  e2e mengunduh browser atau menyalakan simulator maupun emulator, memeriksa apakah
+  aplikasi terbuka, lalu menampilkan hasilnya. Contoh ini tidak memanggil model,
+  jadi tidak memerlukan login atau API key.
+  </Step>
+</Steps>
+
+<Video>
+  <video src="/images/init.mp4" aria-label="npx e2e init menanyakan engine, gateway model, dan penyiapan coding agent, lalu menampilkan daftar file yang akan ditulis." muted loop playsInline controls />
+
+  `npx e2e init` mengajukan beberapa pertanyaan, lalu menampilkan semua perubahan sebelum menulis file.
+</Video>
+
+### Gunakan langganan atau API key
+
+<Tabs>
+  <Tab title="Langganan">
+  | Paket | Cara menghubungkan |
+  | --- | --- |
+  | ChatGPT Plus atau Pro | `npx e2e login openai` |
+  | GitHub Copilot | `npx e2e login github-copilot` |
+  | OpenCode Console (OpenCode Zen dan OpenCode Go) | `npx e2e login opencode-console` |
+  | SuperGrok atau X Premium+ | `npx e2e login spacexsi` |
+  | Claude Max or Team (Claude Code) | API key dari kredit API bulanan paket tersebut. Lihat [Claude Max atau Team](/subscriptions#claude-max-or-team). |
+
+  Copilot menggunakan login GitHub CLI Anda jika sudah tersedia. Lihat
+  [Langganan](/subscriptions).
+  </Tab>
+  <Tab title="API key">
+  Pilih provider. Instal paketnya dan, jika diperlukan, tetapkan variabel yang dibacanya
+  di terminal tempat Anda menjalankan e2e.
+
+  <ModelProvider show="select" />
+
+  <ModelProvider show="install" />
+
+  <ModelProvider show="env" />
+
+  Wizard menulis konfigurasi untuk Vercel AI Gateway, OpenRouter, dan
+  endpoint yang kompatibel dengan OpenAI. Untuk provider lain, ganti impor model
+  dan nilai `model` di `e2e.config.ts`, lalu gunakan `agent` sebagai `agents.default`:
+
+  <ModelProvider show="model" />
+
+  Lihat [Model](/models) untuk model lokal dan opsi lainnya.
+  </Tab>
+</Tabs>
+
+### Tambahkan langkah agent
+
+Berikan satu [tujuan atomik](/core-concepts#goals) untuk setiap pemanggilan
+`agent.act`, lalu periksa hasilnya. Sesuaikan contoh ini dengan alur di aplikasi Anda:
+
+<Tabs>
+  <Tab title="Web">
+```ts title="tests/agent.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+
+test('a visitor signs up for a trial', async ({ app, agent, screen }) => {
+  await app.open('/');
+
+  await agent.act('sign up for a free trial as {name} with email {email}', {
+    params: { name: 'Ada Lovelace', email: 'ada@example.test' },
+  });
+
+  await agent.assert('the welcome screen greets Ada by name');
+  await expect(screen.getByRole('status')).toContainText('trial');
+});
+```
+  </Tab>
+  <Tab title="Mobile (iOS)">
+```ts title="tests/agent.e2e.ts"
+import { test } from '@e2e-dev/mobile';
+import { expect } from 'e2e';
+
+test('the agent opens General', async ({ agent, app, device }) => {
+  await app.open();
+  await agent.act('open {section} settings', { params: { section: 'General' } });
+
+  await agent.assert('the General settings screen is showing');
+  await expect(device.locator('role=navigation-bar id=General')).toBeVisible();
+});
+```
+
+  `app.open()` membuka aplikasi dari awal. Tanpanya, tes dimulai dari keadaan
+  saat tes sebelumnya meninggalkan perangkat. `device.locator` menerima
+  [selector agent-device](/mobile#the-device-fixture).
+  </Tab>
+</Tabs>
+
+`params` mengisi placeholder pada tujuan. `agent.assert` menilai layar.
+`expect` memeriksa nilai yang pasti.
+
+<CodeGroup>
+```bash npm
+npx e2e run tests/agent.e2e.ts
+```
+
+```bash pnpm
+pnpm exec e2e run tests/agent.e2e.ts
+```
+
+```bash bun
+bunx e2e run tests/agent.e2e.ts
+```
+</CodeGroup>
+
+Jika memilih **Skip for now** di wizard, [tambahkan model](/models) terlebih dahulu. Tambahkan
+`--headed` untuk melihat tes web berjalan. Tambahkan `--no-cache` agar model dipanggil
+alih-alih memutar ulang tindakan dari cache.
+
+### Konfigurasikan proyek
+
+`e2e.config.ts` menyimpan berbagai opsi. Inilah opsi yang biasanya diubah
+setelah menjalankan `init`:
+
+| Tujuan | Tetapkan | Lihat |
+| --- | --- | --- |
+| arahkan ke aplikasi | `app.url`, atau `app.bundleId` di mobile | [Aplikasi yang diuji](/reference/config#the-app-under-test) |
+| jalankan aplikasi saat tes | `app.command` | [Mulai aplikasi](/web#starting-your-app) |
+| gunakan model | `agents.default.model` | [Model](/models) |
+| uji beberapa browser atau perangkat | satu entri `targets` untuk setiap browser atau perangkat, dengan `name` | [targets](/reference/config#targets) |
+| beri tes waktu lebih lama | `timeout`, `actionTimeout`, `assertionTimeout` | [timeout](/reference/config#timeout) |
+| coba ulang tes yang gagal | `retries`, `1` di CI | [retries](/reference/config#retries) |
+| jalankan tes secara paralel | `workers`, `1` di CI | [workers](/reference/config#workers) |
+| pilih file tes | `tests` | [tests](/reference/config#tests) |
+| simpan trace dan video | `trace`, `video` | [Perekaman](/reference/config#recording) |
+| tulis laporan JUnit | `reporters: ['list', 'junit']` | [reporters](/reference/config#reporters) |
+| masuk dan berikan API key | `credentials`, `secrets` | [Autentikasi](/authentication) |
+| tulis cache replay di CI | `cache: 'read-write'` | [Cache](/cache) |
+
+<Accordion title="Contoh konfigurasi dengan opsi umum">
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+import { gateway } from 'ai';
+
+const app = {
+  url: process.env.APP_URL ?? 'http://localhost:3000',
+  command: { executable: 'npm', args: ['run', 'dev'], reuseExisting: true },
+};
+
+export default {
+  agents: { default: { model: gateway('openai/gpt-6-luna-fast') } },
+  targets: [
+    { name: 'chromium', engine: web({ viewport: { width: 1440, height: 900 } }), app },
+    { name: 'firefox', engine: web({ browser: 'firefox' }), app },
+  ],
+  timeout: 180_000,
+  workers: 4,
+  reporters: ['list', 'junit'],
+  video: 'retain-on-failure',
+} satisfies E2EConfig;
+```
+
+`--target firefox` menjalankan satu target. Target yang menggunakan `command` sama
+akan berbagi satu proses server.
+</Accordion>
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Konsep inti" icon="pen-to-square" href="/core-concepts">
+    Tujuan, assertion, dan locator.
+  </Card>
+  <Card title="Autentikasi" icon="key" href="/authentication">
+    Gunakan kembali sesi masuk aplikasi dan lindungi kata sandi dari input model.
+  </Card>
+  <Card title="Pemecahan masalah" icon="bug" href="/debugging">
+    Baca kegagalan, screenshot, dan trace.
+  </Card>
+  <Card title="Integrasi berkelanjutan" icon="code-branch" href="/ci">
+    Jalankan tes di GitHub Actions, Expo Workflows, Bitrise, atau Codemagic.
+  </Card>
+</CardGroup>

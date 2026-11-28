@@ -469,6 +469,39 @@ function gateUnknownFixtures<T extends object>(fixtures: T, environment: Attempt
   });
 }
 
+/** What an engine's fixtures are built from: the session, and the step recorder and budget their calls run under. */
+type EngineFixtureEnvironment = Pick<AttemptEnvironment, 'config' | 'target' | 'session' | 'steps' | 'budget' | 'runId' | 'attemptId' | 'artifacts'>;
+
+/**
+ * The engine's own fixtures over one session (`browser`, `device`,
+ * `desktop`), each built on first touch, as a test's are, with their calls
+ * recorded in `environment.steps` under `environment.budget`. `e2e mcp`
+ * gives them, beside the `app` `createApp` builds, to the code of a session
+ * attached to a held test, whose calls are not the test's steps. What an
+ * engine fixture changes lives in the session, so the held test sees it.
+ */
+export function createEngineFixtures(environment: EngineFixtureEnvironment): Readonly<Record<string, unknown>> {
+  const { config, target } = environment;
+  const ledger = sessionLedger(environment.session, config.allSecrets);
+  const screenContext = createScreenContext({
+    session: environment.session,
+    budget: environment.budget,
+    runId: environment.runId,
+    attemptId: environment.attemptId,
+    config,
+    steps: environment.steps,
+    secrets: { resolve: (secret) => resolveSecretValue(secret, config.allSecrets, ledger) },
+    artifacts: environment.artifacts,
+    redaction: ledger,
+    appOrigin: target.app.base?.origin,
+  });
+  const fixtures: Record<string, unknown> = {};
+  for (const [name, create] of Object.entries(contributedFactories(environment, screenContext.engine, screenContext))) {
+    Object.defineProperty(fixtures, name, { enumerable: true, get: lazily(create) });
+  }
+  return fixtures;
+}
+
 /**
  * Engine-contributed fixtures, as factories: an engine's factory declares
  * operation metadata through context.fixture and must return the surface it
@@ -476,7 +509,7 @@ function gateUnknownFixtures<T extends object>(fixtures: T, environment: Attempt
  * ledger outlives that graph.
  */
 function contributedFactories(
-  environment: AttemptEnvironment,
+  environment: EngineFixtureEnvironment,
   engine: LocatorEngine,
   screenContext: ScreenContext,
 ): Record<string, () => unknown> {
@@ -490,7 +523,7 @@ function contributedFactories(
 }
 
 function fixtureContext(
-  environment: AttemptEnvironment,
+  environment: EngineFixtureEnvironment,
   engine: LocatorEngine,
   screenContext: ScreenContext,
   recorder: FixtureRecorder,
@@ -679,9 +712,11 @@ export function createApp(
         return;
       }
       if (openPath !== undefined) {
+        // Only an engine that opens links (a device) can take a path as one; any other launches its app and nothing more.
+        const linkAdvice = target.engine?.session?.openLink === undefined ? '' : '; declare app.linkBase to open a path as a link in it, or open one through device.openLink';
         throw new ConfigurationError(
           'APP_URL_REQUIRED',
-          `app.open("${openPath}") needs an app URL and target "${target.name}" has none: on a device app.open() launches the pinned app; declare app.linkBase to open a path as a link in it, or open one through device.openLink`,
+          `app.open("${openPath}") needs an app URL and target "${target.name}" has none: without one, app.open() launches the pinned app and takes no path${linkAdvice}`,
         );
       }
       if (target.engine?.session?.restart === undefined) {

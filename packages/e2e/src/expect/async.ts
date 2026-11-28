@@ -208,13 +208,13 @@ class AsyncExpectationImpl implements AsyncExpectation {
             if (spec.readsWithheld === true) {
               denySecureRead(sample.node === null ? sample.nodes : [sample.node], this.label);
             }
-            samples.add(`${spec.observed(sample)} (${sample.count} ${sample.count === 1 ? 'match' : 'matches'})`);
+            samples.add(`${observedOf(spec, sample)} (${sample.count} ${sample.count === 1 ? 'match' : 'matches'})`);
             if (!this.conditionEvaluable(spec, sample)) return undefined;
             return spec.predicate(sample);
           },
           onTimeout: (cause) => {
             const expected = `${this.negated ? 'not ' : ''}${spec.describeExpected}`;
-            const observed = spec.observed(lastSample);
+            const observed = observedOf(spec, lastSample);
             return new TestError(
               'ASSERTION_FAILED',
               [
@@ -262,8 +262,8 @@ class AsyncExpectationImpl implements AsyncExpectation {
       return { count: refs.length, node: null, nodes: [] };
     }
     const missingFrame = spec.evaluableWithoutNode === true ? 'empty' : 'wait';
-    const { node, count } = await engine.tryRead(this.internals.expression, reads, missingFrame);
-    return { count, node, nodes: [] };
+    const { node, count, stale } = await engine.tryRead(this.internals.expression, reads, missingFrame);
+    return { count, node, nodes: [], stale };
   }
 
   /** A state matcher; its Playwright flag set to `false` expects the opposite state. */
@@ -409,8 +409,7 @@ class AsyncExpectationImpl implements AsyncExpectation {
         },
         describeExpected:
           minimum === undefined ? 'inside the viewport' : `at least ${minimum} of its box inside the viewport`,
-        observed: ({ node, stale, intersection }) => {
-          if (stale === true) return 'a node that went stale before it was measured';
+        observed: ({ node, intersection }) => {
           if (node === null || intersection === undefined) return 'no node';
           if (!intersection.intersects) return 'outside the viewport';
           return intersection.ratio === undefined
@@ -682,6 +681,12 @@ function editState(node: SemanticNode): 'disabled' | 'read-only' | 'editable' | 
 }
 
 /** The node's true states for a state matcher's failure; `empty` is `toBeEmpty`'s alone and says nothing about the others. */
+/** What the failure and the poll readings say a sample saw; a stale one saw nothing of the node. */
+function observedOf(spec: MatcherSpec, sample: Sample): string {
+  if (sample.stale !== true) return spec.observed(sample);
+  return `a node that went stale before it was ${spec.measuresViewport === true ? 'measured' : 'read'}`;
+}
+
 function observedState(sample: Sample): string {
   if (sample.node === null) return 'no node';
   const states = sample.node.states ?? {};

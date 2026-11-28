@@ -284,6 +284,8 @@ export type StepProgressFact =
       readonly status: StepRecord['status'];
       readonly durationMs: number;
       readonly modelCalls: number;
+      /** How the trace cache took part, as the finished step records it; absent when the cache was not consulted. */
+      readonly cache?: Pick<StepCacheInfo, 'mode' | 'reason'>;
       /** The same redacted error the finished step records. */
       readonly error?: SerializedError;
       readonly explanation?: string;
@@ -1070,6 +1072,7 @@ export class StepRecorder {
       status: record.status,
       durationMs: record.durationMs,
       modelCalls: record.events.filter((event) => event.kind === 'model').length,
+      ...(record.cache === undefined ? {} : { cache: { mode: record.cache.mode, ...(record.cache.reason === undefined ? {} : { reason: record.cache.reason }) } }),
       ...(record.error === undefined ? {} : { error: record.error }),
       ...(record.explanation === undefined ? {} : { explanation: record.explanation }),
     });

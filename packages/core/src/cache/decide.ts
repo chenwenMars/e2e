@@ -10,6 +10,7 @@
 
 import { sameRoute } from './route.ts';
 import type { ActionTrace, TraceEntry } from './trace.ts';
+import type { StepCacheInfo } from '../run/steps.ts';
 
 /**
  * Whether a trace establishes its own starting point by navigating first.
@@ -47,4 +48,12 @@ export function decideTraceReplay(entry: TraceEntry, currentPath: string | undef
   if (opensWithNavigate(trace)) return { action: 'replay' };
   if (trace.startPath === undefined || currentPath === undefined) return { action: 'miss', reason: 'wrong-context' };
   return sameRoute(trace.startPath, currentPath) ? { action: 'replay' } : { action: 'miss', reason: 'wrong-context' };
+}
+
+/**
+ * Whether a step's miss is the one no later run ends: a truncated recording
+ * is recorded again, and cut short again, until the test changes.
+ */
+export function missesEveryRun(cache: Pick<StepCacheInfo, 'mode' | 'reason'> | undefined): cache is { readonly mode: 'missed'; readonly reason: 'truncated' } {
+  return cache?.mode === 'missed' && cache.reason === 'truncated';
 }

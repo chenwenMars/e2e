@@ -7,14 +7,14 @@ description: Objetivos, asserções e localizadores, e como estruturar e rodar t
 
 Um teste combina três tipos de passo:
 
-| Passo | API | Chamada ao modelo |
+| Passo | API | Chama um modelo? |
 | --- | --- | --- |
-| [Objetivo](#goals) | `agent.act` | Sim, a menos que o [cache](/cache) o reproduza |
+| [Objetivo](#goals) | `agent.act` | Sim, a menos que seja reproduzido do [cache](/cache) |
 | [Asserção](#assertions) | `agent.assert`, `agent.waitFor`, `agent.extract` | Sim |
 | [Localizador](#locators) | `screen` e `expect` | Não |
 
-Com um [executor personalizado](/executors), `act` e `assert` não precisam de
-modelo.
+Se você usa um [executor personalizado](/executors), `act` e `assert` também
+não precisam de um LLM.
 
 ```ts title="tests/todos.e2e.ts"
 import { describe, test, expect } from 'e2e';
@@ -34,66 +34,66 @@ describe('todos', () => {
 });
 ```
 
-Cada teste verifica um comportamento em três blocos: prepare o estado inicial,
-acione o comportamento e depois faça asserções sobre o resultado.
+Cada teste verifica um comportamento com um objetivo: prepare o estado
+inicial, aja rumo a esse objetivo e depois faça asserções sobre o resultado.
 
-Aguarde (await) cada chamada ao agente, cada chamada à tela e cada
-`expect.poll`. Se um teste retornar enquanto um passo ainda estiver em
-execução, o teste falha com `STEP_NOT_AWAITED`.
+Dê nome com `const` a localizadores e valores repetidos, compartilhe a
+preparação com um hook ou uma fixture e use uma pequena função auxiliar ou um
+[page object](/page-object-model) quando vários testes controlarem a mesma
+tela, mantendo as verificações de resultado visíveis no teste. Deixe instruções
+curtas e de uso único direto no teste (ou dê nome às longas com uma `const`
+local) e compartilhe instruções recorrentes em um módulo TypeScript, com
+`params` para os dados de teste.
+
+Sempre use `await` em toda chamada de `agent`, `screen` e `expect.poll`. Se um
+teste terminar com um passo ainda em andamento, o e2e faz o teste falhar.
 
 ## Objetivos
 
-`agent.act` recebe um objetivo e executa as ações de que ele precisa. Ele
-retorna quando o objetivo é concluído e lança um erro quando o objetivo falha.
+`agent.act` recebe uma instrução em linguagem natural, faz as interações
+necessárias para alcançar o objetivo e lança um erro se não conseguir. Use os
+nomes de campos e botões mostrados na tela e indique a ordem quando ela
+importar (por exemplo, preencher os dados de envio, escolher uma opção de
+entrega e fazer o pedido).
 
-```ts
-await agent.act('complete checkout with the test card');
-await agent.act('invite {email} as an editor', { params: { email: 'ada@example.test' } });
-```
+Comece com uma chamada para o comportamento em teste. Divida a chamada no ponto
+de uma transição significativa quando o próximo passo precisar de um estado
+conhecido (como a página de pagamento de uma finalização de compra longa),
+quando um fluxo longo arriscar estourar os orçamentos `maxSteps` ou
+`maxModelCalls`, ou quando uma falha no meio precisar de uma fronteira de passo
+própria. Explique por que a divisão é necessária e espere pelo estado de tela
+intermediário antes de continuar. Cada chamada tem seus próprios
+[orçamentos](/reference/agent#budgets) e pode ser reproduzida a partir da sua
+própria gravação.
 
-Mantenha cada objetivo atômico: um resultado que uma única verificação
-confirma. Quando duas partes de uma instrução deixam, cada uma, um estado que
-vale a pena verificar, elas são dois objetivos. Um teste pode ter muitos
-objetivos.
+```ts title="Complete one checkout across two screens"
+test('places an order with a saved card', async ({ app, agent, screen }) => {
+  await app.open('/checkout');
 
-```ts title="Bad: three goals in one call, no check between them"
-await agent.act('open the Pro plan, set the seats to {seats}, and check out', {
-  params: { seats: 3 },
-});
-```
-
-```ts title="Good: one atomic goal per call, arrange, act, assert"
-test('checks out the Pro plan', async ({ app, agent, screen }) => {
-  await app.open('/plans');
-  await agent.act('open the Pro plan');
-  await agent.act('set the seats to {seats}', { params: { seats: 3 } });
-  await agent.waitFor('the cart shows the Pro plan with 3 seats');
-
-  await agent.act('check out');
+  // The saved card can load after the Payment heading appears.
+  await agent.act('Fill the Shipping address with {address}, then choose Continue to payment.', {
+    params: { address: '12 Market Street' },
+  });
+  await screen.getByRole('radio', 'Test card').waitFor();
+  await agent.act('Select the saved Test card and choose Place order.');
 
   await expect(screen.getByText('Order confirmed')).toBeVisible();
 });
 ```
 
-Os objetivos de preparação vêm primeiro e terminam com uma espera pelo estado
-que eles alcançam. O objetivo em teste vem em seguida. As asserções sobre o
-resultado dele vêm por último. Assim, uma falha indica o objetivo que quebrou.
-Cada objetivo é reproduzido a partir da sua própria gravação e recebe seus
-próprios [orçamentos](/reference/agent#budgets) de chamadas ao modelo e de
-ações. As ações que levam a um mesmo resultado não são objetivos: abrir a tela
-ou o menu que contém um controle, rolar até ele, fechar um banner ou preencher
-os campos de um mesmo formulário.
-
-- Você controla a ordem dos objetivos. O agente escolhe as ações.
-- Termine o teste com um `expect` sobre o resultado. O
-  [cache de replay](/cache) grava um objetivo somente depois que uma
-  verificação ou espera posterior passa.
-- Use as palavras que a tela mostra.
-- Passe os dados de teste em `params`. Para uma senha, passe um `Secret`. O
-  modelo nunca recebe o valor dele como texto. Veja
+- **Espere depois da preparação e faça as asserções no fim.** Quando a
+  preparação usa `agent.act`, termine a preparação com uma espera pelo estado
+  inicial e verifique o resultado final no bloco de asserções. Qualquer espera
+  ou verificação posterior que passe confirma os objetivos anteriores para o
+  [cache de replay](/cache#when-a-recording-is-written).
+- **Siga o texto da UI.** Use os rótulos e os termos que de fato aparecem na
+  tela.
+- **Passe os dados em `params`.** Para senhas ou tokens, passe uma referência
+  `Secret` para que o modelo nunca veja o valor em texto puro. Veja
   [Autenticação](/authentication).
-- Para um valor que muda a cada execução, use `unique()` para que o
-  [cache possa reproduzir o passo](/cache#what-must-match):
+- **Envolva valores dinâmicos em `unique()`.** Timestamps ou e-mails novos
+  mudam a cada execução; envolvê-los permite que o
+  [cache ainda reproduza o passo](/cache#what-must-match):
 
 ```ts
 import { unique } from 'e2e';
@@ -102,26 +102,24 @@ const email = `ada+${Date.now()}@example.test`;
 await agent.act('sign up with email {email}', { params: { email: unique(email) } });
 ```
 
-`act` obtém capturas de tela quando precisa delas. Em algumas engines, ele
-pode tocar e digitar em pontos da imagem.
-
-Se um objetivo falhar, leia o relatório e torne a instrução mais específica.
-Coloque no [`context`](/agents) do agente as palavras que muitos objetivos
-usam.
+`agent.act` obtém capturas de tela automaticamente quando a árvore de texto não
+basta e, nas engines compatíveis, pode tocar ou digitar por coordenadas. Se um
+objetivo falhar, torne a instrução mais precisa ou mova a terminologia
+compartilhada do domínio para o [`context`](/agents) do agente.
 
 ## Asserções
 
-Uma asserção avalia a tela. O modelo vê a afirmação, um snapshot em texto da
-tela atual com dados sensíveis ocultados, a localização da tela e o contexto
-do agente. Ele não vê os passos anteriores nem os resumos de `act`.
+As asserções do agente inspecionam a tela atual de forma independente. O
+modelo vê a sua afirmação, um snapshot da tela com dados sensíveis ocultados, a
+URL ou localização atual e o `context` do agente, não os passos anteriores nem
+os resumos de `agent.act`.
 
-- `agent.assert` examina a tela neste momento. Uma afirmação falsa falha com
-  `ASSERTION_FAILED`. Quando as evidências não bastam, a asserção falha com
-  `ASSERTION_INCONCLUSIVE`.
-- `agent.waitFor` espera até que uma condição seja verdadeira. Ele chama o
-  modelo somente quando a tela ou a localização dela muda.
-- `agent.extract` lê dados da tela para um tipo
-  [Standard Schema](https://standardschema.dev), por exemplo Zod.
+- **`agent.assert`** verifica a tela neste momento e falha se a afirmação for
+  falsa ou se não houver evidências suficientes.
+- **`agent.waitFor`** espera até que uma condição se torne verdadeira e chama
+  o modelo somente quando a tela ou a localização muda.
+- **`agent.extract`** extrai dados estruturados da tela para qualquer tipo
+  [Standard Schema](https://standardschema.dev), como Zod.
 
 ```ts
 import { expect } from 'e2e';
@@ -137,18 +135,20 @@ const data = await agent.extract('every todo title', {
 expect(data.titles).toContain('Buy milk');
 ```
 
-Para um texto que o modelo escreveu, examine o significado, não a frase
-completa. Quando o texto exato importa, use um [localizador](#locators).
+Ao verificar um texto gerado pelo modelo, faça a asserção sobre o significado,
+não sobre as palavras exatas. Quando as palavras exatas importam, use um
+[localizador](#locators).
 
-Para uma verificação visual, como um gráfico ou um layout, adicione
-`vision: true`. Para avaliar apenas a captura de tela, use `vision: 'only'`.
-Imagens acrescentam tokens de entrada. Veja a
-[referência do agente](/reference/agent#vision).
+Para verificações visuais, como gráficos ou alinhamento de layout, passe
+`vision: true` (ou `vision: 'only'` para avaliar só a captura de tela). Lembre-se
+de que imagens acrescentam tokens de entrada. Veja as
+[opções de visão](/reference/agent#vision).
 
 ## Localizadores
 
-Um localizador encontra um controle conhecido, sem chamada ao modelo. Use um
-quando você souber a ação exata ou o valor exato.
+Localizadores apontam diretamente para controles conhecidos, sem chamada ao
+modelo. Use-os sempre que você souber a interação exata ou o valor exato que
+quer verificar.
 
 ```ts
 // Role and name first, label second, test ID last.
@@ -167,11 +167,10 @@ await screen.getByRole('image', 'Seat map').tap({ position: { x: 120, y: 48 } })
 await expect(screen.getByRole('status')).toHaveText('2 remaining');
 ```
 
-- Uma ação, uma leitura ou uma asserção de nó único falha quando a consulta
-  dela encontra mais de um nó. Use `.filter()`, `.first()` ou `.nth()` para
-  encontrar um único nó.
-- Uma leitura direta, como `textContent()`, espera pela correspondência,
-  depois lê uma vez e não tenta novamente em busca de um valor.
+- Ações e asserções de elemento único falham se um localizador corresponder a
+  mais de um controle. Restrinja-o com `.filter()`, `.first()` ou `.nth()`.
+- Leituras diretas como `textContent()` esperam que o elemento apareça e depois
+  o leem uma vez, sem tentar novamente em busca de um valor específico.
 
 Veja a [referência de screen](/reference/screen) e a
 [referência de expect](/reference/expect#locator-matchers). Para rotas,
@@ -197,20 +196,22 @@ test('needs two organizations', async ({ app }) => {
 });
 ```
 
-- Cada teste roda na sua própria tentativa. Comece-o perto da tela que ele
-  verifica, para que cada execução pule os cliques que levam até lá. Crie os
-  dados dele em fixtures ou hooks. Em um navegador, restaure uma
-  [sessão salva](/authentication) e abra a tela pelo caminho dela. Em um
-  dispositivo, abra um [deep link](/mobile#the-device-fixture).
-- `test.skip(condition, reason)` interrompe o teste como `skipped` quando a
-  condição é verdadeira.
-- Para um fluxo que atravessa muitos testes, defina `{ serial: true }` no
-  grupo. Os testes rodam em sequência em um único worker e fazem novas
+- **Comece perto da tela que você está testando.** Cada teste roda na sua
+  própria tentativa, então pule a navegação repetitiva criando dados em
+  fixtures, restaurando uma [sessão salva](/authentication), abrindo uma URL
+  direta ou usando um [deep link](/mobile#the-device-fixture) no mobile. (Os
+  navegadores começam com um contexto novo a cada tentativa; os dispositivos
+  mobile mantêm o estado do app até você chamar `app.open()` ou
+  `app.clearState()`.)
+- **Pule condicionalmente** com `test.skip(condition, reason)`.
+- **Encadeie testes dependentes** com `{ serial: true }` em um bloco
+  `describe`, para que rodem em ordem em um único worker e façam novas
   tentativas juntos.
-- Para preparação e limpeza, use `test.extend`. Veja
+- **Compartilhe preparação e limpeza** com `test.extend`. Veja
   [Escrevendo fixtures](/fixtures).
-- Importe `test` de `@e2e-dev/web`, `@e2e-dev/mobile` ou
-  `@e2e-dev/desktop` para tipar a fixture `browser`, `device` ou `desktop`.
+- **Tenha fixtures de plataforma tipadas** importando `test` de
+  `@e2e-dev/web`, `@e2e-dev/mobile` ou `@e2e-dev/desktop` para `browser`,
+  `device` ou `desktop`.
 
 A [referência de test](/reference/test) mostra todas as opções.
 

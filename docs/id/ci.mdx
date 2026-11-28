@@ -1,0 +1,306 @@
+---
+title: Integrasi berkelanjutan
+sidebarTitle: Siapkan CI
+description: Jalankan e2e di GitHub Actions, deployment Vercel, GitLab CI/CD, Expo Workflows, Bitrise, Codemagic, Norrix, atau layanan CI apa pun yang menjalankan Node.
+"og:image": "https://e2e.com/docs/images/og/ci.png?v=01be716140"
+"twitter:image": "https://e2e.com/docs/images/og/ci.png?v=01be716140"
+---
+
+e2e berjalan di layanan CI yang dapat menjalankan Node 24.8 atau lebih baru
+(22.22.3 atau lebih baru untuk Node 22), atau [Bun](/reference/cli#bun) 1.4.3
+atau lebih baru untuk tes web. Setiap job menginstal dependensi, menjalankan
+aplikasi atau perangkat, menjalankan tes, lalu mengunggah `.e2e/`.
+
+## Pilih layanan CI
+
+<CardGroup cols={2}>
+  <Card title="GitHub Actions" icon="/images/integrations/github-actions.svg" href="/ci/github-actions">
+    Workflow web dan mobile. Tampilkan hasil sebagai komentar pull request.
+  </Card>
+  <Card title="Vercel Previews" icon="/images/integrations/vercel.svg" href="/ci/vercel-previews">
+    Uji setiap deployment dan tahan rilis produksi sampai tes berhasil.
+  </Card>
+  <Card title="GitLab CI/CD" icon="/images/integrations/gitlab.svg" href="/ci/gitlab">
+    Job web dan mobile. Tampilkan hasilnya di merge request.
+  </Card>
+  <Card title="Expo Workflows" icon="/images/integrations/expo.svg" href="/ci/eas-workflows">
+    Build aplikasi Expo dengan Expo Build, lalu jalankan tes iOS dan Android.
+  </Card>
+  <Card title="Bitrise" icon="/images/integrations/bitrise.svg" href="/ci/bitrise">
+    Workflow iOS dan Android dengan langkah Bitrise untuk simulator dan emulator.
+  </Card>
+  <Card title="Codemagic" icon="/images/integrations/codemagic.svg" href="/ci/codemagic">
+    Workflow iOS dan Android di instance Mac mini dan Linux.
+  </Card>
+  <Card title="Norrix" icon="/images/integrations/norrix.png" href="/ci/norrix">
+    Build aplikasi NativeScript dengan Norrix, lalu jalankan rangkaian tesnya di simulator atau emulator Norrix.
+  </Card>
+</CardGroup>
+
+Untuk layanan CI lain, salin workflow [GitHub Actions](/ci/github-actions).
+Untuk menyewa browser atau perangkat dari layanan cloud, lihat
+[Browser dan perangkat cloud](/integrations).
+
+## Unggah laporan
+
+Unggah `.e2e/` di akhir setiap job, termasuk saat tes gagal. Folder ini berisi:
+
+| Jalur | Isi |
+| --- | --- |
+| `report.json` | Laporan setiap eksekusi yang mencapai tahap tes |
+| `junit.xml` | Dengan reporter `junit` (`--reporter list,junit`): hasil, tes yang dilewati oleh [filter tes](/filters), serta kegagalan startup seperti `APP_UNREACHABLE` dalam rangkaian `run` |
+| `results/` | Halaman trace, screenshot, dan dump layar dari setiap tes. Dengan `--video`, folder ini juga berisi video untuk setiap target yang engine-nya dapat merekam |
+
+Arahkan integrasi laporan tes layanan CI Anda ke `.e2e/junit.xml`.
+Di GitLab, `junit.xml` juga menautkan screenshot setiap kegagalan agar tampil
+di laporan tes. Opsi [`output`](/reference/config#output) memindahkan `.e2e/`.
+
+## Kredensial model
+
+Berikan job kredensial yang diperlukan provider, misalnya
+`AI_GATEWAY_API_KEY` (lihat [Model](/models)). Tes yang tidak menggunakan
+`agent` tidak memerlukannya.
+
+<Warning>
+Setiap job yang memiliki key tersebut memberikannya kepada kode yang dijalankan:
+tes, konfigurasi, dan dependensi. Berikan key hanya pada build dari branch yang
+Anda percayai. Jalankan kode pull request yang tidak tepercaya tanpa secret dan
+token dengan izin tulis. Lihat [Keamanan](/security).
+</Warning>
+
+Simpan key sebagai secret CI dan tetapkan batas pengeluaran jika tersedia.
+GitHub tidak memberikan secret kepada pull request dari fork.
+
+## Perubahan saat CI aktif
+
+Mode CI aktif jika `CI` memiliki nilai selain string kosong, `0`, atau
+`false`. Untuk menggunakan nilai default ini secara lokal, jalankan
+`CI=1 npx e2e run`:
+
+| Pengaturan | Lokal | CI |
+| --- | --- | --- |
+| `retries` | `0` | `1` |
+| `workers` | setengah jumlah core | `1` |
+| `cache` jika belum ditetapkan | `read-write` | `read-only` |
+| `.only` | diizinkan | ditolak dengan `ONLY_IN_CI` |
+| `command.reuseExisting` | digunakan | diabaikan dengan pemberitahuan |
+
+Untuk mengubah nilai default worker dan retry, gunakan flag:
+
+<CodeGroup>
+```bash npm
+npx e2e run --workers 4 --retries 0
+```
+
+```bash pnpm
+pnpm exec e2e run --workers 4 --retries 0
+```
+
+```bash bun
+bunx e2e run --workers 4 --retries 0
+```
+</CodeGroup>
+
+Agar CI tidak mengirim [telemetri](/telemetry#in-ci), tambahkan
+`E2E_TELEMETRY_DISABLED: '1'` ke `env` pada job.
+
+## Job mobile
+
+Tanpa [layanan perangkat cloud](/mobile#hosted-devices), setiap platform
+memerlukan mesin, build, dan perangkat tersendiri:
+
+| | iOS | Android |
+| --- | --- | --- |
+| Mesin | macOS dengan Xcode dan runtime simulator | Linux dengan KVM (virtualisasi bertingkat) |
+| Build | `.app` simulator Release, tanpa signing | `.apk` Release |
+| Perangkat | Simulator yang sudah aktif | Emulator yang sudah aktif |
+
+Buat build Release untuk kedua platform. Build debug React Native atau Expo
+memuat JavaScript dari Metro, tetapi job ini tidak menjalankan Metro sehingga
+aplikasi terbuka dengan layar error. Contoh menggunakan proyek React Native
+dengan folder `ios/` dan `android/` di repository. Untuk proyek Expo yang
+belum memiliki folder tersebut, jalankan `npx expo prebuild` terlebih dahulu.
+
+Instal build, lalu jalankan rangkaian tes:
+
+<CodeGroup>
+```bash npm
+# iOS
+xcrun simctl install booted path/to/MyApp.app
+npx e2e run --target ios --reporter list,junit
+
+# Android
+adb install -r path/to/app.apk
+npx e2e run --target android --reporter list,junit
+```
+
+```bash pnpm
+# iOS
+xcrun simctl install booted path/to/MyApp.app
+pnpm exec e2e run --target ios --reporter list,junit
+
+# Android
+adb install -r path/to/app.apk
+pnpm exec e2e run --target android --reporter list,junit
+```
+
+```bash bun
+# iOS
+xcrun simctl install booted path/to/MyApp.app
+bunx e2e run --target ios --reporter list,junit
+
+# Android
+adb install -r path/to/app.apk
+bunx e2e run --target android --reporter list,junit
+```
+</CodeGroup>
+
+Perintah tersebut mengasumsikan ada dua target bernama `ios` dan `android`,
+masing-masing menggunakan engine `mobile()` dengan `bundleId` aplikasi. Lihat
+[Arahkan ke aplikasi Anda](/mobile#point-at-your-app). Agar rangkaian tes
+menginstal build, tetapkan `app.appPath` dan panggil `device.installApp()`.
+
+Aturan berikut berlaku di setiap layanan:
+
+- **Satu job untuk setiap platform.** Jalankan `--target ios` di Mac dan
+  `--target android` di Linux dengan KVM. Mac cloud menggunakan Apple Silicon,
+  yang tidak mendukung virtualisasi bertingkat, sehingga emulator Android tidak
+  dapat berjalan di sana.
+- **Boot perangkat di langkah tersendiri.** Jika belum ada perangkat yang aktif,
+  engine meminta agent-device menyalakannya. Namun, runner Linux baru belum
+  memiliki image emulator. Langkah terpisah juga membantu membedakan kegagalan
+  boot dari kegagalan tes.
+- **Tetapkan runtime iOS.** Simulator yang dipilih berdasarkan nama
+  (`iPhone 17`) menggunakan iOS default pada image. Pohon aksesibilitas berubah
+  di antara rilis iOS, sehingga pembaruan image runner dapat membuat assertion
+  locator gagal meski kode tidak berubah. Contoh membuat simulator dengan
+  runtime bernama lalu menyalakannya menggunakan UDID. Ganti `iOS-26-5` dengan
+  runtime yang tersedia pada image (`xcrun simctl list runtimes`).
+- **Cache `~/.agent-device/apple-runner/derived`.** agent-device membuat XCUITest
+  runner di sana saat pertama kali mengendalikan simulator. Jangan cache seluruh
+  `~/.agent-device`. Bagian lainnya menyimpan keadaan daemon sebelumnya, dan
+  salinan yang dipulihkan dapat membuat eksekusi berikutnya gagal dengan
+  `Failed to communicate with daemon`.
+- **Putar ulang rekaman lokal.** Key cache replay menyimpan app, bukan perangkat,
+  jadi langkah yang direkam di simulator Anda dapat diputar ulang di perangkat
+  CI. [Commit cache replay](/cache#commit-the-replay-cache).
+
+## Jadikan tes sebagai syarat pull request
+
+Setiap exit code non-zero, termasuk kegagalan langkah agent, membuat job gagal.
+Untuk mencegah penggabungan saat eksekusi gagal, jadikan job e2e sebagai
+pemeriksaan wajib. [Men-debug eksekusi](/debugging#read-the-failure) mencantumkan
+setiap exit code dan menjelaskan apakah menjalankan ulang job dapat membantu.
+
+Agar hasil pemeriksaan tetap konsisten:
+
+- Berikan satu [tujuan atomik](/core-concepts#goals) untuk setiap `agent.act`.
+  Lalu periksa hasilnya dengan assertion locator atau `agent.assert`.
+- [Commit cache replay](/cache#commit-the-replay-cache). `agent.act` yang
+  diputar ulang tidak memanggil model. Dengan agent bawaan, cache miss,
+  penyerahan kendali, dan setiap penilaian agent (`agent.assert`, `agent.waitFor`,
+  `agent.extract`) akan memanggil model.
+- Pantau tes flaky. Laporan menandai tes yang hanya berhasil saat retry di CI
+  sebagai flaky.
+- Tambahkan `--max-failures <n>` agar eksekusi berhenti setelah sejumlah tes gagal.
+  Dengan begitu, deployment yang rusak tidak menghabiskan pemanggilan model
+  untuk setiap langkah berikutnya. Job keluar dengan kode 1.
+- Tambahkan `--max-duration <ms>` untuk membatasi waktu eksekusi tes. Penghitung
+  waktu dimulai saat tes berjalan, bukan saat aplikasi mulai. Job keluar dengan
+  kode 1.
+
+## Jalankan hanya tes yang terdampak
+
+Pada pull request, berikan `--changed-since` agar [filter tes](/filters) dapat
+melewati tes yang kemungkinan tidak terdampak oleh perubahan. Jika filter
+memberi skor pada tes, seperti decision filter, setiap target memulai file yang
+paling mungkin gagal terlebih dahulu. Tanpa flag ini, seperti di `main`, seluruh
+rangkaian tes dijalankan. Lihat [Tambahkan decision filter](/filters#add-the-decision-filter).
+
+Dengan nilai default CI satu worker, file hanya diurutkan berdasarkan kelompok
+relevansi, lalu urutan pengumpulan tes menentukan urutan jika skornya sama.
+e2e membaca [riwayat durasi](#cache-the-timings-history) hanya jika jumlah
+worker lebih dari satu. Lihat [Mulai dari yang paling mungkin gagal](/filters#start-the-likeliest-first).
+
+## Cache riwayat durasi
+
+Dengan lebih dari satu worker, `e2e run` memulai file terlama terlebih dahulu,
+setelah file yang belum memiliki riwayat durasi. Urutan diambil dari
+`<output>/timings.json` (default-nya `.e2e/timings.json`), file berukuran beberapa
+KB yang diperbarui setelah setidaknya satu file selesai dijalankan. Checkout CI
+yang baru belum memiliki file ini, jadi pulihkan dari cache CI sebelum eksekusi
+dan simpan kembali sesudahnya. Langkahnya tersedia di
+[GitHub Actions](/ci/github-actions#cache-the-timings-history).
+
+- File ini hanya memberi saran urutan. Jika hilang, rusak, atau tidak valid,
+riwayat dianggap kosong dan eksekusi menggunakan `report.json` sebelumnya. File
+  yang dipulihkan dapat mengubah urutan file, tetapi tidak mengubah hasil tes.
+- Durasi file dicatat hanya jika seluruh isinya dijalankan. Eksekusi dengan `--grep`
+  atau `--last-failed` tidak mengubah entri file yang hanya dijalankan sebagian.
+- CI menggunakan satu worker secara default. Tetapkan
+  [`workers`](/reference/config#workers) atau berikan `--workers` untuk
+  memanfaatkan riwayat durasi.
+- Gunakan branch sebagai key cache, dengan `main` sebagai fallback, agar pull
+  request baru menggunakan riwayat dari `main`. Jika memakai
+  [sharding](#sharding), tambahkan indeks shard ke key.
+- `--timings <file>` membaca dan menulis jalur lain.
+
+## Pembagian tes ke shard
+
+`--shard <index/total>` menjalankan satu bagian dari rangkaian tes. Setiap job
+menjalankan perintah yang sama dengan indeksnya sendiri, dan setiap mesin
+membagi rangkaian tes dengan cara yang sama. Shard tanpa tes gagal dengan
+`NO_TESTS`. Jika jumlah shard pada matrix dapat melebihi jumlah tes, tambahkan
+`--pass-with-no-tests`. Aturan pembagian tersedia di
+[referensi CLI](/reference/cli#flags).
+
+Di GitHub Actions, matrix menjalankan satu job untuk setiap shard:
+
+```yaml
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      # ...
+      - run: npx e2e run --shard ${{ matrix.shard }}/3 --reporter list,junit
+```
+
+Unggah `report.json` dan `junit.xml` dari setiap shard dengan nama yang
+mencantumkan indeks shard. e2e belum dapat menggabungkan laporan shard.
+
+## Jalankan ulang tes yang tidak lulus
+
+`--last-failed` hanya menjalankan tes yang tidak lulus pada eksekusi sebelumnya,
+berdasarkan `report.json` di direktori output. Jalankan flag ini pada langkah
+yang sama dengan eksekusi pertama:
+
+```yaml
+      - run: npx e2e run || npx e2e run --last-failed
+```
+
+Eksekusi ulang mempertahankan artefak dari eksekusi pertama dan menulis artefaknya sendiri
+di `rerun-<n>/` dalam direktori setiap tes, sehingga satu unggahan berisi
+keduanya. Selain `report.json`, eksekusi ulang menulis `report-with-reruns.json`
+yang menggabungkan hasil eksekusi pertama dan semua eksekusi ulang berikutnya
+dalam satu laporan. [Referensi CLI](/reference/cli#flags)
+menjelaskan status yang termasuk gagal.
+
+Untuk menjalankan ulang di job terpisah, unduh `report.json` dari job sebelumnya
+ke direktori output. Jika job sebelumnya juga merupakan eksekusi ulang, unduh
+juga `report-with-reruns.json` yang sesuai agar hasil dan percobaan sebelumnya
+tetap tercakup. Unduh juga `results/` jika Anda memerlukan berkas dari tiap
+percobaan.
+
+## Berikutnya
+
+<CardGroup cols={2}>
+  <Card title="Komentar pull request" icon="code-pull-request" href="/github">
+Satu komentar untuk setiap eksekusi, diperbarui saat eksekusi diulang.
+  </Card>
+  <Card title="Referensi CLI" icon="terminal" href="/reference/cli">
+    Flag, reporter, dan semua exit code.
+  </Card>
+</CardGroup>

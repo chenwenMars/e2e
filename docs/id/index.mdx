@@ -1,0 +1,91 @@
+---
+title: Pengantar
+description: Kerangka kerja pengujian AI sumber terbuka untuk aplikasi web dan mobile. Luangkan lebih sedikit waktu untuk menulis tes dan lebih banyak waktu untuk membangun produk.
+---
+
+import { VideoCard } from '../snippets/video-card.jsx';
+
+e2e adalah kerangka kerja pengujian sumber terbuka untuk aplikasi web dan mobile. Dalam
+satu tes, Anda dapat menggunakan [locator](/core-concepts#locators) dan
+[assertion](/reference/expect#locator-matchers) yang presisi, [tujuan](/core-concepts#goals)
+berbahasa alami yang diselesaikan oleh agent, atau menggabungkan keduanya.
+
+<VideoCard
+  id="NEawZb6Hssw"
+  title="Pelajari e2e dalam 2 menit"
+subtitle="Gabungkan tujuan agent dengan pemeriksaan locator, jalankan satu tes di web, iOS, dan Android, lalu siapkan proyek dalam semenit."
+/>
+
+```ts title="tests/checkout.e2e.ts"
+import { test, expect } from 'e2e';
+
+test('a member upgrades to Pro', async ({ app, agent, screen }) => {
+  await app.open('/settings/billing');
+
+  await agent.act('upgrade the workspace to the Pro plan');
+  await agent.assert('the invoice preview shows a prorated amount');
+
+  await expect(screen.getByRole('status')).toContainText('Pro');
+});
+```
+
+## Gerbang rilis di CI
+
+Rangkaian tes yang menjadi gerbang rilis harus menghasilkan hasil yang sama
+setiap kali dijalankan pada sebuah commit. e2e dapat menjalankan rangkaian itu
+tanpa pemanggilan model:
+
+- **Tes deterministik.** [Coding agent Anda](/coding-agents) menulis tes
+  menggunakan locator dan assertion. Tes tersebut tidak memerlukan model
+  atau API key. Di web, tes berjalan di browser yang dikendalikan
+  [engine web](/web) melalui Playwright.
+- **Tujuan yang direkam.** [Commit rekaman tujuan](/cache#commit-the-replay-cache),
+  lalu CI [memutar ulang](/cache) `agent.act` yang terekam tanpa memanggil model.
+  Dengan [`--strict-cache`](/cache#fail-on-a-stale-recording), rekaman yang
+  tidak lagi sesuai dengan aplikasi membuat langkah gagal dan model tidak
+  mengambil alih. Langkah yang belum pernah direkam atau rekamannya tidak
+  lengkap tetap [dijalankan secara langsung](/cache#fail-on-a-stale-recording).
+- **Pemeriksaan locator.** `expect(locator)` tidak memanggil model. Dengan
+  agent bawaan, `agent.assert`, `agent.waitFor`, dan `agent.extract` memanggil
+  model pada setiap eksekusi.
+
+## Mengapa e2e
+
+- **Lebih sedikit waktu untuk tes.** Tulis tujuan, bukan skrip berisi selector
+  dan jeda. Saat UI berubah, agent menyesuaikan langkahnya sehingga lebih
+  sedikit tes yang perlu diperbaiki.
+- **Eksekusi lebih hemat.** e2e merekam langkah `agent.act` setelah pemeriksaan
+  berikutnya berhasil. Pada eksekusi selanjutnya, langkah itu
+  [diputar ulang](/cache) tanpa pemanggilan model; agent mengambil alih lagi
+  saat aplikasi berubah.
+
+## Cara kerjanya
+
+- **Target.** Setiap tes berjalan sekali untuk setiap target, misalnya Chromium
+  atau simulator iPhone. [Engine web](/web) mengendalikan browser melalui
+  Playwright. [Engine mobile](/mobile) mengendalikan simulator iOS dan emulator
+  Android melalui agent-device. Anda juga dapat
+  [menulis engine sendiri](/writing-an-engine).
+- **Langkah agent.** `agent.act` menyelesaikan tujuan. `agent.assert`,
+  `agent.waitFor`, dan `agent.extract` menilai layar. Gunakan
+  [langganan](/subscriptions), [API key, atau model lokal](/models) milik Anda.
+- **Laporan.** Runner [menyamarkan secret terdaftar](/security) dari input
+  model. Runner mencatat langkah, kegagalan, dan artefak dalam
+  [laporan](/debugging) yang dapat dibaca oleh Anda atau coding agent.
+
+## Mulai
+
+<CardGroup cols={2}>
+  <Card title="Panduan cepat" icon="rocket" href="/quickstart">
+    Siapkan dengan satu prompt untuk coding agent atau lakukan secara manual.
+  </Card>
+  <Card title="Contoh proyek" icon="folder-open" href="/example-projects">
+    Jalankan aplikasi web atau mobile mandiri yang sudah memiliki tes e2e.
+  </Card>
+  <Card title="Konsep inti" icon="pen-to-square" href="/core-concepts">
+    Tujuan, assertion, dan locator.
+  </Card>
+  <Card title="Coding agent" icon="robot" href="/coding-agents">
+    Minta coding agent menulis, menjalankan, dan men-debug tes.
+  </Card>
+</CardGroup>

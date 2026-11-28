@@ -197,11 +197,107 @@ jobs:
           AGENT_DEVICE_VERSION: ${{ inputs.agent-device-version }}
         run: node scripts/install-smoke.ts ${{ matrix.pnpm }}
 
+  # The Cargo workspace (crates/) formatted, lint-clean, and tested, and the
+  # desktop engine's native driver building for both Mac architectures through
+  # the script the release runs, the arm64 addon loading in Node and the x64
+  # one in an x86_64 Node under Rosetta. rustup comes from a pinned,
+  # checksum-verified rustup-init when the image has none; the toolchain is
+  # pinned in the root rust-toolchain.toml.
+  native:
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: ./.github/actions/rust-toolchain
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      # The notices of the crates the addon links, committed in each platform package, must match Cargo.lock.
+      - run: node scripts/native/native-licenses.ts desktop --check
+      - run: node scripts/native/build-native.ts desktop --target aarch64-apple-darwin
+      - run: node scripts/native/build-native.ts desktop --target x86_64-apple-darwin
+      - name: Check each build's architecture
+        working-directory: packages/desktop
+        run: |
+          test "$(lipo -archs desktop.darwin-arm64.node)" = arm64
+          test "$(lipo -archs desktop.darwin-x64.node)" = x86_64
+      - name: Load the arm64 addon
+        working-directory: packages/desktop
+        run: node -e "const status = require('./desktop.darwin-arm64.node').status(); if (typeof status.accessibility !== 'boolean') process.exit(1)"
+      - uses: ./.github/actions/load-x64-addon
+        with:
+          addon: packages/desktop/desktop.darwin-x64.node
+      # The engine's loader on the addon just built: the test that runs it is skipped wherever no addon was built.
+      - uses: ./.github/actions/workspace-install
+      - name: Load the addon through the engine
+        env:
+          REQUIRE_DESKTOP_NATIVE: '1'
+        run: pnpm --filter @e2e-dev/core run build && pnpm --filter @e2e-dev/desktop exec vitest run tests/unit/driver.test.ts
+
+  # The Electron engine on its testbed app. Electron has no headless mode, so
+  # the app runs under a virtual display.
+  electron:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: ./.github/actions/workspace-install
+        with:
+          agent-device-version: ${{ inputs.agent-device-version }}
+      # Electron needs the system packages Chromium does.
+      - name: Install Chromium's system packages
+        uses: ./.github/actions/chromium
+      - name: Build
+        run: pnpm --filter @e2e-dev/core --filter e2e --filter @e2e-dev/electron run build
+      # The engine's own launches and page-side code on real Electron windows.
+      - name: Electron integration tests
+        run: xvfb-run --auto-servernum pnpm --filter @e2e-dev/electron run test:integration
+      - name: Electron testbed
+        run: xvfb-run --auto-servernum pnpm --filter @e2e-dev/electron-testbed test
+
+  # The same engine on Windows: its own process tree, paths, and environment.
+  electron-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: ./.github/actions/workspace-install
+        with:
+          agent-device-version: ${{ inputs.agent-device-version }}
+      - name: Build
+        run: pnpm --filter @e2e-dev/core --filter e2e --filter @e2e-dev/electron run build
+      - name: Electron unit tests
+        run: pnpm --filter @e2e-dev/electron test
+      - name: Electron integration tests
+        run: pnpm --filter @e2e-dev/electron run test:integration
+      # Each suite reports on its own: one failing does not hide the other.
+      - name: Electron testbed
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @e2e-dev/electron-testbed test
+
   # The one check the ruleset requires from this workflow. A skipped job
   # passes (the change cannot reach it); a failed or cancelled one fails it.
   gate:
     name: spec gate
-    needs: [check, test, bun, install]
+    needs: [check, test, bun, install, native, electron, electron-windows]
     if: ${{ always() }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5

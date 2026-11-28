@@ -66,7 +66,7 @@ function chatModel() {
 function expectIdentified(headers: Readonly<Record<string, string>> | undefined) {
   expect(headers?.['user-agent']?.startsWith(`${USER_AGENT} `)).toBe(true);
   expect(headers?.['user-agent']).toContain(' ai/');
-  expect(headers?.['http-referer']).toBe('https://tester.army/e2e');
+  expect(headers?.['http-referer']).toBe('https://e2e.com');
   expect(headers?.['x-title']).toBe('e2e');
 }
 

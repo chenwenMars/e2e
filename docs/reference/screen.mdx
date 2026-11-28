@@ -76,7 +76,10 @@ A role query never matches a node hidden from the accessibility tree: one
 that does not render, or one under `aria-hidden`. On the other query kinds,
 `visible: true` keeps only nodes that render, the same check `toBeVisible()`
 makes, so an `aria-hidden` node that still paints counts as visible. See
-[Hidden duplicates](#hidden-duplicates).
+[Hidden duplicates](#hidden-duplicates). On a device or a desktop app a role
+query skips every node the engine marks hidden, which can include one
+scrolled out of view: see [mobile](/reference/mobile#visibility) and
+[desktop](/desktop#what-differs-from-the-web) for what each marks.
 </Note>
 
 ##### `img` alias
@@ -390,6 +393,7 @@ await screen.getByRole('row').nth(2).getByRole('checkbox').check();
 | [`screen.doubleTapAt`](#screen-doubletapat) | `Promise<void>` |
 | [`screen.swipe`](#screen-swipe) | `Promise<void>` |
 | [`screen.scrollUntilVisible`](#screen-scrolluntilvisible) | `Promise<void>` |
+| [`screen.scrollTo`](#screen-scrollto) | `Promise<void>` |
 
 `tapAt`, `doubleTapAt`, and `swipe` act on the viewport.
 
@@ -544,6 +548,65 @@ await screen.getByTestId('feed').scrollUntilVisible(row);
 | `INVALID_ARGUMENT` | An option it does not take. |
 | `LOCATOR_NOT_FOUND` | The deadline expires first, a swipe it cut short included. |
 
+#### `screen.scrollTo`
+
+Scrolls to an edge of the page or a list, as far as it goes. Use it for
+Cypress `cy.scrollTo('bottom')`, Detox `scrollTo('bottom')`, or Appium
+`scrollToEnd()`.
+
+```ts
+/**
+ * Scrolls a container to an edge, as far as it goes: on `screen` the
+ * screen's main scrolling content, else the content under its center; on
+ * a locator the node, or its nearest ancestor that scrolls along that axis
+ * (on a device, whatever scrolls under a drag inside the node's box, so
+ * locate the list, not a row). Resolves at once when it is there already or
+ * nothing scrolls. `timeout` bounds the whole scroll.
+ */
+scrollTo(edge: ScrollEdge, options?: ActionOptions): Promise<void>;
+```
+
+```ts
+await screen.scrollTo('bottom');
+await expect(screen.getByRole('contentinfo')).toBeInViewport();
+
+await screen.getByTestId('feed').scrollTo('top', { timeout: 60_000 });
+```
+
+`edge` is `'top'`, `'bottom'`, `'left'`, or `'right'`. To scroll a list
+inside the page, call it on the list: [`scrollTo`](#scrollto).
+
+- On the web, `screen` scrolls the page. When the page itself does not
+  scroll, as in an app shell, it scrolls the scroll container under the
+  viewport's center; an iframe there is not entered, so call it on a locator
+  inside the frame. It sets the offset with the page's own scroll API, so
+  `scroll-behavior: smooth` is skipped and no wheel event fires.
+- On a device, it drags toward the edge from the middle of the container
+  (the screen on `screen`), up to three drags at a time, until a drag moves
+  nothing. A spinner does not count as movement. A list of 45 screens takes
+  about 22 s on an Android emulator and 50 s on an iOS simulator, so give a
+  very long list a longer `timeout`.
+- Content that grows when the end is reached is followed: the web jumps
+  again until a jump moves nothing, a device drags again while the list
+  changes. Neither waits for a slow load. To reach a row a feed loads, use
+  [`scrollUntilVisible`](#screen-scrolluntilvisible).
+- On a device, a drag that lands on something that does not scroll moves
+  nothing, so it reads as the edge.
+- On a device, the last drag runs past the edge, so `scrollTo('top')` on a
+  list with pull-to-refresh refreshes it. Content that changes on its own
+  inside the container, such as a timer or an auto-advancing carousel, reads
+  as movement and keeps it dragging until the timeout: call `scrollTo` on
+  the list, not the screen.
+- The timeout is [`config.actionTimeout`](/reference/config#actiontimeout).
+- A frame's screen (`browser.frameLocator()`) refuses it. Call it on a
+  locator inside the frame.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | An edge it does not know, an option other than `timeout`, or a frame's screen. |
+| `ACTION_FAILED` | The edge was not reached before the timeout: `scrollTo('bottom') did not reach the edge within 30000ms (the content was still moving after 24 drags when the budget ran out)`. The parentheses hold the engine's reason. |
+| `UNSUPPORTED_CAPABILITY` | The engine does not list `scrollTo` in its actions, as the desktop engine does not. |
+
 ### Screen reads
 
 | Method | Returns |
@@ -666,6 +729,7 @@ await screen.pause();
 | [`dragTo`](#dragto) | `Promise<void>` |
 | [`scrollIntoView`](#scrollintoview) | `Promise<void>` |
 | [`swipe`](#swipe) | `Promise<void>` |
+| [`scrollTo`](#scrollto) | `Promise<void>` |
 
 Each action resolves one node, waits for actionability, and performs one
 operation. The timeout is
@@ -1009,6 +1073,21 @@ It takes `{ direction, momentum? }` as [`screen.swipe`](#screen-swipe)
 defines them, plus `timeout`, which `screen.swipe` refuses. It has no
 `{ from, to }` form.
 
+#### `scrollTo`
+
+```ts
+/** Scrolls this node, or its nearest ancestor that scrolls along the edge's axis, to an edge. */
+scrollTo(edge: ScrollEdge, options?: ActionOptions): Promise<void>;
+```
+
+```ts
+await screen.getByTestId('feed').scrollTo('bottom');
+await screen.getByRole('list', 'Photos').scrollTo('right');
+```
+
+On a device it drags inside the node's box, so locate the list itself, not
+a row. The rest is as [`screen.scrollTo`](#screen-scrollto) describes.
+
 ### Locator reads
 
 | Method | Returns |
@@ -1110,6 +1189,16 @@ back to Appium's `name` for both values. `name` is the identifier, or the label
 when an element has no identifier. So `resource-id` and `label` can each return
 the other's value there: an element with a test id and no label reads its test
 id as `label`. For the text a field holds, use `inputValue()`.
+
+On macOS (`@e2e-dev/desktop`), a node carries `label` (a control's
+accessible name, up to 1,000 characters; text has none, since `textContent`
+reads it), `identifier`
+(the developer's accessibility identifier, also its test id), `description`
+(left out when it is the accessible name, which `label` reads, as an AppKit
+field's description often is), `placeholder`, and `hint` (its help text), each
+when the app reports it. On a
+password field, `getAttribute` throws `POLICY_DENIED`, as it does on every
+engine.
 
 #### `isVisible`
 
@@ -1559,6 +1648,9 @@ export type SelectOption =
 
 /** A swipe or scroll direction. */
 export type ScrollDirection = 'up' | 'down' | 'left' | 'right';
+
+/** An edge of a scroll container, which `scrollTo` scrolls to. */
+export type ScrollEdge = 'top' | 'bottom' | 'left' | 'right';
 
 /** Fling strength of a swipe; defined under screen.swipe. */
 export type Momentum = 'none' | 'slow' | 'fast';

@@ -1,0 +1,303 @@
+---
+title: Executores personalizados
+description: Personalize o loop do agente ou implemente o seu próprio executor de passos.
+"og:image": "https://e2e.com/docs/images/og/executors.png?v=283f7962bb"
+"twitter:image": "https://e2e.com/docs/images/og/executors.png?v=283f7962bb"
+---
+
+Um executor de passos roda os passos `agent.act` e `agent.assert` de um
+agente. Escreva o seu quando um prompt `system` e as
+[ferramentas do projeto](/tools) não bastam.
+
+| Opção | O que você escreve | O que o runner mantém |
+| --- | --- | --- |
+| `createToolLoopExecutor` de `e2e/agent` | As ferramentas e o prompt. O loop adiciona só `complete_step`. | Orçamentos, detecção de chamadas repetidas, vereditos, contabilização de uso e transcrições de depuração |
+| `StepExecutor` | `runStep(ctx)`. Um modelo é opcional, e os tipos de `e2e` e `e2e/engine` compilam sem o pacote `ai`. | O prazo do passo, observações com dados sensíveis ocultados, ações verificadas e o registro do veredito |
+
+Defina qualquer um dos dois como `executor` em uma entrada de agente. A
+entrada continua lendo `model`, `judge`, `context` e os orçamentos, e rejeita
+`system` e `tools`: passe esses dois para `createToolLoopExecutor`. Para um
+provedor que retorna escolhas delimitadas, veja o
+[executor de decisão](/decision-models).
+
+## Mantenha o loop, mude o vocabulário
+
+Este agente tem duas ferramentas: uma lê a tela, a outra toca em um nó pelo id
+dele.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig } from 'e2e';
+import { createToolLoopExecutor } from 'e2e/agent';
+import { web } from '@e2e-dev/web';
+import { gateway, tool } from 'ai';
+import { z } from 'zod';
+
+export default {
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+  agents: {
+    default: {
+      model: gateway('openai/gpt-6-luna-fast'),
+      maxModelCalls: 15,
+      executor: createToolLoopExecutor({
+        name: 'tap-only',
+        system: 'Read the screen before acting. Tap controls by their id from the latest read.',
+        buildPrompt: (ctx) => ctx.step.instruction,
+        tools: (ctx, { guard }) => ({
+          read_screen: tool({
+            description: 'Read the screen as text, one node per line as #id role "name"',
+            inputSchema: z.object({}),
+            execute: () => guard(async () => (await ctx.observe()).text),
+          }),
+          tap: tool({
+            description: 'Tap a node by its id from the latest read_screen',
+            inputSchema: z.object({ id: z.string() }),
+            execute: ({ id }) =>
+              guard(async () => {
+                await ctx.actions.tap({ id: id.replace(/^#/, '') });
+                return `Tapped ${id}.`;
+              }),
+          }),
+        }),
+      }),
+    },
+  },
+} satisfies E2EConfig;
+```
+
+O loop roda no máximo `maxModelCalls` turnos de modelo por passo com o `model`
+da entrada, ou com o modelo do próprio loop, passado em
+`createToolLoopExecutor({ model })`. Um executor também pode trazer um
+`judge`. Quando a entrada define a mesma opção, os dois valores precisam
+apontar para o mesmo provedor e o mesmo modelo, ou o carregamento da
+configuração falha com `INVALID_CONFIG`.
+
+`buildPrompt` retorna uma string ou um histórico de mensagens, e
+`prepareMessages` permite cortar o histórico entre turnos ou encerrar cedo um
+passo que travou. Se um provedor rejeitar uma requisição pelo tamanho do
+contexto, o loop compacta o histórico e tenta novamente uma vez antes de
+falhar (defina `inconclusiveOnOverflow: true` para loops de asserção que
+devem terminar como inconclusivos em vez disso). `guard()` bloqueia novas
+chamadas de ferramenta quando o passo está terminando e devolve os erros ao
+modelo como texto. As ações que rodam por `ctx.actions` são autorizadas,
+contadas no orçamento e gravadas, para que funcionem com o
+[cache de replay](/cache) em qualquer engine que dê suporte a elas.
+
+Para manter as ações embutidas ao lado das suas próprias ferramentas, inclua por
+spread `createGrammarTools(ctx, { guard })` no conjunto de ferramentas. Essa
+função retorna as ferramentas de ação do agente embutido para os verbos que a
+engine do alvo suporta, e cada resultado informa o que mudou na tela.
+`BASE_RULES` é a orientação do agente embutido para essas ferramentas; comece o
+seu `system` com ela.
+
+```ts
+import { BASE_RULES, createGrammarTools, createToolLoopExecutor } from 'e2e/agent';
+
+createToolLoopExecutor({
+  name: 'with-inbox',
+  system: `${BASE_RULES}\n\nCheck the inbox with read_inbox when a step mentions an email.`,
+  buildPrompt: (ctx) => ctx.step.instruction,
+  tools: (ctx, { guard }) => ({ ...createGrammarTools(ctx, { guard }), read_inbox: readInbox }),
+});
+```
+
+Fora do loop, uma ferramenta da gramática retorna um `ScreenOutput`: texto, ou
+texto com a captura de tela. Quando uma ferramenta lança um erro que
+`isRuntimeHardStop(error)` aceita, encerre o passo e lance o erro de novo.
+
+Uma ferramenta que age fora de `ctx.actions`, como uma chamada à sua API de
+teste, envolve o próprio corpo em `ctx.budgets.runTool({ name, mutates })`,
+que ocupa um slot de ação e registra o resultado. Não chame `ctx.actions` nem
+`ctx.observe` dentro de `runTool`: a chamada espera atrás de si mesma e trava
+em deadlock.
+
+## Substitua o executor
+
+Este executor não usa modelo e suporta uma única asserção,
+`agent.assert('the screen says Ready')`. Qualquer outro passo retorna um
+veredito bloqueado.
+
+```ts title="e2e.config.ts"
+import type { E2EConfig, StepExecutor } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+const scripted: StepExecutor = {
+  name: 'scripted',
+  version: '1',
+  cache: 'off',
+  async runStep(ctx) {
+    if (ctx.step.kind !== 'assert' || ctx.step.instruction !== 'the screen says Ready') {
+      return {
+        status: 'blocked',
+        errorCode: 'AUTOMATION_UNSUPPORTED',
+        summary: 'This executor only checks whether the screen says Ready.',
+      };
+    }
+    const screen = await ctx.observe();
+    const ready = screen.text.includes('Ready');
+    return {
+      status: ready ? 'passed' : 'failed',
+      summary: ready ? 'The screen says Ready.' : 'Ready is absent from the screen.',
+    };
+  },
+};
+
+export default {
+  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
+  agents: { default: { executor: scripted } },
+} satisfies E2EConfig;
+```
+
+## O que o contexto contém
+
+| Membro | O que é |
+| --- | --- |
+| `ctx.step` | O `kind`, a instrução, os parâmetros e o `index` na linha do tempo da tentativa. O valor de um segredo configurado na instrução ou em um parâmetro aparece como `<secret:name>`. Uma referência de `secrets.get()` chega como um placeholder só com o nome, que `typeSecret` preenche |
+| `ctx.observe({ tree, pixels })` | Texto da tela com dados sensíveis ocultados, com uma árvore de nós opcional e uma captura de tela mascarada |
+| `ctx.read({ id }, { style })` | Estilos computados, com os segredos ocultados, de um nó listado no momento. Veja [Ferramentas do projeto](/tools#read-a-nodes-computed-style) |
+| `ctx.actions` | Ações verificadas e gravadas: `tap`, `doubleTap`, `longPress`, `secondaryTap`, `hover`, `type`, `typeSecret`, `press`, `select`, `check`, `drag`, `scrollTo`, `scrollUntil`, `upload`, `scroll`, `navigate`, `back`, `resize`, `switchTab`, `closeTab` e as ações de ponto e de teclado abaixo |
+| `ctx.target` | O `name`, a `platform` e os `verbs` do alvo, as ações que a engine dele suporta. Ofereça só essas ações ao modelo. `tapModifiers` é verdadeiro quando `tap`, `doubleTap` e `secondaryTap` aceitam `{ modifiers }` |
+| `ctx.signal` | É abortado no cancelamento, no prazo do passo ou em qualquer outra interrupção forçada. O prazo não consegue interromper um trabalho que ignora o sinal |
+| `ctx.replayedPrefix` | Definido quando um replay do cache rodou primeiro uma parte do passo. Veja [Cache de replay](#replay-cache) |
+| `ctx.model`, `ctx.providerOptions` | O modelo configurado do agente e os `providerOptions`, quando definidos |
+| `ctx.agentContext` | O `context` do agente mais o `agentContext` do teste |
+| `ctx.ledger` | Os passos concluídos do teste |
+| `ctx.attempt` | Os ids do teste e da tentativa, o `titlePath` do teste (vazio fora do `e2e run`), o índice da nova tentativa, o sinal de aborto e um mapa `memory` que nunca aparece nos relatórios |
+| `ctx.budgets` | Contabilização para ferramentas personalizadas (`runTool`) e chamadas ao modelo (`recordModelCall`) |
+| `ctx.attachTranscript(text)` | Com `--debug`, anexa a transcrição do modelo como um artefato `log`. Chame uma vez, no fim |
+| `ctx.attachTurns(turns)` | Guarda no passo um registro truncado dos turnos do modelo (`{ index, calls, outcome }`). O relatório mostra os últimos sob um passo que falhou |
+| `ctx.attachScreenshot(pixels, label)` | Guarda os pixels observados como um artefato `screenshot` do passo e resolve com o id do artefato no relatório |
+
+`tapAt(point)` e `hoverAt(point)` chamam a ação por coordenadas da engine ou,
+quando a engine não tem uma, agem sobre o controle listado no ponto.
+`dragAt(from, to)` arrasta entre os pontos pelo tipo de ponteiro `dragTo` da
+engine. Sem esse tipo de ponteiro, uma engine com a ação `dragTo` arrasta por
+id quando os pontos caem em dois controles listados diferentes. Qualquer
+outro `dragAt` falha com `UNSUPPORTED_CAPABILITY`. `hitTest(point)` encontra
+o controle em um ponto sem agir. Engines com teclado adicionam `typeText`,
+`pressKey` e `dismissKeyboard` para o controle com foco.
+`upload(target, paths)` aceita caminhos relativos ao projeto e os arquivos
+`sample:` listados na [política de upload](/reference/agent#action-tools),
+recusa com `POLICY_DENIED` um caminho fora da raiz do projeto ou um caminho
+oculto, e com `INVALID_ARGUMENT` um arquivo ausente.
+
+O `keyboardVisible` da observação diz se um teclado virtual está aparecendo e
+fica ausente quando a engine não consegue saber.
+
+Quando a captura semântica falha, a observação define `treeUnavailable: true`,
+não tem `tree` e inclui uma captura de tela se a política permitir. Os ids de
+nós anteriores ficam inválidos, e a falta da árvore não prova que um controle
+está ausente.
+
+## O que o executor trata
+
+`act` e `assert` chegam a `runStep` com `maxSteps`, `maxModelCalls` e
+`timeout` do agente. Em `assert`, `vision` chega como `ctx.step.vision` só
+quando o executor declara `vision: true`; caso contrário, a chamada falha com
+`UNSUPPORTED_CAPABILITY`. `screenshot` continua anexando evidências depois do
+seu veredito.
+
+`waitFor` e `extract` continuam usando os julgamentos embutidos. Sem um
+modelo configurado, eles falham com `MODEL_UNAVAILABLE`.
+
+## O veredito
+
+Retorne `passed`, `failed` ou `blocked` com um resumo. Um veredito bloqueado
+precisa de um código de erro, e um veredito aprovado não tem nenhum.
+[Como funcionam os passos do agente](/agent-steps#how-a-step-ends) lista os
+códigos. Retorne `STEP_BUDGET_EXHAUSTED`, `STEP_TIMEOUT` ou `CANCELLED` só
+quando esse orçamento se esgotou, o prazo passou ou o teste foi cancelado. O
+runner recusa qualquer outro uso, e também um veredito aprovado com código,
+com `MODEL_OUTPUT_INVALID`.
+
+Para um modelo que o seu executor chama por conta própria,
+`createVerdictTool(ctx.step.kind)` de `e2e/agent` é o `complete_step` do
+agente embutido. Dê ao modelo a `tool` da ferramenta de veredito e
+`VERDICT_RULES`, e depois retorne `verdict()`. Em um passo `act`, a
+ferramenta remove `ASSERTION_INCONCLUSIVE` de um veredito com falha.
+
+## Cache de replay
+
+`cache` em um `StepExecutor` define como os passos `act` dele usam o
+[cache de replay](/cache). Passos `assert` nunca entram no cache.
+
+`'inherit'`, o padrão, segue o modo de cache configurado: um passo gravado é
+reproduzido sem chamar `runStep`. `'off'` nunca reproduz nem grava. Use-o
+quando o histórico ou a memória do próprio executor é a fonte da verdade.
+
+Quando um replay é interrompido no meio, o runner chama `runStep` com
+`ctx.replayedPrefix`: as ações reproduzidas e o motivo pelo qual o replay foi
+interrompido. Continue a partir da tela atual sem repetir essas ações.
+
+O cache grava o que um passo faz por meio de `ctx.actions`. Uma chamada de
+ferramenta que altera o estado deixa uma lacuna que o executor preenche no
+replay. As entradas são indexadas pelo agente configurado e pelo contexto
+dele, não pelo executor, então trocar o executor de um agente mantém as
+entradas desse agente.
+
+## Controlando a página por conta própria
+
+Na engine web, `surfaceOf(handle)` de `@e2e-dev/web` dá a você a `Page` e o
+`BrowserContext` da tentativa atual. Os dois acessores lançam `INVALID_STATE`
+fora de uma tentativa ativa ou em um handle em que nenhum alvo roda, e
+`page()` também quando nenhuma página está aberta.
+
+```ts
+import type { E2EConfig, StepExecutor } from 'e2e';
+import { web, surfaceOf } from '@e2e-dev/web';
+
+const engine = web();
+const own: StepExecutor = {
+  name: 'own-tools',
+  version: '1',
+  cache: 'off',
+  async runStep(ctx) {
+    const page = surfaceOf(engine)!.page();   // the page app.open() navigated
+    await ctx.budgets.runTool({ name: 'click', mutates: true }, () =>
+      page.getByRole('button', { name: 'Save' }).click(),
+    );
+    return { status: 'passed', summary: 'saved' };
+  },
+};
+
+export default {
+  targets: [{ engine, app: { url: 'http://localhost:3000' } }],
+  agents: { default: { executor: own } },
+} satisfies E2EConfig;
+```
+
+Chamadas diretas ao Playwright pulam a autorização de ações e o cache de
+replay, e não deixam artefatos. O prazo do passo e o registro do veredito
+continuam valendo.
+
+## Chaves de provedor
+
+A execução oculta, em tudo o que um executor retorna, as
+[chaves de provedor](/reference/security#provider-keys) que encontra no
+ambiente. Quatro funções de `e2e/agent` cobrem o resto:
+
+| Função | Uso |
+| --- | --- |
+| `registerProviderKey(name, value)` | Uma chave com a qual o seu agente faz login e que nenhuma variável listada contém, como uma que ele lê do próprio arquivo de login. Aparece como `<secret:name>` a partir de então. `name` aceita letras, dígitos, `_`, `.` e `-`; um valor com menos de 20 caracteres, com mais de 8.192 ou que não é uma string fica como está. |
+| `registerProviderKeys(env)` | As variáveis listadas de um ambiente com o qual você inicia um agente, quando esse ambiente não é o da própria execução. |
+| `redactSecrets(text)` | Texto que você corta ou guarda antes de retorná-lo. Oculte primeiro: metade de uma chave deixa de corresponder. |
+| `redactStepText(ctx, text)` | Texto que você envia ao seu agente e que a execução não montou, como um prompt com o seu próprio `system`: os segredos do passo e as chaves de provedor conhecidas no momento, e nenhum valor que um teste anterior descobriu. Chame-a logo antes de o texto sair. |
+
+Um modelo criado com uma chave no código também pode registrá-la em
+`e2e.config.ts`:
+
+```ts
+import { registerProviderKey } from 'e2e/agent';
+
+registerProviderKey('llm-key', apiKey);
+```
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Referência de agent" icon="wand-magic-sparkles" href="/reference/agent">
+    Todos os métodos, opções e orçamentos.
+  </Card>
+  <Card title="Escrevendo uma engine" icon="plug" href="/writing-an-engine">
+    Adicione suporte a outra plataforma.
+  </Card>
+</CardGroup>

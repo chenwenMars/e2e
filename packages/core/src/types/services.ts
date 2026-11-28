@@ -44,8 +44,8 @@ export type Service<Value extends object = object> = {
   start(context: ServiceStartContext): AsyncGenerator<Value, void, undefined>;
 };
 
-/** Configured services, keyed by name. */
-export type ServiceMap = Readonly<Record<string, Service>>;
+/** Configured services, keyed by name. An `undefined` entry starts nothing. */
+export type ServiceMap = Readonly<Record<string, Service | undefined>>;
 
 /** Built-in classes that keep their type when copied with `v8.serialize`. */
 type CopiedValue = Date | RegExp | ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | ArrayBuffer | ArrayBufferView | Error;
@@ -130,5 +130,8 @@ export type ServiceValue<Value> = Value extends (...args: infer Args) => infer R
 
 /** Service values from `Services`, keyed by name, as tests and `env` functions receive them. */
 export type ServiceValues<Services> = {
-  readonly [Name in keyof Services]: Services[Name] extends Service<infer Value> ? ServiceValue<Value> : never;
+  readonly [Name in keyof Services]: ConfiguredServiceValue<Services[Name]>;
 };
+
+/** The value of one `services` entry, `undefined` for an entry that starts nothing. */
+type ConfiguredServiceValue<Entry> = Entry extends Service<infer Value> ? ServiceValue<Value> : Entry extends undefined ? undefined : never;

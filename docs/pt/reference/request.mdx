@@ -1,0 +1,241 @@
+---
+title: request
+description: "A fixture request: chamadas HTTP a partir de um teste, cada uma delas um passo no relatório."
+---
+
+A fixture `request` envia requisições HTTP a partir de um teste. Um caminho
+é resolvido em relação à URL do app do alvo. Cada chamada é um passo no
+relatório e termina quando todo o corpo da resposta é lido.
+
+```ts title="tests/orders.e2e.ts"
+import { expect, test } from 'e2e';
+
+test('creates an order', async ({ request }) => {
+  const created = await request.post('/api/orders', { json: { sku: 'A1' } });
+  expect(created.status).toBe(201);
+  expect(await created.json()).toMatchObject({ sku: 'A1' });
+});
+```
+
+## Referência
+
+| Método | Retorna |
+| --- | --- |
+| [`fetch`](#fetch) | `Promise<WebResponse>` |
+| [`get`](#shorthands) | `Promise<WebResponse>` |
+| [`post`](#shorthands) | `Promise<WebResponse>` |
+| [`put`](#shorthands) | `Promise<WebResponse>` |
+| [`patch`](#shorthands) | `Promise<WebResponse>` |
+| [`delete`](#shorthands) | `Promise<WebResponse>` |
+| [`head`](#shorthands) | `Promise<WebResponse>` |
+
+Todo método recebe uma URL e [opções](#options), e retorna uma
+[`WebResponse`](#webresponse).
+
+### `fetch`
+
+Envia uma requisição com o método de `options.method`, `GET` por padrão.
+
+```ts
+const removed = await request.fetch('/api/orders/7', { method: 'DELETE' });
+```
+
+O método é qualquer nome de método HTTP, exceto `CONNECT`, `TRACE` e `TRACK`,
+que o `fetch` do Node não consegue enviar. O e2e envia o método em maiúsculas.
+
+### Atalhos
+
+`get`, `post`, `put`, `patch`, `delete` e `head` enviam uma requisição com o
+método de cada um.
+
+```ts
+const found = await request.get('/api/orders?reference=r1');
+```
+
+Uma requisição `GET` ou `HEAD` não aceita corpo.
+
+### Opções
+
+| Opção | Tipo | Padrão |
+| --- | --- | --- |
+| `headers` | `Record<string, string>` | - |
+| `json` | `unknown` | - |
+| `body` | `string` | - |
+| `timeout` | `number` | `actionTimeout` |
+| `redirect` | `'follow' \| 'manual' \| 'error'` | `'follow'` |
+| `method` | `string` | `'GET'` |
+
+- `json` é serializado com `JSON.stringify` e enviado, com
+  `content-type: application/json`, a menos que `headers` defina um tipo de
+  conteúdo. Ele aceita só valores seguros para JSON: objetos simples, arrays,
+  strings, números finitos, booleanos e `null`. Uma chave cujo valor é
+  `undefined`, uma `Date` e uma referência de `secrets.get()` são recusadas,
+  enquanto `JSON.stringify` as descartaria ou converteria.
+- `body` é enviado como está, com `content-type: text/plain;charset=UTF-8`, a
+  menos que `headers` defina o tipo de conteúdo. Passe `json` ou `body`, não os
+  dois. Corpos de formulário, multipart e binários ainda não são suportados.
+- `timeout` é em milissegundos, no máximo 2147483647. `0` não define um tempo
+  limite próprio, então só o orçamento do teste ou do hook em andamento limita
+  a chamada.
+- `redirect` define como os redirecionamentos são tratados. `'follow'` os
+  segue; `'manual'` retorna a resposta 3xx como está, com os cabeçalhos
+  `location` e `set-cookie`; `'error'` faz a chamada falhar com
+  `ACTION_FAILED` quando o servidor redireciona.
+- `method` é uma opção só de `fetch`.
+
+### `WebResponse`
+
+Uma resposta HTTP cujo corpo `request` já leu. O `route.fetch()` da engine
+web retorna o mesmo tipo.
+[`browser.waitForResponse`](/reference/web#waitforresponse) retorna uma
+`PageResponse`, que estende `WebResponse` com `request` e começa a ler o corpo
+assim que a resposta corresponde ao padrão.
+
+| Membro | Tipo |
+| --- | --- |
+| `status` | `number` |
+| `url` | `string` |
+| `headers` | `Record<string, string>` |
+| `body()` | `Promise<Buffer>` |
+| `text()` | `Promise<string>` |
+| `json<T>()` | `Promise<T>` |
+
+- `url` é a URL depois dos redirecionamentos quando `redirect` é `'follow'`,
+  ou a URL requisitada quando `redirect` é `'manual'`.
+- `headers` tem os nomes em minúsculas. Vários valores de `set-cookie` são
+  unidos com `\n`.
+- `text()` decodifica o corpo como UTF-8. `json()` faz o parse do corpo, com o
+  tipo `unknown` a menos que você informe outro. Nada verifica esse tipo: use
+  [`toMatchSchema`](/reference/expect#matching-a-schema) para verificá-lo.
+- Verifique um status 2xx com [`toBeOK`](/reference/expect#tobeok), ou um
+  status exato com os matchers de valor: `expect(response.status).toBe(201)`.
+
+## URLs
+
+Um caminho é resolvido em relação ao `app.url` do alvo, como
+[`app.open`](/reference/app#open) resolve um caminho. Uma URL `http` ou `https`
+absoluta vai para onde indica, em qualquer alvo.
+
+- Uma `/` no início começa na origem. Com `app.url` definido como
+  `https://example.com/shop`, `/api/orders` vai para
+  `https://example.com/api/orders`. Para manter o caminho base, escreva
+  ``request.get(`${app.baseUrl}/api/orders`)``.
+- A chamada roda no processo do runner, na rede do runner. Um app que o runner
+  não alcança, como um app dentro de uma máquina virtual em que o runner só
+  controla um navegador, também fica fora do alcance de `request`.
+- As opções `headers` e `basicAuth` da engine web valem só para o navegador.
+  Passe os mesmos valores nos `headers` de uma chamada.
+
+| Lança | Quando |
+| --- | --- |
+| `APP_URL_REQUIRED` | A URL é um caminho e o alvo não declara `app.url`. |
+| `POLICY_DENIED` | A URL está malformada, ou tem um esquema diferente de `http` ou `https`, incluindo `about:blank`. Também um `Secret` em `json`. |
+| `INVALID_ARGUMENT` | A URL não é uma string não vazia ou tem credenciais (`https://user:pass@...`), uma opção tem o tipo errado ou não é aceita por `request` (como `data` ou `params` do Playwright), `headers` não é um objeto simples, um nome ou valor de cabeçalho é inválido, o cabeçalho é `content-length`, `host` ou `sec-fetch-mode`, que o próprio `fetch` define, o cabeçalho é `expect`, `keep-alive`, `transfer-encoding` ou `upgrade`, que o `fetch` não consegue enviar, um cabeçalho `connection` diferente de `close` ou `keep-alive`, `accept-encoding` combinado com `range` (caso em que o `fetch` acrescenta `identity`), `json` e `body` estão definidos ao mesmo tempo, `json` não é seguro para JSON, uma requisição `GET` ou `HEAD` tem corpo, `timeout` é negativo ou maior que 2147483647, `redirect` não é `'follow'`, `'manual'` nem `'error'`, ou o método não é um nome de método HTTP ou é `CONNECT`, `TRACE` ou `TRACK`. |
+
+## Passos e tempos limite
+
+Cada chamada é um passo do tipo `resource`, com o método e o caminho como
+rótulo: `POST /api/orders`. O rótulo omite a query string. Um caminho em
+outra origem mostra também a origem.
+
+Uma chamada que essas verificações recusam é, mesmo assim, um passo com falha,
+e a promise da chamada é rejeitada; o método nunca lança. Quando o que foi recusado
+é o método ou a URL, o passo não tem rótulo, e nenhuma mensagem de erro cita a
+URL nem o valor de um cabeçalho.
+
+Uma chamada é limitada pelo próprio `timeout`, que, se omitido, é
+`actionTimeout` (padrão de 30000 ms), e pelo orçamento do código que faz a
+chamada: o tempo limite do teste no corpo do teste, o tempo limite de limpeza
+em um hook `afterEach`. Quando qualquer um dos dois se esgota, o e2e aborta a
+requisição. Um teste que fica sem tempo falha com o erro de tempo limite de
+sempre.
+
+| Lança | Quando |
+| --- | --- |
+| `ACTION_FAILED` | A chamada passou do próprio `timeout`, o servidor redirecionou com `redirect: 'error'`, ou a rede falhou: o servidor recusou a conexão, ou o host não foi resolvido. |
+
+O e2e não tenta uma chamada novamente. O próprio `fetch` do Node reenvia uma
+requisição uma vez quando o servidor responde `421 Misdirected Request`. Para
+tentar uma leitura novamente, envolva-a em
+[`expect.poll`](/reference/expect#polling-a-value).
+
+## Cookies e escopo
+
+`request` não envia os cookies do navegador e não guarda cookies entre
+chamadas. Passe um token ou o cookie de sessão do seu app em `headers`, como
+mostra [Requisições autenticadas](/api-testing#signed-in-requests).
+Credenciais na URL são recusadas.
+
+`request` é uma fixture de teste. Corpos de teste, `beforeEach` e `afterEach`
+a recebem. `beforeAll`, `afterAll` e fixtures de worker, não.
+
+## Tipos
+
+```ts
+export interface APIRequest {
+  /** Sends a request with `options.method`, GET by default. */
+  fetch(url: string, options?: APIRequestFetchOptions): Promise<WebResponse>;
+  /** Sends a GET request. */
+  get(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+  /** Sends a POST request. */
+  post(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+  /** Sends a PUT request. */
+  put(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+  /** Sends a PATCH request. */
+  patch(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+  /** Sends a DELETE request. */
+  delete(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+  /** Sends a HEAD request. */
+  head(url: string, options?: APIRequestOptions): Promise<WebResponse>;
+}
+
+/** What one `request` call sends beside its URL. */
+export interface APIRequestOptions {
+  /** Request headers. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** A body sent as JSON, with `content-type: application/json` unless `headers` sets one. Not with `body`. */
+  readonly json?: unknown;
+  /** A body sent as is. Not with `json`. */
+  readonly body?: string;
+  /** Timeout in milliseconds; defaults to `actionTimeout`. 0 sets none of its own, so only the running test's or hook's budget bounds the call. */
+  readonly timeout?: number;
+  /** How redirects are handled; `'follow'` by default. `'manual'` returns the 3xx response as is; `'error'` fails the call with `ACTION_FAILED`. */
+  readonly redirect?: 'follow' | 'manual' | 'error';
+}
+
+/** `request.fetch` options: the method beside the rest. */
+export interface APIRequestFetchOptions extends APIRequestOptions {
+  /** The HTTP method; GET by default. */
+  readonly method?: string;
+}
+
+/**
+ * An HTTP response: what `request` calls, the web engine's
+ * `browser.waitForResponse`, and `route.fetch()` return.
+ */
+export interface WebResponse {
+  /** Response URL. */
+  readonly url: string;
+  /** HTTP status. */
+  readonly status: number;
+  /** Response headers, lower-cased names; `request` and `route.fetch()` join several `set-cookie` values with `\n`, `waitForResponse` leaves cookie headers out. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Waits for the body and returns its bytes; rejects with `ACTION_FAILED` when the body could not be read. */
+  body(): Promise<Buffer>;
+  /** Waits for the body and parses it as JSON; rejects with `ACTION_FAILED` when the body could not be read. */
+  json<T = unknown>(): Promise<T>;
+  /** Waits for the body and reads it as text; rejects with `ACTION_FAILED` when the body could not be read. */
+  text(): Promise<string>;
+}
+```
+
+## Relacionados
+
+<CardGroup cols={2}>
+  <Card title="API" icon="plug" href="/api-testing">
+    Escreva testes de API nos mesmos arquivos e na mesma execução que os testes de UI.
+  </Card>
+  <Card title="expect" icon="circle-check" href="/reference/expect">
+    Matchers de valor para os campos e o corpo de uma resposta.
+  </Card>
+</CardGroup>

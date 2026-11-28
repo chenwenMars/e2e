@@ -34,7 +34,7 @@ export interface ScreenOverOptions {
   /** Answers every `locate`, with the operation it runs under. */
   readonly locate: (expression: LocatorExpression, operation: OperationContext) => readonly SemanticNode[] | Promise<readonly SemanticNode[]>;
   /** Answers every `observe`; the root's ref is what a viewport swipe is addressed to. */
-  readonly observe: () => EngineSnapshot;
+  readonly observe: () => EngineSnapshot | Promise<EngineSnapshot>;
   /** Receives every node action with the operation it runs under; without it the engine declares no actions. */
   readonly perform?: (ref: NodeRef, action: LocatorAction, operation: OperationContext) => void | Promise<void>;
   /** Action kinds the engine declares with `perform`; default every kind. */
